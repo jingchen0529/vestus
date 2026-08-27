@@ -45,11 +45,20 @@ if (!layout) {
 }
 
 function download() {
-  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
-  execFileSync(npx, ["--yes", `playwright@${PLAYWRIGHT_VERSION}`, "install", "chromium"], {
-    stdio: "inherit",
-    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserCache },
-  });
+  const windows = process.platform === "win32";
+  // npx 在 Windows 上是 npx.cmd。Node 自 18.20/20.12 起为了修
+  // CVE-2024-27980 不再允许直接 spawn .cmd/.bat，execFileSync 会抛
+  // EINVAL，所以那里必须经过 shell。下面三个参数全是本文件里的常量，
+  // 没有外部输入进入命令行，不存在注入面。
+  execFileSync(
+    windows ? "npx.cmd" : "npx",
+    ["--yes", `playwright@${PLAYWRIGHT_VERSION}`, "install", "chromium"],
+    {
+      stdio: "inherit",
+      shell: windows,
+      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserCache },
+    }
+  );
 }
 
 function directories(path) {
