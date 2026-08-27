@@ -1,0 +1,28 @@
+.DS_Store
+.env
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.db
+
+node_modules/
+dist/
+desktop/src-tauri/target/
+desktop/src-tauri/resources/chromium/*
+!desktop/src-tauri/resources/chromium/.gitkeep
+.cache/
+
+# OA is a read-only reference project. Keep its source, not generated IDE,
+# NuGet or build output.
+oa/.vs/
+oa/packages/
+oa/oa/bin/
+oa/oa/obj/
+
+# Local tooling and agent artifacts (not part of the project).
+.codegraph
+.omo/
+
+# ad_browser is a separate reference project with its own gitee repo;
+# kept out of this repository.
+ad_browser/

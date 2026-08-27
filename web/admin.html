@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Vestus 管理后台</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f6fa}
+    *{box-sizing:border-box}body{margin:0}main{max-width:1280px;margin:0 auto;padding:28px 18px 56px}
+    header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 14px}.muted{color:#667085;font-size:13px}
+    .panel{background:#fff;border:1px solid #e4e7ec;border-radius:8px;padding:20px;box-shadow:0 2px 12px #1f29370d;margin-bottom:18px}
+    form.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}form.grid .span-all{grid-column:1/-1}label{display:grid;gap:5px;font-size:13px;color:#344054}input,select{width:100%;border:1px solid #d0d5dd;border-radius:6px;padding:9px 10px;font-size:14px;background:#fff}button{border:0;border-radius:6px;padding:9px 14px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}button.secondary{background:#eef2ff;color:#1d4ed8}button.danger{background:#dc2626}button.warn{background:#d97706}button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:8px;align-items:center}.error{color:#b42318;background:#fef3f2;border:1px solid #fecdca;padding:9px;border-radius:6px;font-size:13px;margin-bottom:12px}.notice{color:#027a48;background:#ecfdf3;border:1px solid #abefc6;padding:9px;border-radius:6px;font-size:13px;margin-bottom:12px}.hidden{display:none!important}
+    table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #eef0f3;vertical-align:middle}th{color:#667085;font-weight:600;background:#fafafa}td.actions{white-space:nowrap}.status{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px}.active,.SUCCESS{background:#ecfdf3;color:#027a48}.disabled,.locked{background:#fff4ed;color:#b93815}.FAILED{background:#fef3f2;color:#b42318}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.toolbar input{max-width:280px}.tabs{display:flex;gap:8px;margin-bottom:18px}.tabs button{background:#fff;color:#344054;border:1px solid #d0d5dd}.tabs button.active{background:#1d4ed8;color:#fff;border-color:#1d4ed8}.nowrap{white-space:nowrap}.desktop-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.checklist{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:10px;border:1px solid #e4e7ec;border-radius:6px;background:#fafafa}.check-item{display:flex;align-items:center;gap:7px;padding:7px 8px;border-radius:5px;background:#fff;border:1px solid #eef0f3;cursor:pointer}.check-item input{width:auto;margin:0}.check-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-label{font-size:13px;color:#344054;margin-bottom:5px}.section-note{margin:-6px 0 14px}.server{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.form-title{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    @media(max-width:900px){.desktop-grid{grid-template-columns:1fr}.checklist{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){form.grid{grid-template-columns:1fr}form.grid .span-all{grid-column:auto}header,.toolbar{align-items:flex-start;flex-direction:column}table{display:block;overflow:auto;white-space:nowrap}.tabs{overflow:auto}.checklist{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div><h1>Vestus 管理后台</h1><div class="muted">管理员、桌面端用户、桌面配置与用户日志</div></div><div class="actions"><span id="who" class="muted"></span><button id="logout" class="secondary hidden">退出登录</button></div></header>
+  <section id="loginPanel" class="panel">
+    <h2>管理员登录</h2><div id="loginError" class="error hidden"></div>
+    <form id="loginForm" class="grid"><label>账号<input id="username" autocomplete="username" required></label><label>密码<input id="password" type="password" autocomplete="current-password" required></label><div class="actions" style="align-items:end"><button>登录</button></div></form>
+  </section>
+  <section id="appPanel" class="hidden">
+    <nav class="tabs"><button data-tab="users" class="active">桌面端用户</button><button data-tab="desktop">桌面配置</button><button data-tab="admins">管理员</button><button data-tab="logs">用户日志</button></nav>
+    <section id="usersTab">
+      <div class="panel"><div class="toolbar"><div><h2>桌面端用户</h2><span id="userStats" class="muted"></span></div><div class="actions"><input id="search" placeholder="搜索账号、姓名或企业"><button id="refreshUsers" class="secondary">刷新</button></div></div><div id="userError" class="error hidden"></div><div style="overflow:auto"><table><thead><tr><th>账号</th><th>姓名/企业</th><th>状态</th><th>到期</th><th>并发</th><th>操作</th></tr></thead><tbody id="users"></tbody></table></div></div>
+      <div class="panel"><h2>开通桌面端账号</h2><div id="createError" class="error hidden"></div><form id="createForm" class="grid"><label>账号<input id="newUsername" required></label><label>初始密码<input id="newPassword" type="password" minlength="6" required></label><label>用户名称<input id="newName" required></label><label>企业<input id="newCompany"></label><label>电话<input id="newPhone"></label><label>授权到期<input id="newExpires" type="date"></label><label>最大并发<input id="newSessions" type="number" min="1" value="1" required></label><div class="actions" style="align-items:end"><button>创建账号</button></div></form></div>
+    </section>
+    <section id="adminsTab" class="hidden">
+      <div class="panel"><div class="toolbar"><div><h2>管理员</h2><span id="adminStats" class="muted"></span></div><div class="actions"><input id="adminSearch" placeholder="搜索管理员"><button id="refreshAdmins" class="secondary">刷新</button></div></div><div id="adminError" class="error hidden"></div><div style="overflow:auto"><table><thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>状态</th><th>最后登录</th><th>操作</th></tr></thead><tbody id="admins"></tbody></table></div></div>
+      <div class="panel"><h2>新增管理员</h2><div id="createAdminError" class="error hidden"></div><form id="createAdminForm" class="grid"><label>账号<input id="newAdminUsername" required></label><label>初始密码<input id="newAdminPassword" type="password" minlength="6" required></label><label>姓名<input id="newAdminName" required></label><label>角色<select id="newAdminRole"><option value="admin">普通管理员</option><option value="super_admin">超级管理员</option></select></label><div class="actions" style="align-items:end"><button>创建管理员</button></div></form></div>
+    </section>
+    <section id="logsTab" class="hidden">
+      <div class="panel"><div class="toolbar"><div><h2>用户日志</h2><span id="logStats" class="muted"></span></div><div class="actions"><select id="logStatus"><option value="">全部结果</option><option value="SUCCESS">成功</option><option value="FAILED">失败</option></select><button id="refreshLogs" class="secondary">刷新</button><button id="exportLogs" class="secondary">导出当前页</button></div></div><div id="logError" class="error hidden"></div><div style="overflow:auto"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>摘要</th><th>IP</th><th>结果</th></tr></thead><tbody id="logs"></tbody></table></div></div>
+    </section>
+    <section id="desktopTab" class="hidden">
+      <div class="panel">
+        <div class="toolbar"><div><h2>用户桌面配置</h2><div class="muted">为桌面端用户分配一套专属代理和可用平台</div></div><button id="refreshDesktop" class="secondary">刷新全部</button></div>
+        <div id="desktopConfigError" class="error hidden"></div><div id="desktopConfigNotice" class="notice hidden"></div>
+        <form id="desktopConfigForm" class="grid">
+          <label>桌面端用户<select id="desktopUser" required><option value="">请选择用户</option></select></label>
+          <label>专属代理<select id="assignedProxy"><option value="">不分配代理</option></select></label>
+          <div class="actions" style="align-items:end"><button id="saveDesktopConfig">保存用户配置</button></div>
+          <div class="span-all"><div class="field-label">可用平台</div><div id="assignedPlatforms" class="checklist"><span class="muted">暂无平台</span></div></div>
+        </form>
+      </div>
+      <div class="desktop-grid">
+        <div>
+          <div class="panel">
+            <div class="toolbar"><div><h2>代理管理</h2><span id="proxyStats" class="muted"></span></div><button id="refreshProxies" class="secondary">刷新</button></div>
+            <div class="muted section-note">列表不会显示或返回代理密码。</div><div id="proxyListError" class="error hidden"></div>
+            <div style="overflow:auto"><table><thead><tr><th>名称</th><th>代理地址</th><th>账号</th><th>状态</th><th>操作</th></tr></thead><tbody id="proxies"></tbody></table></div>
+          </div>
+          <div class="panel">
+            <div class="form-title"><h2 id="proxyFormTitle">新增代理</h2><button id="cancelProxyEdit" type="button" class="secondary hidden">取消编辑</button></div>
+            <div id="proxyFormError" class="error hidden"></div><div id="proxyFormNotice" class="notice hidden"></div>
+            <form id="proxyForm" class="grid"><input id="proxyId" type="hidden"><label>代理名称<input id="proxyName" required maxlength="100"></label><label>主机/IP<input id="proxyHost" required maxlength="255" placeholder="127.0.0.1"></label><label>端口<input id="proxyPort" type="number" min="1" max="65535" required></label><label>认证账号<input id="proxyUsername" required maxlength="255"></label><label>认证密码<input id="proxyPassword" type="password" autocomplete="new-password" required><span id="proxyPasswordHint" class="muted">创建时必须填写</span></label><label>状态<select id="proxyStatus"><option value="active">启用</option><option value="disabled">停用</option></select></label><div class="actions" style="align-items:end"><button id="saveProxy">创建代理</button></div></form>
+          </div>
+        </div>
+        <div>
+          <div class="panel">
+            <div class="toolbar"><div><h2>平台管理</h2><span id="platformStats" class="muted"></span></div><button id="refreshPlatforms" class="secondary">刷新</button></div>
+            <div id="platformListError" class="error hidden"></div><div style="overflow:auto"><table><thead><tr><th>平台</th><th>访问地址</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody id="platforms"></tbody></table></div>
+          </div>
+          <div class="panel">
+            <div class="form-title"><h2 id="platformFormTitle">新增平台</h2><button id="cancelPlatformEdit" type="button" class="secondary hidden">取消编辑</button></div>
+            <div id="platformFormError" class="error hidden"></div><div id="platformFormNotice" class="notice hidden"></div>
+            <form id="platformForm" class="grid"><input id="platformId" type="hidden"><label>平台名称<input id="platformName" required maxlength="100"></label><label>访问地址<input id="platformUrl" type="url" required maxlength="2048" placeholder="https://example.com"></label><label>排序<input id="platformSortOrder" type="number" min="0" value="0" required></label><label>状态<select id="platformStatus"><option value="active">启用</option><option value="disabled">停用</option></select></label><div class="actions" style="align-items:end"><button id="savePlatform">创建平台</button></div></form>
+          </div>
+        </div>
+      </div>
+    </section>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const state = {user: null, logs: [], desktopUsers: [], proxies: [], platforms: []};
+  const show = (id, value) => { const el=$(id); el.textContent=value||''; el.classList.toggle('hidden', !value); };
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const errorText = data => { const detail=data&&data.detail; if(typeof detail==='string') return detail; if(Array.isArray(detail)) return detail.map(item=>item&&item.msg||String(item)).join('；'); if(detail&&typeof detail==='object') return detail.message||JSON.stringify(detail); return '请求失败'; };
+  const api = async (path, options={}) => { const headers=Object.assign({'Accept':'application/json'},options.headers||{}); if(options.body!==undefined) headers['Content-Type']='application/json'; const response=await fetch(path,Object.assign({},options,{headers,credentials:'include'})); let data={}; try{data=await response.json()}catch(_e){} if(!response.ok) throw new Error(errorText(data)); return data; };
+  const items = value => Array.isArray(value)?value:(value&&Array.isArray(value.items)?value.items:[]);
+  const sameId = (a,b) => String(a??'')===String(b??'');
+  const statusLabel = status => status==='active'?'启用':'停用';
+  const statusClass = status => status==='active'?'active':'disabled';
+  const numberId = value => { const result=Number(value); if(!Number.isSafeInteger(result)||result<1) throw new Error('配置编号无效，请刷新后重试'); return result; };
+  const setLoggedIn = user => { state.user=user; $('loginPanel').classList.toggle('hidden',!!user); $('appPanel').classList.toggle('hidden',!user); $('logout').classList.toggle('hidden',!user); $('who').textContent=user ? user.name+'（'+(user.role==='super_admin'?'超级管理员':'管理员')+'）' : ''; };
+  const loadUsers = async () => { try { show('userError',''); const q=$('search').value.trim(); const rows=await api('/api/admin/users'+(q?'?search='+encodeURIComponent(q):'')); const users=Array.isArray(rows)?rows:rows.items||[]; $('users').innerHTML=users.map(u=>'<tr><td><strong>'+esc(u.username)+'</strong><br><span class="muted">#'+esc(u.id)+'</span></td><td>'+esc(u.name)+'<br><span class="muted">'+esc(u.company||'')+'</span></td><td><span class="status '+esc(u.status)+'">'+(u.status==='active'?'正常':u.status==='locked'?'锁定':'已禁用')+'</span></td><td>'+esc(u.expiresAt||'永久')+'</td><td>'+esc(u.maxSessions)+'</td><td class="actions"><button class="'+(u.status==='active'?'danger':'secondary')+'" data-toggle-user="'+esc(u.id)+'" data-status="'+esc(u.status)+'">'+(u.status==='active'?'停用':'启用')+'</button><button class="warn" data-reset-user="'+esc(u.id)+'">重置密码</button></td></tr>').join('')||'<tr><td colspan="6" class="muted">暂无用户</td></tr>'; const s=await api('/api/admin/stats'); $('userStats').textContent='共 '+(s.total||0)+' 个用户，正常 '+(s.active||0)+'，禁用 '+(s.disabled||0)+'，锁定 '+(s.locked||0); } catch(e){show('userError',e.message)} };
+  const loadAdmins = async () => { try { show('adminError',''); const q=$('adminSearch').value.trim(); const rows=await api('/api/admin/admins'+(q?'?search='+encodeURIComponent(q):'')); const admins=Array.isArray(rows)?rows:rows.items||[]; $('admins').innerHTML=admins.map(a=>'<tr><td>'+esc(a.username)+'</td><td>'+esc(a.name)+'</td><td>'+(a.role==='super_admin'?'超级管理员':'普通管理员')+'</td><td><span class="status '+esc(a.status)+'">'+(a.status==='active'?'正常':'已禁用')+'</span></td><td>'+esc(a.lastLoginAt||'—')+'</td><td class="actions">'+(String(a.id)===String(state.user.id)?'':'<button class="'+(a.status==='active'?'danger':'secondary')+'" data-toggle-admin="'+esc(a.id)+'" data-status="'+esc(a.status)+'">'+(a.status==='active'?'停用':'启用')+'</button><button class="warn" data-reset-admin="'+esc(a.id)+'">重置密码</button>')+'</td></tr>').join('')||'<tr><td colspan="6" class="muted">暂无管理员</td></tr>'; $('adminStats').textContent='共 '+admins.length+' 个管理员'; } catch(e){show('adminError',e.message)} };
+  const loadLogs = async () => { try { show('logError',''); const status=$('logStatus').value; const data=await api('/api/admin/user-logs?page=1&pageSize=200'+(status?'&status='+status:'')); state.logs=data.items||[]; $('logs').innerHTML=state.logs.map(l=>'<tr><td class="nowrap">'+esc(l.createdAt||'')+'</td><td>'+esc(l.actorUsername||'—')+'<br><span class="muted">'+esc(l.actorType||'')+'</span></td><td>'+esc(l.action)+'</td><td>'+esc(l.summary)+'</td><td>'+esc(l.ipAddress||'—')+'</td><td><span class="status '+esc(l.status)+'">'+(l.status==='SUCCESS'?'成功':'失败')+'</span></td></tr>').join('')||'<tr><td colspan="6" class="muted">暂无日志</td></tr>'; $('logStats').textContent='共 '+(data.total||state.logs.length)+' 条记录'; } catch(e){show('logError',e.message)} };
+
+  const renderDesktopUsers = () => {
+    const current=$('desktopUser').value;
+    $('desktopUser').innerHTML='<option value="">请选择用户</option>'+state.desktopUsers.map(user=>'<option value="'+esc(user.id)+'">'+esc(user.username)+' · '+esc(user.name||'未命名')+(user.status==='active'?'':'（不可用）')+'</option>').join('');
+    if(state.desktopUsers.some(user=>sameId(user.id,current))) $('desktopUser').value=current;
+  };
+  const loadDesktopUsers = async () => {
+    try {
+      show('desktopConfigError','');
+      const rows=await api('/api/admin/users');
+      state.desktopUsers=items(rows).map(user=>({id:user.id,username:user.username||'',name:user.name||'',status:user.status||'disabled'})).filter(user=>user.id!==undefined&&user.id!==null);
+      renderDesktopUsers();
+      return true;
+    } catch(error) { show('desktopConfigError',error.message); return false; }
+  };
+  const proxyOptions = () => {
+    const current=$('assignedProxy').value;
+    $('assignedProxy').innerHTML='<option value="">不分配代理</option>'+state.proxies.map(proxy=>'<option value="'+esc(proxy.id)+'">'+esc(proxy.name)+'（'+esc(proxy.host)+':'+esc(proxy.port)+'）'+(proxy.status==='active'?'':' · 已停用')+'</option>').join('');
+    if(state.proxies.some(proxy=>sameId(proxy.id,current))) $('assignedProxy').value=current;
+  };
+  const renderProxies = () => {
+    $('proxies').innerHTML=state.proxies.map(proxy=>'<tr><td><strong>'+esc(proxy.name)+'</strong><br><span class="muted">#'+esc(proxy.id)+'</span></td><td class="server">'+esc(proxy.host)+':'+esc(proxy.port)+'</td><td>'+esc(proxy.username||'—')+'</td><td><span class="status '+statusClass(proxy.status)+'">'+statusLabel(proxy.status)+'</span></td><td class="actions"><button type="button" class="secondary" data-edit-proxy="'+esc(proxy.id)+'">编辑</button></td></tr>').join('')||'<tr><td colspan="5" class="muted">暂无代理</td></tr>';
+    $('proxyStats').textContent='共 '+state.proxies.length+' 套，启用 '+state.proxies.filter(proxy=>proxy.status==='active').length+' 套';
+    proxyOptions();
+  };
+  const loadProxies = async () => {
+    try {
+      show('proxyListError','');
+      const rows=await api('/api/admin/proxies');
+      state.proxies=items(rows).map(proxy=>({id:proxy.id,name:proxy.name||'',host:proxy.host||'',port:proxy.port??'',username:proxy.username||'',status:proxy.status==='active'?'active':'disabled',createdAt:proxy.createdAt||'',updatedAt:proxy.updatedAt||''})).filter(proxy=>proxy.id!==undefined&&proxy.id!==null);
+      renderProxies();
+      return true;
+    } catch(error) { show('proxyListError',error.message); return false; }
+  };
+  const checkedPlatformIds = () => Array.from(document.querySelectorAll('#assignedPlatforms input[type="checkbox"]:checked')).map(input=>input.value);
+  const renderAssignedPlatforms = selectedIds => {
+    const selected=new Set((selectedIds||[]).map(String));
+    $('assignedPlatforms').innerHTML=state.platforms.map(platform=>'<label class="check-item"><input type="checkbox" value="'+esc(platform.id)+'"'+(selected.has(String(platform.id))?' checked':'')+'><span title="'+esc(platform.url)+'">'+esc(platform.name)+(platform.status==='active'?'':'（已停用）')+'</span></label>').join('')||'<span class="muted">暂无平台，请先创建平台</span>';
+  };
+  const renderPlatforms = selectedIds => {
+    $('platforms').innerHTML=state.platforms.map(platform=>'<tr><td><strong>'+esc(platform.name)+'</strong><br><span class="muted">#'+esc(platform.id)+'</span></td><td class="server">'+esc(platform.url)+'</td><td>'+esc(platform.sortOrder)+'</td><td><span class="status '+statusClass(platform.status)+'">'+statusLabel(platform.status)+'</span></td><td class="actions"><button type="button" class="secondary" data-edit-platform="'+esc(platform.id)+'">编辑</button></td></tr>').join('')||'<tr><td colspan="5" class="muted">暂无平台</td></tr>';
+    $('platformStats').textContent='共 '+state.platforms.length+' 个，启用 '+state.platforms.filter(platform=>platform.status==='active').length+' 个';
+    renderAssignedPlatforms(selectedIds===undefined?checkedPlatformIds():selectedIds);
+  };
+  const loadPlatforms = async () => {
+    try {
+      show('platformListError','');
+      const selected=checkedPlatformIds();
+      const rows=await api('/api/admin/platforms');
+      state.platforms=items(rows).map(platform=>({id:platform.id,name:platform.name||'',url:platform.url||'',sortOrder:Number.isFinite(Number(platform.sortOrder))?Number(platform.sortOrder):0,status:platform.status==='active'?'active':'disabled',createdAt:platform.createdAt||'',updatedAt:platform.updatedAt||''})).filter(platform=>platform.id!==undefined&&platform.id!==null);
+      renderPlatforms(selected);
+      return true;
+    } catch(error) { show('platformListError',error.message); return false; }
+  };
+  const loadDesktopConfig = async userId => {
+    show('desktopConfigError',''); show('desktopConfigNotice','');
+    if(!userId) { $('assignedProxy').value=''; renderAssignedPlatforms([]); return; }
+    const requestUser=String(userId);
+    try {
+      const config=await api('/api/admin/users/'+encodeURIComponent(requestUser)+'/desktop-config');
+      if($('desktopUser').value!==requestUser) return;
+      const proxyId=config.proxy&&config.proxy.id!==undefined?config.proxy.id:config.proxyId;
+      const platformIds=Array.isArray(config.platforms)?config.platforms.map(platform=>platform.id):config.platformIds||[];
+      $('assignedProxy').value=proxyId===null||proxyId===undefined?'':String(proxyId);
+      renderAssignedPlatforms(platformIds);
+    } catch(error) {
+      if($('desktopUser').value===requestUser) show('desktopConfigError',error.message);
+    }
+  };
+  const loadDesktop = async () => {
+    show('desktopConfigError',''); show('desktopConfigNotice','');
+    await Promise.all([loadDesktopUsers(),loadProxies(),loadPlatforms()]);
+    if($('desktopUser').value) await loadDesktopConfig($('desktopUser').value);
+  };
+
+  const resetProxyForm = () => {
+    $('proxyForm').reset(); $('proxyId').value=''; $('proxyPassword').required=true;
+    $('proxyFormTitle').textContent='新增代理'; $('saveProxy').textContent='创建代理'; $('proxyPasswordHint').textContent='创建时必须填写'; $('cancelProxyEdit').classList.add('hidden');
+    show('proxyFormError','');
+  };
+  const editProxy = proxy => {
+    $('proxyId').value=proxy.id; $('proxyName').value=proxy.name; $('proxyHost').value=proxy.host; $('proxyPort').value=proxy.port; $('proxyUsername').value=proxy.username; $('proxyPassword').value=''; $('proxyPassword').required=false; $('proxyStatus').value=proxy.status;
+    $('proxyFormTitle').textContent='编辑代理'; $('saveProxy').textContent='保存修改'; $('proxyPasswordHint').textContent='留空表示保持原密码'; $('cancelProxyEdit').classList.remove('hidden');
+    show('proxyFormError',''); show('proxyFormNotice',''); $('proxyForm').scrollIntoView({behavior:'smooth',block:'center'});
+  };
+  const resetPlatformForm = () => {
+    $('platformForm').reset(); $('platformId').value=''; $('platformSortOrder').value='0';
+    $('platformFormTitle').textContent='新增平台'; $('savePlatform').textContent='创建平台'; $('cancelPlatformEdit').classList.add('hidden'); show('platformFormError','');
+  };
+  const editPlatform = platform => {
+    $('platformId').value=platform.id; $('platformName').value=platform.name; $('platformUrl').value=platform.url; $('platformSortOrder').value=platform.sortOrder; $('platformStatus').value=platform.status;
+    $('platformFormTitle').textContent='编辑平台'; $('savePlatform').textContent='保存修改'; $('cancelPlatformEdit').classList.remove('hidden');
+    show('platformFormError',''); show('platformFormNotice',''); $('platformForm').scrollIntoView({behavior:'smooth',block:'center'});
+  };
+  const postAction = async (path, body, errorId, reload) => { try { await api(path,{method:'POST',body:JSON.stringify(body||{})}); await reload(); } catch(e){show(errorId,e.message)} };
+  $('loginForm').addEventListener('submit',async e=>{e.preventDefault();show('loginError','');try{const r=await api('/api/admin/auth/login',{method:'POST',body:JSON.stringify({username:$('username').value,password:$('password').value})});setLoggedIn(r.admin);await loadUsers()}catch(err){show('loginError',err.message)}});
+  $('logout').addEventListener('click',async()=>{try{await api('/api/admin/auth/logout',{method:'POST'})}catch(_e){}setLoggedIn(null)});
+  $('createForm').addEventListener('submit',async e=>{e.preventDefault();show('createError','');try{await api('/api/admin/users',{method:'POST',body:JSON.stringify({username:$('newUsername').value,password:$('newPassword').value,name:$('newName').value,company:$('newCompany').value||null,phone:$('newPhone').value||null,expiresAt:$('newExpires').value||null,maxSessions:Number($('newSessions').value)})});e.target.reset();await loadUsers()}catch(err){show('createError',err.message)}});
+  $('createAdminForm').addEventListener('submit',async e=>{e.preventDefault();show('createAdminError','');try{await api('/api/admin/admins',{method:'POST',body:JSON.stringify({username:$('newAdminUsername').value,password:$('newAdminPassword').value,name:$('newAdminName').value,role:$('newAdminRole').value})});e.target.reset();await loadAdmins()}catch(err){show('createAdminError',err.message)}});
+  $('users').addEventListener('click',async e=>{const toggle=e.target.dataset.toggleUser,reset=e.target.dataset.resetUser;if(toggle){await postAction('/api/admin/users/'+toggle+'/'+(e.target.dataset.status==='active'?'disable':'enable'),{},'userError',loadUsers)}if(reset){const password=prompt('请输入新的临时密码（至少 6 位）');if(password) await postAction('/api/admin/users/'+reset+'/reset-password',{password},'userError',loadUsers)}});
+  $('admins').addEventListener('click',async e=>{const toggle=e.target.dataset.toggleAdmin,reset=e.target.dataset.resetAdmin;if(toggle){await postAction('/api/admin/admins/'+toggle+'/'+(e.target.dataset.status==='active'?'disable':'enable'),{},'adminError',loadAdmins)}if(reset){const password=prompt('请输入新的临时密码（至少 6 位）');if(password) await postAction('/api/admin/admins/'+reset+'/reset-password',{password},'adminError',loadAdmins)}});
+
+  $('desktopUser').addEventListener('change',()=>loadDesktopConfig($('desktopUser').value));
+  $('desktopConfigForm').addEventListener('submit',async event=>{
+    event.preventDefault(); show('desktopConfigError',''); show('desktopConfigNotice','');
+    const userId=$('desktopUser').value,button=$('saveDesktopConfig');
+    try {
+      if(!userId) throw new Error('请先选择桌面端用户');
+      const proxyValue=$('assignedProxy').value;
+      const payload={proxyId:proxyValue?numberId(proxyValue):null,platformIds:checkedPlatformIds().map(numberId)};
+      button.disabled=true; button.textContent='保存中…';
+      await api('/api/admin/users/'+encodeURIComponent(userId)+'/desktop-config',{method:'PATCH',body:JSON.stringify(payload)});
+      await loadDesktopConfig(userId);
+      const user=state.desktopUsers.find(item=>sameId(item.id,userId));
+      show('desktopConfigNotice',(user?user.username:'该用户')+' 的桌面配置已保存');
+    } catch(error) { show('desktopConfigError',error.message); }
+    finally { button.disabled=false; button.textContent='保存用户配置'; }
+  });
+  $('proxyForm').addEventListener('submit',async event=>{
+    event.preventDefault(); show('proxyFormError',''); show('proxyFormNotice','');
+    const editing=$('proxyId').value,button=$('saveProxy');
+    try {
+      const port=Number($('proxyPort').value),password=$('proxyPassword').value;
+      if(!Number.isInteger(port)||port<1||port>65535) throw new Error('代理端口必须在 1 到 65535 之间');
+      if(!editing&&!password) throw new Error('创建代理时必须填写认证密码');
+      const payload={name:$('proxyName').value.trim(),host:$('proxyHost').value.trim(),port,username:$('proxyUsername').value.trim(),status:$('proxyStatus').value};
+      if(password) payload.password=password;
+      button.disabled=true; button.textContent='保存中…';
+      await api('/api/admin/proxies'+(editing?'/'+encodeURIComponent(editing):''),{method:editing?'PATCH':'POST',body:JSON.stringify(payload)});
+      const message=editing?'代理已更新，密码留空时原密码保持不变':'代理已创建';
+      resetProxyForm(); await loadProxies(); show('proxyFormNotice',message);
+    } catch(error) { show('proxyFormError',error.message); }
+    finally { button.disabled=false; button.textContent=$('proxyId').value?'保存修改':'创建代理'; }
+  });
+  $('platformForm').addEventListener('submit',async event=>{
+    event.preventDefault(); show('platformFormError',''); show('platformFormNotice','');
+    const editing=$('platformId').value,button=$('savePlatform');
+    try {
+      const url=$('platformUrl').value.trim(),parsed=new URL(url),sortOrder=Number($('platformSortOrder').value);
+      if(parsed.protocol!=='http:'&&parsed.protocol!=='https:') throw new Error('平台地址只支持 http 或 https');
+      if(!Number.isSafeInteger(sortOrder)||sortOrder<0) throw new Error('排序必须是大于等于 0 的整数');
+      const payload={name:$('platformName').value.trim(),url,sortOrder,status:$('platformStatus').value};
+      button.disabled=true; button.textContent='保存中…';
+      await api('/api/admin/platforms'+(editing?'/'+encodeURIComponent(editing):''),{method:editing?'PATCH':'POST',body:JSON.stringify(payload)});
+      const message=editing?'平台已更新':'平台已创建';
+      resetPlatformForm(); await loadPlatforms(); show('platformFormNotice',message);
+    } catch(error) { show('platformFormError',error.message); }
+    finally { button.disabled=false; button.textContent=$('platformId').value?'保存修改':'创建平台'; }
+  });
+  $('proxies').addEventListener('click',event=>{const button=event.target.closest('button[data-edit-proxy]');if(!button)return;const proxy=state.proxies.find(item=>sameId(item.id,button.dataset.editProxy));if(proxy)editProxy(proxy)});
+  $('platforms').addEventListener('click',event=>{const button=event.target.closest('button[data-edit-platform]');if(!button)return;const platform=state.platforms.find(item=>sameId(item.id,button.dataset.editPlatform));if(platform)editPlatform(platform)});
+  $('cancelProxyEdit').addEventListener('click',()=>{resetProxyForm();show('proxyFormNotice','')});
+  $('cancelPlatformEdit').addEventListener('click',()=>{resetPlatformForm();show('platformFormNotice','')});
+  $('refreshDesktop').addEventListener('click',loadDesktop); $('refreshProxies').addEventListener('click',loadProxies); $('refreshPlatforms').addEventListener('click',loadPlatforms);
+  $('refreshUsers').addEventListener('click',loadUsers);$('refreshAdmins').addEventListener('click',loadAdmins);$('refreshLogs').addEventListener('click',loadLogs);$('logStatus').addEventListener('change',loadLogs);$('search').addEventListener('input',()=>{clearTimeout(window.__u);window.__u=setTimeout(loadUsers,250)});$('adminSearch').addEventListener('input',()=>{clearTimeout(window.__a);window.__a=setTimeout(loadAdmins,250)});
+  $('exportLogs').addEventListener('click',()=>{const blob=new Blob([JSON.stringify(state.logs,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),anchor=document.createElement('a');anchor.href=url;anchor.download='vestus-user-log.json';anchor.click();URL.revokeObjectURL(url)});
+  document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',async()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===button));['users','desktop','admins','logs'].forEach(id=>$(id+'Tab').classList.toggle('hidden',id!==button.dataset.tab));if(button.dataset.tab==='desktop')await loadDesktop();if(button.dataset.tab==='admins')await loadAdmins();if(button.dataset.tab==='logs')await loadLogs()}));
+  api('/api/admin/auth/me').then(user=>{setLoggedIn(user);return loadUsers()}).catch(()=>setLoggedIn(null))
+})();
+</script>
+</body>
+</html>
