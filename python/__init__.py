@@ -1,2 +1,0 @@
-"""Vestus Python backend package."""
-
