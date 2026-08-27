@@ -14,17 +14,20 @@
     "windows": [
       {
         "label": "main",
-        "title": "Vestus 桌面客户端",
+        "title": "",
         "url": "index.html",
-        "width": 1280,
-        "height": 860,
-        "minWidth": 960,
-        "minHeight": 640,
-        "resizable": true
+        "width": 820,
+        "height": 560,
+        "minWidth": 640,
+        "minHeight": 440,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "theme": "Light"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {

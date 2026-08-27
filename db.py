@@ -1,9 +1,9 @@
 """SQLAlchemy persistence for the Vestus backend.
 
 Account/audit tables plus the proxy, platform and assignment tables are
-created. MySQL is the default database; tests and local development can
-explicitly select SQLite with
-``VESTUS_DATABASE_URL=sqlite:///...`` (or set ``VESTUS_SQLITE_FALLBACK=1``).
+created. The connection URL must be supplied through ``VESTUS_DATABASE_URL``;
+tests and local development can explicitly select SQLite with
+``VESTUS_DATABASE_URL=sqlite:///...``.
 No session table is used: signed access tokens carry a token version which is
 checked against the account row on every request.
 """
@@ -29,6 +29,7 @@ from sqlalchemy import (
     LargeBinary,
     SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     and_,
     create_engine,
@@ -44,10 +45,10 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+from file_storage import is_inline_safe, normalize_upload_reference
 from security import decrypt_proxy_password, encrypt_proxy_password, hash_password
 
 
-DEFAULT_MYSQL_URL = "mysql+pymysql://root:password@127.0.0.1:3306/vestus?charset=utf8mb4"
 DEFAULT_SQLITE_PATH = Path(__file__).resolve().with_name("vestus-dev.db")
 
 
@@ -185,6 +186,9 @@ class Proxy(Base):
     port: Mapped[int] = mapped_column(Integer, nullable=False)
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     encrypted_password: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: Hostnames the desktop client must reach directly instead of through this
+    #: proxy.  ``NULL``/empty means every request is proxied.
+    bypass_hosts: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now, onupdate=utc_now)
@@ -202,6 +206,7 @@ class Platform(Base):
     id: Mapped[int] = mapped_column(IdType, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    icon_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)
@@ -259,6 +264,34 @@ class UserLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now, index=True)
 
 
+class SystemSetting(Base):
+    __tablename__ = "system_setting"
+    __table_args__ = (
+        UniqueConstraint("key", name="uq_system_setting_key"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(IdType, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class UploadedFile(Base):
+    __tablename__ = "uploaded_file"
+    __table_args__ = (
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(IdType, primary_key=True, autoincrement=True)
+    original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    path: Mapped[str] = mapped_column(String(512), nullable=False, unique=True, index=True)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    uploaded_by: Mapped[int] = mapped_column(IdType, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now, index=True)
+
+
 def _admin_dict(item: Admin) -> Dict[str, Any]:
     return {
         "id": item.id,
@@ -297,6 +330,19 @@ def _user_dict(item: User) -> Dict[str, Any]:
     }
 
 
+def _proxy_bypass_hosts(item: Proxy) -> List[str]:
+    """Normalize the stored direct-connect list into a plain list of strings.
+
+    Rows written before the column existed hold ``NULL``; legacy rows may also
+    hold a non-list value, which is treated as "no exceptions" rather than
+    propagated to the desktop client.
+    """
+    raw = item.bypass_hosts
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, str) and entry]
+
+
 def _proxy_dict(item: Proxy) -> Dict[str, Any]:
     """Serialize proxy metadata without exposing either credential form."""
     return {
@@ -305,6 +351,7 @@ def _proxy_dict(item: Proxy) -> Dict[str, Any]:
         "host": item.host,
         "port": item.port,
         "username": item.username,
+        "bypassHosts": _proxy_bypass_hosts(item),
         "status": item.status,
         "createdAt": iso_datetime(item.created_at),
         "updatedAt": iso_datetime(item.updated_at),
@@ -320,14 +367,54 @@ def _desktop_proxy_dict(item: Proxy) -> Dict[str, Any]:
         "port": item.port,
         "username": item.username,
         "password": decrypt_proxy_password(item.encrypted_password),
+        "bypassHosts": _proxy_bypass_hosts(item),
     }
 
 
-def _platform_dict(item: Platform, *, desktop: bool = False) -> Dict[str, Any]:
+def _safe_image_reference(
+    value: Optional[str], uploaded_file: Optional[UploadedFile]
+) -> str:
+    try:
+        normalized = normalize_upload_reference(value or "")
+    except ValueError:
+        return ""
+    if (
+        not normalized
+        or uploaded_file is None
+        or uploaded_file.path != normalized
+        or not is_inline_safe(uploaded_file.path, uploaded_file.content_type)
+    ):
+        return ""
+    return normalized
+
+
+def _validated_image_reference(
+    session: Session, value: Optional[str]
+) -> Tuple[str, Optional[UploadedFile]]:
+    normalized = normalize_upload_reference(value or "")
+    if not normalized:
+        return "", None
+    uploaded_file = session.scalar(
+        select(UploadedFile).where(UploadedFile.path == normalized)
+    )
+    if uploaded_file is None or not is_inline_safe(
+        uploaded_file.path, uploaded_file.content_type
+    ):
+        raise ValueError("图片必须引用已上传的安全图片文件")
+    return normalized, uploaded_file
+
+
+def _platform_dict(
+    item: Platform,
+    *,
+    desktop: bool = False,
+    uploaded_file: Optional[UploadedFile] = None,
+) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "id": item.id,
         "name": item.name,
         "url": item.url,
+        "iconUrl": _safe_image_reference(item.icon_url, uploaded_file),
         "sortOrder": item.sort_order,
     }
     if not desktop:
@@ -360,6 +447,7 @@ def _desktop_lease_from_snapshot(
             "port": proxy.port,
             "username": proxy.username,
             "credentialDigest": hashlib.sha256(proxy.encrypted_password).hexdigest(),
+            "bypassHosts": _proxy_bypass_hosts(proxy),
             "status": proxy.status,
             "updatedAt": proxy.updated_at.isoformat(timespec="microseconds"),
         },
@@ -400,11 +488,28 @@ def _log_dict(item: UserLog) -> Dict[str, Any]:
     }
 
 
+def _uploaded_file_dict(item: UploadedFile) -> Dict[str, Any]:
+    return {
+        "id": item.id,
+        "name": item.original_name,
+        "path": item.path,
+        "contentType": item.content_type,
+        "size": item.size,
+        "uploadedBy": item.uploaded_by,
+        "createdAt": iso_datetime(item.created_at),
+    }
+
+
 class Database:
     """Small sync SQLAlchemy repository used by FastAPI dependencies."""
 
     def __init__(self, url: Optional[str] = None, *, initialize: bool = True) -> None:
-        self.url = url or os.getenv("VESTUS_DATABASE_URL") or DEFAULT_MYSQL_URL
+        configured_url = url or os.getenv("VESTUS_DATABASE_URL")
+        if not configured_url or not configured_url.strip():
+            raise RuntimeError(
+                "未配置 VESTUS_DATABASE_URL，请在项目根目录 .env 中设置数据库连接"
+            )
+        self.url = configured_url.strip()
         # SQLite needs this flag for FastAPI's worker threads.  MySQL pooling
         # defaults are suitable for a small admin service.
         kwargs: Dict[str, Any] = {"future": True, "pool_pre_ping": True}
@@ -479,6 +584,33 @@ class Database:
             if existing is None:
                 db.add(Admin(username=username, password_hash=hash_password(password), name=os.getenv("VESTUS_BOOTSTRAP_ADMIN_NAME", "系统管理员"), role="super_admin", status="active", password_changed_at=utc_now()))
 
+    def create_uploaded_file(
+        self,
+        original_name: str,
+        path: str,
+        content_type: str,
+        size: int,
+        uploaded_by: int,
+    ) -> Dict[str, Any]:
+        if not path.startswith("/uploads/") or "://" in path:
+            raise ValueError("invalid upload path")
+        with self.session() as db:
+            item = UploadedFile(
+                original_name=original_name,
+                path=path,
+                content_type=content_type,
+                size=size,
+                uploaded_by=uploaded_by,
+            )
+            db.add(item)
+            db.flush()
+            return _uploaded_file_dict(item)
+
+    def get_uploaded_file_by_path(self, path: str) -> Optional[Dict[str, Any]]:
+        with self.session() as db:
+            item = db.scalar(select(UploadedFile).where(UploadedFile.path == path))
+            return _uploaded_file_dict(item) if item else None
+
     # ---- account lookup and serialization -------------------------------------------------
     def get_admin(self, admin_id: int | str) -> Optional[Dict[str, Any]]:
         with self.session() as db:
@@ -549,8 +681,14 @@ class Database:
 
     def get_platform(self, platform_id: int | str) -> Optional[Dict[str, Any]]:
         with self.session() as db:
-            item = db.get(Platform, int(platform_id))
-            return _platform_dict(item) if item else None
+            row = db.execute(
+                select(Platform, UploadedFile)
+                .outerjoin(UploadedFile, UploadedFile.path == Platform.icon_url)
+                .where(Platform.id == int(platform_id))
+            ).one_or_none()
+            return (
+                _platform_dict(row[0], uploaded_file=row[1]) if row else None
+            )
 
     def get_platform_model(self, platform_id: int | str, db: Optional[Session] = None) -> Optional[Platform]:
         if db is not None:
@@ -560,21 +698,30 @@ class Database:
 
     def list_platforms(self) -> List[Dict[str, Any]]:
         with self.session() as db:
-            items = db.scalars(select(Platform).order_by(Platform.sort_order, Platform.id)).all()
-            return [_platform_dict(item) for item in items]
+            rows = db.execute(
+                select(Platform, UploadedFile)
+                .outerjoin(UploadedFile, UploadedFile.path == Platform.icon_url)
+                .order_by(Platform.sort_order, Platform.id)
+            ).all()
+            return [
+                _platform_dict(item, uploaded_file=uploaded_file)
+                for item, uploaded_file in rows
+            ]
 
     def _load_user_desktop_snapshot(
         self,
         session: Session,
         user_id: int,
-    ) -> Optional[Tuple[User, Optional[Proxy], List[Platform]]]:
-        """Load user, proxy and platforms with one statement-level snapshot.
-
-        Keeping this as one SQL statement prevents an administrator update from
-        producing an old configuration paired with a lease for newer rows.
-        """
+    ) -> Optional[
+        Tuple[
+            User,
+            Optional[Proxy],
+            List[Tuple[Platform, Optional[UploadedFile]]],
+        ]
+    ]:
+        """Load a user's assigned proxy and platforms in one SQL snapshot."""
         rows = session.execute(
-            select(User, Proxy, Platform)
+            select(User, Proxy, Platform, UploadedFile)
             .outerjoin(
                 UserProxyAssignment,
                 UserProxyAssignment.user_id == User.id,
@@ -585,6 +732,7 @@ class Database:
                 UserPlatformAssignment.user_id == User.id,
             )
             .outerjoin(Platform, Platform.id == UserPlatformAssignment.platform_id)
+            .outerjoin(UploadedFile, UploadedFile.path == Platform.icon_url)
             .where(User.id == user_id, User.deleted_at.is_(None))
             .order_by(Platform.sort_order, Platform.id)
         ).all()
@@ -592,14 +740,16 @@ class Database:
             return None
         user = rows[0][0]
         proxy = rows[0][1]
-        platforms = [row[2] for row in rows if row[2] is not None]
+        platforms = [
+            (row[2], row[3]) for row in rows if row[2] is not None
+        ]
         return user, proxy, platforms
 
     @staticmethod
     def _serialize_user_desktop_snapshot(
         user_id: int,
         proxy: Optional[Proxy],
-        platforms: List[Platform],
+        platforms: List[Tuple[Platform, Optional[UploadedFile]]],
         *,
         desktop: bool,
     ) -> Dict[str, Any]:
@@ -608,14 +758,21 @@ class Database:
         if desktop:
             if visible_proxy is not None and visible_proxy.status != "active":
                 visible_proxy = None
-            visible_platforms = [item for item in platforms if item.status == "active"]
+            visible_platforms = [
+                item for item in platforms if item[0].status == "active"
+            ]
 
         result: Dict[str, Any] = {
             "proxy": _desktop_proxy_dict(visible_proxy)
             if desktop and visible_proxy is not None
             else (_proxy_dict(visible_proxy) if visible_proxy is not None else None),
             "platforms": [
-                _platform_dict(item, desktop=desktop) for item in visible_platforms
+                _platform_dict(
+                    item,
+                    desktop=desktop,
+                    uploaded_file=uploaded_file,
+                )
+                for item, uploaded_file in visible_platforms
             ],
         }
         if desktop:
@@ -662,7 +819,7 @@ class Database:
             result["lease"] = _desktop_lease_from_snapshot(
                 numeric_user_id,
                 proxy,
-                platforms,
+                [platform for platform, _uploaded_file in platforms],
             )
             return result
 
@@ -678,7 +835,11 @@ class Database:
             if snapshot is None:
                 return None
             _user, proxy, platforms = snapshot
-            return _desktop_lease_from_snapshot(numeric_user_id, proxy, platforms)
+            return _desktop_lease_from_snapshot(
+                numeric_user_id,
+                proxy,
+                [platform for platform, _uploaded_file in platforms],
+            )
 
     # ---- mutations -------------------------------------------------------------------------
     def insert_admin(self, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -737,6 +898,7 @@ class Database:
                 port=int(values["port"]),
                 username=values["username"].strip(),
                 encrypted_password=encrypt_proxy_password(values["password"]),
+                bypass_hosts=list(values.get("bypass_hosts") or []),
                 status=values.get("status", "active"),
             )
             db.add(item)
@@ -757,6 +919,8 @@ class Database:
                 elif key == "username":
                     value = value.strip()
                 setattr(item, key, value)
+            if "bypass_hosts" in values:
+                item.bypass_hosts = list(values["bypass_hosts"] or [])
             if "password" in values and values["password"] is not None:
                 item.encrypted_password = encrypt_proxy_password(values["password"])
             item.updated_at = utc_now()
@@ -765,39 +929,86 @@ class Database:
 
     def insert_platform(self, values: Dict[str, Any]) -> Dict[str, Any]:
         with self.session() as db:
+            icon_url, uploaded_file = _validated_image_reference(
+                db,
+                values.get("icon_url") or values.get("iconUrl") or "",
+            )
             item = Platform(
                 name=values["name"].strip(),
                 url=values["url"].strip(),
-                sort_order=int(values.get("sort_order", 0)),
+                icon_url=icon_url or None,
+                sort_order=int(values.get("sort_order", values.get("sortOrder", 0))),
                 status=values.get("status", "active"),
             )
             db.add(item)
             db.flush()
-            return _platform_dict(item)
+            return _platform_dict(item, uploaded_file=uploaded_file)
 
     def update_platform(self, platform_id: int | str, values: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         with self.session() as db:
             item = db.get(Platform, int(platform_id))
             if item is None:
                 return None
-            mapping = {"name": "name", "url": "url", "sort_order": "sort_order", "status": "status"}
+            uploaded_file: Optional[UploadedFile] = None
+            mapping = {
+                "name": "name",
+                "url": "url",
+                "icon_url": "icon_url",
+                "iconUrl": "icon_url",
+                "sort_order": "sort_order",
+                "sortOrder": "sort_order",
+                "status": "status",
+            }
             for key, attr in mapping.items():
                 if key in values:
                     value = values[key]
                     if key in {"name", "url"} and isinstance(value, str):
                         value = value.strip()
+                    elif key in {"icon_url", "iconUrl"} and isinstance(value, str):
+                        normalized, uploaded_file = _validated_image_reference(db, value)
+                        value = normalized or None
                     setattr(item, attr, value)
             item.updated_at = utc_now()
             db.flush()
-            return _platform_dict(item)
+            if "icon_url" not in values and "iconUrl" not in values:
+                try:
+                    normalized = normalize_upload_reference(item.icon_url or "")
+                except ValueError:
+                    normalized = ""
+                if normalized:
+                    uploaded_file = db.scalar(
+                        select(UploadedFile).where(UploadedFile.path == normalized)
+                    )
+            return _platform_dict(item, uploaded_file=uploaded_file)
 
-    def set_user_desktop_config(self, user_id: int | str, proxy_id: Optional[int], platform_ids: List[int]) -> Dict[str, Any]:
-        """Atomically replace a user's assignments after validating active references."""
+    def delete_platform(self, platform_id: int | str) -> bool:
+        """Delete a platform and clean up legacy user assignments."""
+        numeric_id = int(platform_id)
+        with self.session() as session:
+            item = session.get(Platform, numeric_id)
+            if item is None:
+                return False
+            session.execute(delete(UserPlatformAssignment).where(UserPlatformAssignment.platform_id == numeric_id))
+            session.delete(item)
+            session.flush()
+            return True
+
+    def delete_proxy(self, proxy_id: int | str) -> bool:
+        """Delete a proxy and clean up legacy user assignments."""
+        numeric_id = int(proxy_id)
+        with self.session() as session:
+            item = session.get(Proxy, numeric_id)
+            if item is None:
+                return False
+            session.execute(delete(UserProxyAssignment).where(UserProxyAssignment.proxy_id == numeric_id))
+            session.delete(item)
+            session.flush()
+            return True
+
+    def set_user_desktop_config(self, user_id: int | str, proxy_id: Optional[int], platform_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Atomically replace a user's proxy and platform assignments."""
         numeric_user_id = int(user_id)
-        normalized_platform_ids = [int(item) for item in platform_ids]
-        if len(normalized_platform_ids) != len(set(normalized_platform_ids)):
-            raise ValueError("平台 ID 不能重复")
-
+        selected_platform_ids = [int(item) for item in (platform_ids or [])]
         with self.session() as session:
             user = session.scalar(
                 select(User).where(User.id == numeric_user_id, User.deleted_at.is_(None)).with_for_update()
@@ -813,25 +1024,33 @@ class Database:
                 if selected_proxy.status != "active":
                     raise ValueError("只能分配启用状态的代理")
 
-            if normalized_platform_ids:
-                found_platforms = session.scalars(
-                    select(Platform).where(Platform.id.in_(normalized_platform_ids))
-                ).all()
-                found_by_id = {item.id: item for item in found_platforms}
-                missing = [item for item in normalized_platform_ids if item not in found_by_id]
-                if missing:
-                    raise ValueError(f"平台不存在: {missing[0]}")
-                disabled = [item.id for item in found_platforms if item.status != "active"]
-                if disabled:
-                    raise ValueError(f"只能分配启用状态的平台: {disabled[0]}")
+            selected_platforms: List[Platform] = []
+            if selected_platform_ids:
+                selected_platforms = list(
+                    session.scalars(
+                        select(Platform).where(Platform.id.in_(selected_platform_ids))
+                    ).all()
+                )
+                if len(selected_platforms) != len(selected_platform_ids):
+                    raise ValueError("平台不存在")
+                if any(item.status != "active" for item in selected_platforms):
+                    raise ValueError("只能分配启用状态的平台")
 
             session.execute(delete(UserProxyAssignment).where(UserProxyAssignment.user_id == numeric_user_id))
             if selected_proxy is not None:
                 session.add(UserProxyAssignment(user_id=numeric_user_id, proxy_id=selected_proxy.id))
-
-            session.execute(delete(UserPlatformAssignment).where(UserPlatformAssignment.user_id == numeric_user_id))
-            for platform_id in normalized_platform_ids:
-                session.add(UserPlatformAssignment(user_id=numeric_user_id, platform_id=platform_id))
+            session.execute(
+                delete(UserPlatformAssignment).where(
+                    UserPlatformAssignment.user_id == numeric_user_id
+                )
+            )
+            for selected_platform_id in selected_platform_ids:
+                session.add(
+                    UserPlatformAssignment(
+                        user_id=numeric_user_id,
+                        platform_id=selected_platform_id,
+                    )
+                )
             session.flush()
 
         # Serialize in a new session so ordering and public-field rules stay in
@@ -868,6 +1087,23 @@ class Database:
             item = self.get_user_model(user_id, db)
             if item is None:
                 return False
+            item.deleted_at = utc_now()
+            item.status = "disabled"
+            item.token_version = int(item.token_version or 1) + 1
+            return True
+
+    def soft_delete_admin(self, admin_id: int | str) -> bool:
+        with self.session() as db:
+            item = self.get_admin_model(admin_id, db)
+            if item is None:
+                return False
+            if item.role == "super_admin" and item.status == "active":
+                count = db.scalar(
+                    select(func.count(Admin.id))
+                    .where(Admin.role == "super_admin", Admin.status == "active", Admin.deleted_at.is_(None))
+                ) or 0
+                if int(count) <= 1:
+                    raise LastSuperAdminError("不能删除系统中唯一的激活超级管理员")
             item.deleted_at = utc_now()
             item.status = "disabled"
             item.token_version = int(item.token_version or 1) + 1
@@ -955,10 +1191,87 @@ class Database:
             result["total"] += expired_count
             return result
 
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self.session() as s:
+            item = s.scalar(select(SystemSetting).where(SystemSetting.key == key))
+            return item.value if item else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.session() as s:
+            item = s.scalar(select(SystemSetting).where(SystemSetting.key == key))
+            if item:
+                item.value = value
+                item.updated_at = utc_now()
+            else:
+                item = SystemSetting(key=key, value=value, updated_at=utc_now())
+                s.add(item)
+            s.commit()
+
+    def get_branding(self) -> Dict[str, str]:
+        env_product = os.getenv("VESTUS_PRODUCT_NAME", "Vestus").strip() or "Vestus"
+        name = self.get_setting("product_name", env_product)
+        logo = self.get_setting("product_logo", "")
+        admin_title = self.get_setting("admin_title", "Vestus Admin")
+        admin_logo = self.get_setting("admin_logo", "")
+        admin_theme_color = self.get_setting("admin_theme_color", "blue")
+        references = {value for value in (logo, admin_logo) if value}
+        uploaded_files: Dict[str, UploadedFile] = {}
+        if references:
+            with self.session() as db:
+                uploaded_files = {
+                    item.path: item
+                    for item in db.scalars(
+                        select(UploadedFile).where(UploadedFile.path.in_(references))
+                    ).all()
+                }
+        logo = _safe_image_reference(logo, uploaded_files.get(logo))
+        admin_logo = _safe_image_reference(
+            admin_logo, uploaded_files.get(admin_logo)
+        )
+        return {
+            "productName": name if name else env_product,
+            "logoUrl": logo,
+            "adminTitle": admin_title if admin_title else "Vestus Admin",
+            "adminLogoUrl": admin_logo,
+            "adminThemeColor": admin_theme_color if admin_theme_color else "blue",
+        }
+
+    def set_branding(
+        self,
+        product_name: Optional[str] = None,
+        logo_url: Optional[str] = None,
+        admin_title: Optional[str] = None,
+        admin_logo_url: Optional[str] = None,
+        admin_theme_color: Optional[str] = None,
+    ) -> Dict[str, str]:
+        normalized_logo = logo_url
+        normalized_admin_logo = admin_logo_url
+        if logo_url is not None or admin_logo_url is not None:
+            with self.session() as db:
+                if logo_url is not None:
+                    normalized_logo, _uploaded_file = _validated_image_reference(
+                        db, logo_url
+                    )
+                if admin_logo_url is not None:
+                    normalized_admin_logo, _uploaded_file = _validated_image_reference(
+                        db, admin_logo_url
+                    )
+        if product_name is not None:
+            self.set_setting("product_name", product_name.strip())
+        if logo_url is not None:
+            self.set_setting("product_logo", normalized_logo or "")
+        if admin_title is not None:
+            self.set_setting("admin_title", admin_title.strip())
+        if admin_logo_url is not None:
+            self.set_setting("admin_logo", normalized_admin_logo or "")
+        if admin_theme_color is not None:
+            self.set_setting("admin_theme_color", admin_theme_color.strip())
+        return self.get_branding()
+
 
 __all__ = [
-    "Base", "Admin", "User", "UserLog", "Proxy", "Platform",
-    "UserProxyAssignment", "UserPlatformAssignment", "Database",
+    "Base", "Admin", "User", "UserLog", "Proxy", "Platform", "UploadedFile",
+    "UserProxyAssignment", "UserPlatformAssignment", "SystemSetting", "Database",
     "LastSuperAdminError", "utc_now", "iso_datetime", "parse_datetime",
     "IntegrityError", "OperationalError",
 ]

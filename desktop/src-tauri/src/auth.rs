@@ -22,6 +22,7 @@ use crate::{browser::BrowserSessionManager, state::AppState};
 const DEFAULT_API_BASE_URL: &str = "http://127.0.0.1:8000";
 const API_BASE_URL_ENV: &str = "VESTUS_API_BASE_URL";
 const COMPILED_API_BASE_URL: Option<&str> = option_env!("VESTUS_API_BASE_URL");
+const COMPILED_ALLOW_INSECURE_API: Option<&str> = option_env!("VESTUS_ALLOW_INSECURE_API");
 const LOGIN_PATH: &str = "/api/user/auth/login";
 const ME_PATH: &str = "/api/user/auth/me";
 const LOGOUT_PATH: &str = "/api/user/auth/logout";
@@ -109,10 +110,123 @@ struct LoginResponse {
     user: DesktopUser,
 }
 
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductInfo {
+    pub product_name: String,
+    #[serde(default)]
+    pub logo_url: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProductNameResponse {
     product_name: String,
+    #[serde(default)]
+    logo_url: Option<String>,
+}
+
+fn is_strict_upload_path(path: &str) -> bool {
+    let Some(suffix) = path.strip_prefix("/uploads/") else {
+        return false;
+    };
+    let mut segments = suffix.split('/');
+    let (Some(year), Some(month), Some(filename), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    if year.len() != 4
+        || !year.bytes().all(|byte| byte.is_ascii_digit())
+        || !matches!(
+            month,
+            "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12"
+        )
+    {
+        return false;
+    }
+
+    let (stem, extension) = filename
+        .split_once('.')
+        .map_or((filename, None), |(stem, extension)| {
+            (stem, Some(extension))
+        });
+    stem.len() == 32
+        && stem
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        && extension.is_none_or(|extension| {
+            !extension.is_empty()
+                && extension.len() <= 16
+                && extension
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+        })
+}
+
+/// Resolve one server-owned uploaded asset without allowing JavaScript to
+/// choose an arbitrary network origin. New API responses contain only the
+/// relative form; an exact legacy absolute URL from the same API base is
+/// accepted during rolling upgrades and canonicalized back through that base.
+pub(crate) fn resolve_uploaded_asset_url(api_base: &str, value: &str) -> Option<String> {
+    let base = Url::parse(api_base.trim()).ok()?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+    {
+        return None;
+    }
+
+    let value = value.trim();
+    let relative_path = if value.starts_with('/') {
+        value.to_string()
+    } else {
+        let absolute = Url::parse(value).ok()?;
+        if !matches!(absolute.scheme(), "http" | "https")
+            || absolute.origin() != base.origin()
+            || !absolute.username().is_empty()
+            || absolute.password().is_some()
+            || absolute.query().is_some()
+            || absolute.fragment().is_some()
+        {
+            return None;
+        }
+        let base_path = base.path().trim_end_matches('/');
+        absolute.path().strip_prefix(base_path)?.to_string()
+    };
+
+    if !is_strict_upload_path(&relative_path) {
+        return None;
+    }
+    Some(format!(
+        "{}{}",
+        base.as_str().trim_end_matches('/'),
+        relative_path
+    ))
+}
+
+fn product_info_from_wire(api_base: &str, wire: ProductNameResponse) -> ProductInfo {
+    let name = wire.product_name.trim();
+    let product_name =
+        if name.is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
+            "Vestus".to_string()
+        } else {
+            name.to_string()
+        };
+    let logo_url = wire
+        .logo_url
+        .as_deref()
+        .and_then(|value| resolve_uploaded_asset_url(api_base, value));
+    ProductInfo {
+        product_name,
+        logo_url,
+    }
 }
 
 impl LoginResponse {
@@ -209,22 +323,33 @@ impl CredentialStore for OsCredentialStore {
     }
 }
 
-// The desktop app currently targets macOS and Windows.  Keeping an explicit
-// fallback makes cross-target `cargo check` fail at command use with a useful
-// message instead of failing compilation because no Linux keyring backend was
-// selected in Cargo.toml.
+// Linux 在 Cargo.toml 里没有 keyring 后端（不想为发布包引入 D-Bus /
+// secret-service 运行时依赖），所以这里用进程内存代替系统钥匙串：应用运行
+// 期间可以恢复会话，退出后需要重新登录。令牌同样绝不落盘。
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+static PROCESS_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn process_token() -> Result<MutexGuard<'static, Option<String>>, String> {
+    PROCESS_TOKEN
+        .lock()
+        .map_err(|_| "本地凭据锁已中毒".to_string())
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl CredentialStore for OsCredentialStore {
     fn load_token(&self) -> Result<Option<String>, String> {
-        Err("当前平台尚未配置系统钥匙串后端".into())
+        Ok(process_token()?.clone())
     }
 
-    fn save_token(&self, _token: &str) -> Result<(), String> {
-        Err("当前平台尚未配置系统钥匙串后端".into())
+    fn save_token(&self, token: &str) -> Result<(), String> {
+        *process_token()? = Some(token.to_string());
+        Ok(())
     }
 
     fn delete_token(&self) -> Result<(), String> {
-        Err("当前平台尚未配置系统钥匙串后端".into())
+        *process_token()? = None;
+        Ok(())
     }
 }
 
@@ -290,7 +415,7 @@ impl DesktopAuthState {
             .unwrap_or(false)
     }
 
-    async fn product_name(&self) -> AuthResult<String> {
+    async fn product_info(&self) -> AuthResult<ProductInfo> {
         let response = self
             .client()?
             .get(self.endpoint(PRODUCT_NAME_PATH)?)
@@ -299,13 +424,12 @@ impl DesktopAuthState {
             .map_err(network_error)?;
         let wire: ProductNameResponse =
             decode_success_json(response, "产品名称响应格式错误").await?;
-        let name = wire.product_name.trim();
-        if name.is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
-            return Err(DesktopAuthError::invalid_response(
-                "服务器返回的产品名称无效",
-            ));
-        }
-        Ok(name.to_string())
+        let api_base = self.api_base_url.as_ref().map_err(Clone::clone)?;
+        Ok(product_info_from_wire(api_base, wire))
+    }
+
+    async fn product_name(&self) -> AuthResult<String> {
+        Ok(self.product_info().await?.product_name)
     }
 
     /// Return the Rust-owned desktop identity without exposing the bearer token.
@@ -616,6 +740,10 @@ impl DesktopAuthState {
         self.client.as_ref().map_err(Clone::clone)
     }
 
+    pub(crate) fn api_base_url(&self) -> Result<&str, DesktopAuthError> {
+        self.api_base_url.as_deref().map_err(Clone::clone)
+    }
+
     fn endpoint(&self, path: &str) -> AuthResult<String> {
         let base = self.api_base_url.as_ref().map_err(Clone::clone)?;
         debug_assert!(matches!(
@@ -726,16 +854,18 @@ fn session_is_current(state: &SessionState) -> bool {
 
 #[tauri::command]
 pub async fn desktop_product_name<R: Runtime>(
-    app: AppHandle<R>,
+    _app: AppHandle<R>,
     state: tauri::State<'_, DesktopAuthState>,
 ) -> AuthResult<String> {
-    let name = state.product_name().await?;
-    if let Some(window) = app.get_webview_window("main") {
-        window
-            .set_title(&format!("{name} 桌面客户端"))
-            .map_err(|_| DesktopAuthError::new("window_title", "无法更新客户端标题"))?;
-    }
-    Ok(name)
+    state.product_name().await
+}
+
+#[tauri::command]
+pub async fn desktop_product_info<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, DesktopAuthState>,
+) -> AuthResult<ProductInfo> {
+    state.product_info().await
 }
 
 #[tauri::command]
@@ -823,6 +953,10 @@ pub async fn desktop_change_password<R: Runtime>(
 }
 
 fn normalize_api_base_url(raw: &str) -> AuthResult<String> {
+    normalize_api_base_url_with_options(raw, COMPILED_ALLOW_INSECURE_API == Some("1"))
+}
+
+fn normalize_api_base_url_with_options(raw: &str, allow_insecure_api: bool) -> AuthResult<String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err(DesktopAuthError::new(
@@ -846,6 +980,7 @@ fn normalize_api_base_url(raw: &str) -> AuthResult<String> {
         ));
     }
     if parsed.scheme() == "http"
+        && !allow_insecure_api
         && !parsed.host_str().is_some_and(|host| {
             host.eq_ignore_ascii_case("localhost")
                 || host
@@ -1236,6 +1371,94 @@ mod tests {
         assert!(normalize_api_base_url("http://api.example.test").is_err());
         assert!(normalize_api_base_url("http://127.0.0.1:8000").is_ok());
         assert!(normalize_api_base_url("http://[::1]:8000").is_ok());
+    }
+
+    #[test]
+    fn remote_http_api_requires_the_explicit_compile_time_option() {
+        assert!(
+            normalize_api_base_url_with_options("http://api.example.test/vestus", false,).is_err()
+        );
+        assert_eq!(
+            normalize_api_base_url_with_options("http://api.example.test/vestus", true).unwrap(),
+            "http://api.example.test/vestus"
+        );
+    }
+
+    #[test]
+    fn resolves_uploaded_asset_under_the_compiled_api_base_path() {
+        assert_eq!(
+            resolve_uploaded_asset_url(
+                "https://api.example.test/vestus",
+                "/uploads/2026/08/0123456789abcdef0123456789abcdef.png",
+            ),
+            Some(
+                "https://api.example.test/vestus/uploads/2026/08/0123456789abcdef0123456789abcdef.png".to_string()
+            )
+        );
+        assert_eq!(
+            resolve_uploaded_asset_url(
+                "https://api.example.test/vestus",
+                "https://api.example.test/vestus/uploads/2026/08/fedcba9876543210fedcba9876543210.png",
+            ),
+            Some(
+                "https://api.example.test/vestus/uploads/2026/08/fedcba9876543210fedcba9876543210.png"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_non_upload_or_untrusted_asset_urls() {
+        for value in [
+            "data:image/png;base64,AAAA",
+            "https://cdn.example.test/uploads/logo.png",
+            "https://api.example.test.evil.test/vestus/uploads/logo.png",
+            "/uploads/../api/user/auth/me",
+            "/uploads/%2e%2e/api/user/auth/me",
+            "/uploads/logo.png?cache=1",
+            "/uploads/logo.png#fragment",
+            "//api.example.test/uploads/logo.png",
+            "/uploads\\logo.png",
+            "/uploads/2026/00/0123456789abcdef0123456789abcdef.png",
+            "/uploads/2026/13/0123456789abcdef0123456789abcdef.png",
+            "/uploads/26/08/0123456789abcdef0123456789abcdef.png",
+            "/uploads/2026/08/0123456789abcdef.png",
+            "/uploads/2026/08/0123456789ABCDEF0123456789ABCDEF.png",
+            "/uploads/2026/08/0123456789abcdef0123456789abcdef.Png",
+            "/uploads/2026/08/0123456789abcdef0123456789abcdef.abcdefghijklmnopq",
+            "/uploads/2026/08/0123456789abcdef0123456789abcdef.png/extra",
+        ] {
+            assert_eq!(
+                resolve_uploaded_asset_url("https://api.example.test/vestus", value),
+                None,
+                "应当拒绝不可信资源地址：{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn product_branding_exposes_only_api_scoped_uploaded_logo() {
+        let product = product_info_from_wire(
+            "https://api.example.test",
+            ProductNameResponse {
+                product_name: " 企业客户端 ".into(),
+                logo_url: Some("/uploads/2026/08/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.webp".into()),
+            },
+        );
+        assert_eq!(product.product_name, "企业客户端");
+        assert_eq!(
+            product.logo_url.as_deref(),
+            Some("https://api.example.test/uploads/2026/08/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.webp")
+        );
+
+        let rejected = product_info_from_wire(
+            "https://api.example.test",
+            ProductNameResponse {
+                product_name: "Vestus".into(),
+                logo_url: Some("data:image/png;base64,AAAA".into()),
+            },
+        );
+        assert_eq!(rejected.logo_url, None);
     }
 
     #[test]

@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS `proxy` (
   `port` INT NOT NULL,
   `username` VARCHAR(255) NOT NULL,
   `encrypted_password` BLOB NOT NULL,
+  -- 直连域名（JSON 字符串数组）。NULL 或空数组表示全部流量走该代理。
+  -- 升级已有库：ALTER TABLE `proxy` ADD COLUMN `bypass_hosts` JSON NULL AFTER `encrypted_password`;
+  `bypass_hosts` JSON NULL,
   `status` VARCHAR(16) NOT NULL DEFAULT 'active',
   `created_at` DATETIME(6) NOT NULL,
   `updated_at` DATETIME(6) NOT NULL,
@@ -61,6 +64,7 @@ CREATE TABLE IF NOT EXISTS `platform` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(100) NOT NULL,
   `url` VARCHAR(2048) NOT NULL,
+  `icon_url` TEXT NULL,
   `sort_order` INT NOT NULL DEFAULT 0,
   `status` VARCHAR(16) NOT NULL DEFAULT 'active',
   `created_at` DATETIME(6) NOT NULL,
@@ -106,4 +110,25 @@ CREATE TABLE IF NOT EXISTS `user_log` (
   `details` JSON NULL,
   `created_at` DATETIME(6) NOT NULL,
   PRIMARY KEY (`id`), KEY `idx_log_created` (`created_at`,`id`), KEY `idx_log_actor` (`actor_type`,`actor_id`,`created_at`), KEY `idx_log_action` (`action`,`created_at`), KEY `idx_log_status` (`status`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `system_setting` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `key` VARCHAR(64) NOT NULL,
+  `value` TEXT NOT NULL,
+  `updated_at` DATETIME(6) NOT NULL,
+  PRIMARY KEY (`id`), UNIQUE KEY `uq_system_setting_key` (`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `uploaded_file` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `original_name` VARCHAR(255) NOT NULL,
+  `path` VARCHAR(512) NOT NULL,
+  `content_type` VARCHAR(255) NOT NULL,
+  `size` BIGINT NOT NULL,
+  `uploaded_by` BIGINT NOT NULL,
+  `created_at` DATETIME(6) NOT NULL,
+  PRIMARY KEY (`id`), UNIQUE KEY `uq_uploaded_file_path` (`path`),
+  KEY `idx_uploaded_file_uploaded_by` (`uploaded_by`),
+  KEY `idx_uploaded_file_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

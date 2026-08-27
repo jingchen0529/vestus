@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --test scripts/*.test.mjs src/theme/*.test.mjs src/components/settings/*.test.mjs",
     "build": "tsc && vite build",
-    "tauri": "tauri",
-    "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build",
+    "tauri": "node scripts/tauri-with-api.mjs",
+    "desktop:dev": "node scripts/tauri-with-api.mjs dev",
+    "desktop:build": "node scripts/tauri-with-api.mjs build",
     "preview": "vite preview",
     "check:surfaces": "node scripts/check-surface-boundaries.mjs"
   },

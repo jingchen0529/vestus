@@ -18,6 +18,8 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestC
     monkeypatch.setenv("VESTUS_SECRET_KEY", "test-secret-key-that-is-long-enough")
     monkeypatch.setenv("VESTUS_ACCESS_TOKEN_TTL_SECONDS", "900")
     monkeypatch.setenv("VESTUS_LOGIN_MAX_ATTEMPTS", "20")
+    monkeypatch.setenv("VESTUS_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("VESTUS_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024))
 
     # app.py creates a module-level Database, so reload it after applying the
     # test environment. This keeps production code untouched and prevents

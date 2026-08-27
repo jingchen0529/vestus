@@ -386,10 +386,14 @@ mod tests {
             username: "proxy-user".into(),
             password: "proxy-password".into(),
             probe_url: crate::config::DEFAULT_PROBE_URL.into(),
+            bypass_hosts: Vec::new(),
         })
         .unwrap();
         let adapter = crate::rt::runtime()
-            .block_on(crate::adapter::start(config.upstream()))
+            .block_on(crate::adapter::start(
+                config.upstream(),
+                config.direct_hosts.clone(),
+            ))
             .unwrap();
         let revision = state.set_desktop_assignment(
             user_id,
@@ -399,6 +403,7 @@ mod tests {
                 id: 1,
                 name: "平台".into(),
                 url: "https://platform.example.test/".into(),
+                icon_url: None,
                 sort_order: 0,
             }],
         );
@@ -501,6 +506,7 @@ mod tests {
                     id: 1,
                     name: "平台".into(),
                     url: "https://platform.example.test/".into(),
+                    icon_url: None,
                     sort_order: 0,
                 }],
             ),

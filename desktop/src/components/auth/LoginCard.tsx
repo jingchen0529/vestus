@@ -1,21 +1,30 @@
 import React, { useEffect, useState } from "react";
-import { Lock, User, ShieldCheck, ArrowRight } from "lucide-react";
+import { Lock, User, Eye, EyeOff, ArrowRight, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { authService, UserAccount } from "@/services/authService";
 import { useToast } from "@/components/ui/toast";
 
+import defaultLogo from "@/assets/logo.png";
+
 interface LoginCardProps {
   productName: string;
+  logoUrl?: string;
   notice?: string | null;
   onLoginSuccess: (user: UserAccount) => void;
 }
 
-export const LoginCard: React.FC<LoginCardProps> = ({ productName, notice, onLoginSuccess }) => {
+export const LoginCard: React.FC<LoginCardProps> = ({
+  productName,
+  logoUrl,
+  notice,
+  onLoginSuccess,
+}) => {
   const { success, error } = useToast();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(notice || null);
 
@@ -50,51 +59,51 @@ export const LoginCard: React.FC<LoginCardProps> = ({ productName, notice, onLog
     }
   };
 
+  const displayLogo = logoUrl || defaultLogo;
+
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-slate-950 p-4 relative overflow-hidden">
+    <div className="min-h-screen w-full flex items-center justify-center bg-background text-foreground p-4 relative overflow-hidden transition-colors">
+      {/* Draggable window header region */}
+      <div data-tauri-drag-region className="absolute top-0 left-0 right-0 h-10 z-50 select-none cursor-default" />
+
       {/* Background Decorative Gradients */}
-      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-blue-600/15 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute top-[40%] left-[60%] w-[350px] h-[350px] bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-blue-600/10 dark:bg-blue-600/15 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] bg-indigo-600/10 dark:bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute top-[40%] left-[60%] w-[350px] h-[350px] bg-emerald-600/5 dark:bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
 
       <div className="w-full max-w-md relative z-10">
-        {/* Brand Header */}
-        <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 shadow-xl shadow-blue-500/25 mb-3 border border-blue-400/30">
-            <ShieldCheck className="w-8 h-8 text-white" />
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center justify-center gap-2">
-            {productName} 桌面客户端
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            使用管理员分配的账号登录专属浏览器
-          </p>
-        </div>
-
-        <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-xl shadow-2xl">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-base text-slate-100">桌面端用户登录</CardTitle>
-            <CardDescription className="text-xs text-slate-400">
-              请使用管理员为您分配的专属账号和密码登录后使用本软件。
-            </CardDescription>
+        <Card className="border-border bg-card/90 backdrop-blur-xl shadow-xl">
+          <CardHeader className="pb-4 pt-6 flex flex-col items-center justify-center text-center">
+            <div className="flex flex-col items-center justify-center gap-3 w-full">
+              <img
+                src={displayLogo}
+                alt={productName || "Logo"}
+                className="w-12 h-12 object-contain rounded-2xl border border-border/60 bg-background shadow-sm shrink-0"
+              />
+              <div className="min-w-0 max-w-full">
+                <CardTitle className="text-base font-bold text-foreground text-center truncate">
+                  {productName || "Vestus"}
+                </CardTitle>
+              </div>
+            </div>
           </CardHeader>
 
           <form onSubmit={handleSubmit}>
             <CardContent className="space-y-4">
               {errMsg && (
-                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-300 text-xs flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-rose-500 dark:bg-rose-400 shrink-0" />
                   <span>{errMsg}</span>
                 </div>
               )}
 
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
-                  <span>桌面端账号</span>
+                <label className="text-xs font-medium text-foreground flex items-center justify-between">
+                  <span>登录账号</span>
                 </label>
                 <Input
                   type="text"
-                  placeholder="请输入管理员为您分配的桌面端账号"
+                  placeholder="请输入管理员为您分配的登录账号"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   icon={<User className="w-4 h-4" />}
@@ -104,15 +113,30 @@ export const LoginCard: React.FC<LoginCardProps> = ({ productName, notice, onLog
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                <label className="text-xs font-medium text-foreground flex items-center justify-between">
                   <span>登录密码</span>
                 </label>
                 <Input
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   placeholder="请输入登录密码"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   icon={<Lock className="w-4 h-4" />}
+                  rightElement={
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded focus:outline-none"
+                      title={showPassword ? "隐藏密码" : "显示密码"}
+                    >
+                      {showPassword ? (
+                        <EyeOff className="w-4 h-4" />
+                      ) : (
+                        <Eye className="w-4 h-4" />
+                      )}
+                    </button>
+                  }
                   disabled={loading}
                 />
               </div>
@@ -127,9 +151,7 @@ export const LoginCard: React.FC<LoginCardProps> = ({ productName, notice, onLog
               </Button>
             </CardContent>
           </form>
-
         </Card>
-
       </div>
     </div>
   );

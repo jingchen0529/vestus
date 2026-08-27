@@ -14,8 +14,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
 
-use crate::auth::DesktopAuthState;
+use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
 use crate::browser::BrowserSessionManager;
+use crate::bypass::DirectHosts;
 use crate::config::{self, DesktopPlatform, ProxyForm, ValidatedConfig, DEFAULT_PROBE_URL};
 use crate::probe;
 use crate::rt;
@@ -74,6 +75,9 @@ struct DesktopProxyWire {
     port: u16,
     username: String,
     password: String,
+    /// 管理员下发的直连域名。缺省为空，即全部走代理。
+    #[serde(rename = "bypassHosts", alias = "bypass_hosts", default)]
+    bypass_hosts: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -81,6 +85,8 @@ struct DesktopPlatformWire {
     id: i64,
     name: String,
     url: String,
+    #[serde(rename = "iconUrl", alias = "icon_url", default)]
+    icon_url: Option<String>,
     #[serde(rename = "sortOrder", alias = "sort_order", default)]
     sort_order: i64,
 }
@@ -91,13 +97,24 @@ struct DesktopPlatformWire {
 pub struct DesktopPlatformView {
     pub id: i64,
     pub name: String,
+    pub icon_url: Option<String>,
 }
 
 /// Stable snake_case IPC result requested by the desktop frontend.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DesktopConfigSyncReport {
     pub proxy_assigned: bool,
+    /// 通过当前上游代理探测到的公网出口 IP；没有分配代理时为空。
+    pub proxy_ip: Option<String>,
     pub platforms: Vec<DesktopPlatformView>,
+    /// 归一化后的直连域名，仅用于界面提示「这些域名不走代理」。
+    pub direct_hosts: Vec<String>,
+}
+
+/// 打开浏览器后返回的令牌，仅用于把状态机里的会话和 Chromium 进程对上。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BrowserHandleView {
+    pub browser_id: u64,
 }
 
 struct ValidatedDesktopConfig {
@@ -107,7 +124,10 @@ struct ValidatedDesktopConfig {
     lease: String,
 }
 
-fn validate_desktop_config(wire: DesktopConfigWire) -> CmdResult<ValidatedDesktopConfig> {
+fn validate_desktop_config(
+    wire: DesktopConfigWire,
+    api_base: &str,
+) -> CmdResult<ValidatedDesktopConfig> {
     let profile_key = validate_label(&wire.profile_key, "浏览器环境标识", 512)?;
     let lease = wire.lease.trim().to_ascii_lowercase();
     if lease.len() != 64 || !lease.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -131,6 +151,10 @@ fn validate_desktop_config(wire: DesktopConfigWire) -> CmdResult<ValidatedDeskto
             id: platform.id,
             name,
             url,
+            icon_url: platform
+                .icon_url
+                .as_deref()
+                .and_then(|value| resolve_uploaded_asset_url(api_base, value)),
             sort_order: platform.sort_order,
         });
     }
@@ -150,6 +174,7 @@ fn validate_desktop_config(wire: DesktopConfigWire) -> CmdResult<ValidatedDeskto
                 username: proxy.username,
                 password: proxy.password,
                 probe_url: DEFAULT_PROBE_URL.to_string(),
+                bypass_hosts: proxy.bypass_hosts,
             };
             let config = config::validate(&form)
                 .map_err(|e| CommandError::new(e.to_string(), "invalid_desktop_config"))?;
@@ -172,6 +197,7 @@ fn platform_views(platforms: &[DesktopPlatform]) -> Vec<DesktopPlatformView> {
         .map(|platform| DesktopPlatformView {
             id: platform.id,
             name: platform.name.clone(),
+            icon_url: platform.icon_url.clone(),
         })
         .collect()
 }
@@ -247,7 +273,8 @@ pub async fn sync_desktop_config<R: Runtime>(
             return Err(auth_command_error(error));
         }
     };
-    let validated = match validate_desktop_config(wire) {
+    let api_base = auth.api_base_url().map_err(auth_command_error)?.to_string();
+    let validated = match validate_desktop_config(wire, &api_base) {
         Ok(config) => config,
         Err(error) => {
             emit_status(&app, &state);
@@ -285,7 +312,9 @@ pub async fn sync_desktop_config<R: Runtime>(
         emit_status(&app, &state);
         return Ok(DesktopConfigSyncReport {
             proxy_assigned: false,
+            proxy_ip: None,
             platforms: platform_views,
+            direct_hosts: Vec::new(),
         });
     };
 
@@ -294,8 +323,8 @@ pub async fn sync_desktop_config<R: Runtime>(
     }
     emit_status(&app, &state);
 
-    match probe_proxy(&proxy_config).await {
-        Ok(_) => {}
+    let proxy_ip = match probe_proxy(&proxy_config).await {
+        Ok(ip) => ip,
         Err(error) => {
             if state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
                 state.mark_error(error.message.clone(), Some(error.code.clone()));
@@ -353,7 +382,9 @@ pub async fn sync_desktop_config<R: Runtime>(
     }
 
     let upstream = proxy_config.upstream();
-    let handle = match start_adapter(upstream).await {
+    let direct_hosts = proxy_config.direct_hosts.clone();
+    let direct_host_view = direct_hosts.entries();
+    let handle = match start_adapter(upstream, direct_hosts).await {
         Ok(handle) => handle,
         Err(error) => {
             if state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
@@ -406,7 +437,9 @@ pub async fn sync_desktop_config<R: Runtime>(
     emit_status(&app, &state);
     Ok(DesktopConfigSyncReport {
         proxy_assigned: true,
+        proxy_ip: Some(proxy_ip),
         platforms: platform_views,
+        direct_hosts: direct_host_view,
     })
 }
 
@@ -491,9 +524,14 @@ async fn probe_proxy(config: &ValidatedConfig) -> CmdResult<String> {
 }
 
 /// 在应用自己的运行时里启动适配器，避免绑定到 Tauri 的事件循环线程。
-async fn start_adapter(upstream: UpstreamProxy) -> CmdResult<adapter::AdapterHandle> {
+///
+/// `direct` 是管理员下发并已校验的直连域名列表，空列表表示全部走代理。
+async fn start_adapter(
+    upstream: UpstreamProxy,
+    direct: DirectHosts,
+) -> CmdResult<adapter::AdapterHandle> {
     rt::runtime()
-        .spawn(async move { adapter::start(upstream).await })
+        .spawn(async move { adapter::start(upstream, direct).await })
         .await
         .map_err(|e| CommandError::new(format!("内部任务失败：{e}"), "internal"))?
         .map_err(|e| CommandError::new(format!("本地代理适配器启动失败：{e}"), "adapter_start"))
@@ -509,7 +547,7 @@ pub async fn open_browser<R: Runtime>(
     auth: tauri::State<'_, DesktopAuthState>,
     browsers: tauri::State<'_, BrowserSessionManager>,
     platform_id: i64,
-) -> CmdResult<()> {
+) -> CmdResult<BrowserHandleView> {
     let _lifecycle_guard = state.lock_desktop_sync().await;
     require_desktop_auth(&auth)?;
     let (user_id, profile_key, auth_generation) =
@@ -536,17 +574,19 @@ pub async fn open_browser<R: Runtime>(
         .map_err(|error| CommandError::new(format!("起始网址无法解析：{error}"), "invalid_form"))?;
     let state_for_exit = state.inner().clone();
     let app_for_exit = app.clone();
-    if let Err(error) = browsers.launch(&app, &local_proxy, target.as_str(), move || {
-        state_for_exit.mark_browser_closed_for(browser_id);
-        let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());
-    }) {
+    if let Err(error) =
+        browsers.launch(&app, browser_id, &local_proxy, target.as_str(), move || {
+            state_for_exit.mark_browser_closed_for(browser_id);
+            let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());
+        })
+    {
         state.mark_browser_closed_for(browser_id);
         emit_status(&app, &state);
         return Err(CommandError::new(error.to_string(), "browser_start"));
     }
 
     emit_status(&app, &state);
-    Ok(())
+    Ok(BrowserHandleView { browser_id })
 }
 
 fn emit_status<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
@@ -557,6 +597,8 @@ fn emit_status<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
 mod tests {
     use super::*;
 
+    const TEST_API_BASE: &str = "https://api.example.test/vestus";
+
     fn desktop_wire() -> DesktopConfigWire {
         serde_json::from_value(serde_json::json!({
             "proxy": {
@@ -565,7 +607,8 @@ mod tests {
                 "host": "203.0.113.8",
                 "port": 8080,
                 "username": "assigned-user",
-                "password": "server-only-secret"
+                "password": "server-only-secret",
+                "bypassHosts": ["LF3-AD-Platform.byteadverts.com", ".byteadverts.com"]
             },
             "platforms": [
                 {"id": 2, "name": "平台二", "url": "https://two.example.test", "sortOrder": 20},
@@ -586,25 +629,75 @@ mod tests {
 
     #[test]
     fn validates_and_sorts_server_platform_allowlist() {
-        let validated = validate_desktop_config(desktop_wire()).unwrap();
+        let validated = validate_desktop_config(desktop_wire(), TEST_API_BASE).unwrap();
         assert_eq!(validated.platforms[0].id, 1);
         assert_eq!(validated.platforms[1].id, 2);
         let config = validated.proxy.unwrap();
         assert_eq!(config.password, "server-only-secret");
+        // 直连域名同样只认服务端下发，并在这里完成归一化
+        assert_eq!(
+            config.direct_hosts.entries(),
+            vec![
+                "lf3-ad-platform.byteadverts.com".to_string(),
+                "*.byteadverts.com".to_string()
+            ]
+        );
     }
 
     #[test]
-    fn sync_report_is_snake_case_and_never_serializes_password() {
-        let validated = validate_desktop_config(desktop_wire()).unwrap();
+    fn platform_views_expose_only_api_scoped_uploaded_icons() {
+        let mut wire = desktop_wire();
+        wire.platforms[0].icon_url =
+            Some("/uploads/2026/08/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png".into());
+        wire.platforms[1].icon_url = Some("data:image/png;base64,AAAA".into());
+
+        let validated = validate_desktop_config(wire, TEST_API_BASE).unwrap();
+        let views = platform_views(&validated.platforms);
+
+        assert_eq!(views[0].id, 1);
+        assert_eq!(views[0].icon_url, None);
+        assert_eq!(views[1].id, 2);
+        assert_eq!(
+            views[1].icon_url.as_deref(),
+            Some(
+                "https://api.example.test/vestus/uploads/2026/08/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png"
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_bypass_hosts_from_server() {
+        for bad in ["127.0.0.1", "localhost", "http://a.com", "a.com:8080"] {
+            let mut wire = desktop_wire();
+            wire.proxy.as_mut().unwrap().bypass_hosts = vec![bad.into()];
+            assert_eq!(
+                validate_desktop_config(wire, TEST_API_BASE)
+                    .err()
+                    .unwrap()
+                    .code,
+                "invalid_desktop_config",
+                "应当拒绝直连域名：{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_report_exposes_egress_ip_without_proxy_credentials() {
+        let validated = validate_desktop_config(desktop_wire(), TEST_API_BASE).unwrap();
         let report = DesktopConfigSyncReport {
             proxy_assigned: validated.proxy.is_some(),
+            proxy_ip: Some("203.0.113.27".to_string()),
             platforms: platform_views(&validated.platforms),
+            direct_hosts: vec!["lf3-ad-platform.byteadverts.com".to_string()],
         };
         let value = serde_json::to_value(report).unwrap();
         let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 2);
+        assert_eq!(object.len(), 4);
         assert_eq!(value["proxy_assigned"], true);
-        assert_eq!(value["platforms"][0].as_object().unwrap().len(), 2);
+        assert_eq!(value["proxy_ip"], "203.0.113.27");
+        assert_eq!(value["platforms"][0].as_object().unwrap().len(), 3);
+        assert!(value["platforms"][0]["icon_url"].is_null());
+        assert_eq!(value["direct_hosts"][0], "lf3-ad-platform.byteadverts.com");
         let json = serde_json::to_string(&value).unwrap();
         assert!(!json.contains("server-only-secret"));
         assert!(!json.contains("password"));
@@ -616,21 +709,30 @@ mod tests {
         let mut duplicate = desktop_wire();
         duplicate.platforms[1].id = duplicate.platforms[0].id;
         assert_eq!(
-            validate_desktop_config(duplicate).err().unwrap().code,
+            validate_desktop_config(duplicate, TEST_API_BASE)
+                .err()
+                .unwrap()
+                .code,
             "invalid_desktop_config"
         );
 
         let mut unsafe_url = desktop_wire();
         unsafe_url.platforms[0].url = "file:///tmp/secret".into();
         assert_eq!(
-            validate_desktop_config(unsafe_url).err().unwrap().code,
+            validate_desktop_config(unsafe_url, TEST_API_BASE)
+                .err()
+                .unwrap()
+                .code,
             "invalid_desktop_config"
         );
 
         let mut invalid_lease = desktop_wire();
         invalid_lease.lease = "not-a-lease".into();
         assert_eq!(
-            validate_desktop_config(invalid_lease).err().unwrap().code,
+            validate_desktop_config(invalid_lease, TEST_API_BASE)
+                .err()
+                .unwrap()
+                .code,
             "invalid_desktop_config"
         );
     }

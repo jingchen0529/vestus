@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 
+use crate::bypass::DirectHosts;
 use crate::upstream::UpstreamProxy;
 
 /// 出口 IP 检测地址，返回纯文本 IP。
@@ -21,6 +22,9 @@ pub struct ProxyForm {
     pub password: String,
     #[serde(default)]
     pub probe_url: String,
+    /// 管理员下发的直连域名。缺省为空，即所有流量都走代理。
+    #[serde(default)]
+    pub bypass_hosts: Vec<String>,
 }
 
 /// 校验通过后的配置。
@@ -31,6 +35,8 @@ pub struct ValidatedConfig {
     pub username: String,
     pub password: String,
     pub probe_url: String,
+    /// 直连例外。空集合表示「全部走代理」。
+    pub direct_hosts: DirectHosts,
 }
 
 /// Validated platform shortcut retained only in Rust as the browser launch
@@ -40,6 +46,7 @@ pub struct DesktopPlatform {
     pub id: i64,
     pub name: String,
     pub url: String,
+    pub icon_url: Option<String>,
     pub sort_order: i64,
 }
 
@@ -107,12 +114,17 @@ pub fn validate(form: &ProxyForm) -> Result<ValidatedConfig, ConfigError> {
 
     let probe_url = normalize_url(&form.probe_url, DEFAULT_PROBE_URL, "出口检测地址")?;
 
+    // 直连例外必须在这里拦下：适配器只认已校验过的列表。
+    let direct_hosts = DirectHosts::parse(&form.bypass_hosts)
+        .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+
     Ok(ValidatedConfig {
         host,
         port,
         username,
         password,
         probe_url,
+        direct_hosts,
     })
 }
 
@@ -138,6 +150,7 @@ mod tests {
             username: "proxy_user".into(),
             password: "s3cret".into(),
             probe_url: String::new(),
+            bypass_hosts: Vec::new(),
         }
     }
 
@@ -146,6 +159,31 @@ mod tests {
         let cfg = validate(&form()).unwrap();
         assert_eq!(cfg.port, 8080);
         assert_eq!(cfg.probe_url, DEFAULT_PROBE_URL);
+        // 缺省没有任何直连例外
+        assert!(cfg.direct_hosts.is_empty());
+    }
+
+    #[test]
+    fn normalizes_bypass_hosts_and_rejects_bad_entries() {
+        let mut f = form();
+        f.bypass_hosts = vec![
+            "LF3-AD-Platform.byteadverts.com".into(),
+            ".byteadverts.com".into(),
+        ];
+        let cfg = validate(&f).unwrap();
+        assert_eq!(
+            cfg.direct_hosts.entries(),
+            vec![
+                "lf3-ad-platform.byteadverts.com".to_string(),
+                "*.byteadverts.com".to_string()
+            ]
+        );
+
+        for bad in ["127.0.0.1", "localhost", "http://a.com", "a.com:8080"] {
+            let mut f = form();
+            f.bypass_hosts = vec![bad.into()];
+            assert!(validate(&f).is_err(), "应当拒绝直连域名：{bad}");
+        }
     }
 
     #[test]

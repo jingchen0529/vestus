@@ -27,7 +27,8 @@ from db import Base, Database
 def main() -> None:
     database = Database()
     Base.metadata.create_all(database.engine)
-    print(f"initialized {database.url}")
+    safe_url = database.engine.url.render_as_string(hide_password=True)
+    print(f"initialized {safe_url}")
     if database.initialization_error:
         raise SystemExit(database.initialization_error)
 

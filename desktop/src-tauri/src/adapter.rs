@@ -5,8 +5,12 @@
 //!
 //! 安全不变量：
 //! 1. 只监听 127.0.0.1，不对外暴露。
-//! 2. 每条连接都必须经过 [`UpstreamProxy`]；本文件不存在直连目标站点的代码路径。
-//! 3. 上游失败一律回 502/407，绝不改为直连。
+//! 2. 默认每条连接都必须经过 [`UpstreamProxy`]。唯一例外是命中管理员下发的
+//!    直连域名列表 [`DirectHosts`]，此时由 [`DirectHosts::connect`] 直接连接
+//!    目标站点，并且该路径上不会出现任何上游凭据。
+//! 3. 路由结果固定：代理路径失败一律回 502/407，绝不改为直连；直连路径失败
+//!    一律回 502，绝不改走代理。
+//! 4. 直连域名列表由服务端下发，桌面端界面和被打开的网页都无法追加。
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -15,6 +19,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
+use crate::bypass::{DirectError, DirectHosts};
 use crate::httpio::{self, RequestHead};
 use crate::upstream::{TunnelError, UpstreamProxy};
 
@@ -45,8 +50,21 @@ impl Drop for AdapterHandle {
     }
 }
 
+/// 一条连接的两种去向：上游代理，或管理员允许的直连。
+struct Routes {
+    upstream: UpstreamProxy,
+    direct: DirectHosts,
+}
+
+impl Routes {
+    /// 只有主机名命中管理员下发的列表时才返回 true。
+    fn is_direct(&self, host: &str) -> bool {
+        self.direct.matches(host)
+    }
+}
+
 /// 在 127.0.0.1 的随机端口上启动适配器。
-pub async fn start(upstream: UpstreamProxy) -> std::io::Result<AdapterHandle> {
+pub async fn start(upstream: UpstreamProxy, direct: DirectHosts) -> std::io::Result<AdapterHandle> {
     // 端口固定为 0，由内核分配；只绑定回环地址。
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
     let port = listener.local_addr()?.port();
@@ -57,7 +75,7 @@ pub async fn start(upstream: UpstreamProxy) -> std::io::Result<AdapterHandle> {
         shutdown: shutdown_tx,
     };
 
-    let upstream = Arc::new(upstream);
+    let routes = Arc::new(Routes { upstream, direct });
     tokio::spawn(async move {
         let mut shutdown_rx = shutdown_rx;
         loop {
@@ -78,11 +96,11 @@ pub async fn start(upstream: UpstreamProxy) -> std::io::Result<AdapterHandle> {
                         continue;
                     }
 
-                    let upstream = Arc::clone(&upstream);
+                    let routes = Arc::clone(&routes);
                     let client_shutdown = shutdown_rx.clone();
 
                     tokio::spawn(async move {
-                        handle_client(stream, upstream, client_shutdown).await;
+                        handle_client(stream, routes, client_shutdown).await;
                     });
                 }
             }
@@ -94,13 +112,13 @@ pub async fn start(upstream: UpstreamProxy) -> std::io::Result<AdapterHandle> {
 
 async fn handle_client(
     client: TcpStream,
-    upstream: Arc<UpstreamProxy>,
+    routes: Arc<Routes>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     tokio::select! {
         biased;
         _ = wait_for_shutdown(&mut shutdown) => {}
-        _ = handle_client_active(client, upstream) => {}
+        _ = handle_client_active(client, routes) => {}
     }
 }
 
@@ -115,7 +133,7 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn handle_client_active(mut client: TcpStream, upstream: Arc<UpstreamProxy>) {
+async fn handle_client_active(mut client: TcpStream, routes: Arc<Routes>) {
     client.set_nodelay(true).ok();
 
     let (head_bytes, leftover) = match httpio::read_head(&mut client).await {
@@ -132,29 +150,31 @@ async fn handle_client_active(mut client: TcpStream, upstream: Arc<UpstreamProxy
     };
 
     let is_connect = req.method.eq_ignore_ascii_case("CONNECT");
-    if !is_connect {
+    let authority = if is_connect {
+        req.target.clone()
+    } else {
         match httpio::authority_from_absolute_target(&req.target) {
-            Some(_) => {}
+            Some(authority) => authority,
             None => {
                 // 非绝对形式说明客户端没把我们当代理用，直接拒绝。
                 let _ = write_simple(&mut client, 400, "Bad Request").await;
                 return;
             }
-        };
-    }
+        }
+    };
 
     let _ = if is_connect {
-        serve_connect(&mut client, &req, &upstream, leftover).await
+        serve_connect(&mut client, &req, &routes, leftover).await
     } else {
-        serve_plain(&mut client, &req, &upstream, leftover).await
+        serve_plain(&mut client, &req, &authority, &routes, leftover).await
     };
 }
 
-/// HTTPS：建立上游隧道后双向透传。
+/// HTTPS：建立隧道后双向透传。默认经上游代理，命中直连列表时直接连目标站点。
 async fn serve_connect(
     client: &mut TcpStream,
     req: &RequestHead,
-    upstream: &UpstreamProxy,
+    routes: &Routes,
     client_leftover: Vec<u8>,
 ) -> Result<(), TunnelError> {
     let (host, port) = match httpio::split_host_port(&req.target) {
@@ -166,7 +186,21 @@ async fn serve_connect(
         }
     };
 
-    match upstream.open_tunnel(&host, port).await {
+    let opened = if routes.is_direct(&host) {
+        // 直连路径：不发 CONNECT，也不携带任何代理凭据。
+        match routes.direct.connect(&host, port).await {
+            Ok(stream) => Ok((stream, Vec::new())),
+            Err(error) => {
+                // 直连失败固定回 502，绝不改走代理。
+                let _ = write_direct_error(client, &error).await;
+                return Err(TunnelError::ConnectFailed(error.to_string()));
+            }
+        }
+    } else {
+        routes.upstream.open_tunnel(&host, port).await
+    };
+
+    match opened {
         Ok((mut server, server_leftover)) => {
             // 先告知客户端隧道已就绪，之后的字节全部原样透传。
             if client
@@ -190,7 +224,7 @@ async fn serve_connect(
             Ok(())
         }
         Err(err) => {
-            // 认证失败按 407 回传，其余按 502。始终不直连。
+            // 认证失败按 407 回传，其余按 502。两条路径都不互相回退。
             let (code, reason) = match err {
                 TunnelError::AuthFailed => (407, "Proxy Authentication Required"),
                 _ => (502, "Bad Gateway"),
@@ -205,18 +239,37 @@ async fn serve_connect(
 async fn serve_plain(
     client: &mut TcpStream,
     req: &RequestHead,
-    upstream: &UpstreamProxy,
+    authority: &str,
+    routes: &Routes,
     client_leftover: Vec<u8>,
 ) -> Result<(), TunnelError> {
-    let mut server = match upstream.connect().await {
-        Ok(s) => s,
-        Err(err) => {
-            let _ = write_simple(client, 502, "Bad Gateway").await;
-            return Err(err);
+    let host = authority_host(authority);
+    let direct = routes.is_direct(&host);
+
+    let mut server = if direct {
+        let port = authority_port(authority, 80);
+        match routes.direct.connect(&host, port).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = write_direct_error(client, &error).await;
+                return Err(TunnelError::ConnectFailed(error.to_string()));
+            }
+        }
+    } else {
+        match routes.upstream.connect().await {
+            Ok(stream) => stream,
+            Err(err) => {
+                let _ = write_simple(client, 502, "Bad Gateway").await;
+                return Err(err);
+            }
         }
     };
 
-    let head = upstream.rewrite_plain_head(req);
+    let head = if direct {
+        httpio::rewrite_origin_form_head(req)
+    } else {
+        routes.upstream.rewrite_plain_head(req)
+    };
     if server.write_all(head.as_bytes()).await.is_err() {
         let _ = write_simple(client, 502, "Bad Gateway").await;
         return Err(TunnelError::Io("转发请求头失败".into()));
@@ -231,11 +284,50 @@ async fn serve_plain(
     Ok(())
 }
 
+/// 从 `host` / `host:port` / `[::1]:80` 中取出主机名。
+fn authority_host(authority: &str) -> String {
+    match httpio::split_host_port(authority) {
+        Some((host, _)) => host,
+        None => authority
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']').map(|(host, _)| host.to_string()))
+            .unwrap_or_else(|| authority.to_string()),
+    }
+}
+
+fn authority_port(authority: &str, fallback: u16) -> u16 {
+    httpio::split_host_port(authority)
+        .map(|(_, port)| port)
+        .unwrap_or(fallback)
+}
+
 async fn write_simple(client: &mut TcpStream, code: u16, reason: &str) -> std::io::Result<()> {
+    write_response(client, code, reason, None).await
+}
+
+/// 直连路径失败时的 502。
+///
+/// 额外带一个短代码，用来区分 DNS 失败、被安全策略拦下和超时——直连域名
+/// 由管理员配置，这三种情况的处理完全不同。短代码只描述直连结果，不含
+/// 代理地址、账号或任何配置信息。
+async fn write_direct_error(client: &mut TcpStream, error: &DirectError) -> std::io::Result<()> {
+    write_response(client, 502, "Bad Gateway", Some(error.code())).await
+}
+
+async fn write_response(
+    client: &mut TcpStream,
+    code: u16,
+    reason: &str,
+    direct_error: Option<&str>,
+) -> std::io::Result<()> {
     // 错误页不含代理地址、账号或任何配置信息。
     let body = format!("{code} {reason}");
+    let extra = match direct_error {
+        Some(code) => format!("X-Vestus-Direct-Error: {code}\r\n"),
+        None => String::new(),
+    };
     let response = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
         body.len()
     );
     client.write_all(response.as_bytes()).await?;
@@ -254,7 +346,7 @@ mod tests {
         rt.block_on(async {
             // 指向一个必然连不上的地址
             let upstream = UpstreamProxy::new("127.0.0.1", 1, "u", "p");
-            let handle = start(upstream).await.unwrap();
+            let handle = start(upstream, DirectHosts::empty()).await.unwrap();
 
             let mut client = TcpStream::connect(("127.0.0.1", handle.port))
                 .await
@@ -290,7 +382,7 @@ mod tests {
                 }
             });
 
-            let handle = start(UpstreamProxy::new("127.0.0.1", fake_port, "u", "bad"))
+            let handle = start(UpstreamProxy::new("127.0.0.1", fake_port, "u", "bad"), DirectHosts::empty())
                 .await
                 .unwrap();
 
@@ -339,9 +431,12 @@ mod tests {
                 }
             });
 
-            let handle = start(UpstreamProxy::new("127.0.0.1", fake_port, "u", "p"))
-                .await
-                .unwrap();
+            let handle = start(
+                UpstreamProxy::new("127.0.0.1", fake_port, "u", "p"),
+                DirectHosts::empty(),
+            )
+            .await
+            .unwrap();
 
             let mut client = TcpStream::connect(("127.0.0.1", handle.port))
                 .await
@@ -379,9 +474,12 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             });
 
-            let handle = start(UpstreamProxy::new("127.0.0.1", fake_port, "u", "p"))
-                .await
-                .unwrap();
+            let handle = start(
+                UpstreamProxy::new("127.0.0.1", fake_port, "u", "p"),
+                DirectHosts::empty(),
+            )
+            .await
+            .unwrap();
             let mut client = TcpStream::connect(("127.0.0.1", handle.port))
                 .await
                 .unwrap();
@@ -407,9 +505,12 @@ mod tests {
     fn relative_request_is_rejected() {
         let rt = crate::rt::runtime();
         rt.block_on(async {
-            let handle = start(UpstreamProxy::new("127.0.0.1", 1, "u", "p"))
-                .await
-                .unwrap();
+            let handle = start(
+                UpstreamProxy::new("127.0.0.1", 1, "u", "p"),
+                DirectHosts::empty(),
+            )
+            .await
+            .unwrap();
 
             let mut client = TcpStream::connect(("127.0.0.1", handle.port))
                 .await
@@ -429,12 +530,155 @@ mod tests {
     fn listener_binds_loopback_only() {
         let rt = crate::rt::runtime();
         rt.block_on(async {
-            let handle = start(UpstreamProxy::new("127.0.0.1", 1, "u", "p"))
-                .await
-                .unwrap();
+            let handle = start(
+                UpstreamProxy::new("127.0.0.1", 1, "u", "p"),
+                DirectHosts::empty(),
+            )
+            .await
+            .unwrap();
             assert!(handle.local_proxy_url().starts_with("http://127.0.0.1:"));
             // URL 中不得出现凭据
             assert!(!handle.local_proxy_url().contains('@'));
+        });
+    }
+
+    /// 命中直连列表的 CONNECT 必须完全绕开上游：上游此处不可达，
+    /// 一旦走错路径就会收到 502。
+    #[test]
+    fn direct_host_tunnels_without_touching_upstream() {
+        let rt = crate::rt::runtime();
+        rt.block_on(async {
+            let origin = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let origin_addr = origin.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                // 直连不会有 CONNECT 握手，收到的第一批字节就是隧道内容。
+                let mut buf = [0u8; 64];
+                if let Ok(n) = stream.read(&mut buf).await {
+                    if n > 0 {
+                        stream.write_all(&buf[..n]).await.unwrap();
+                    }
+                }
+            });
+
+            let handle = start(
+                // 上游端口 1 必然连不上：走代理就一定失败。
+                UpstreamProxy::new("127.0.0.1", 1, "u", "p"),
+                DirectHosts::for_tests(&["lf3-ad-platform.byteadverts.com"], origin_addr),
+            )
+            .await
+            .unwrap();
+
+            let mut client = TcpStream::connect(("127.0.0.1", handle.port))
+                .await
+                .unwrap();
+            client
+                .write_all(b"CONNECT lf3-ad-platform.byteadverts.com:443 HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let (head, _) = httpio::read_head(&mut client).await.unwrap();
+            assert_eq!(httpio::parse_status_code(&head).unwrap(), 200);
+
+            client.write_all(b"HELLO").await.unwrap();
+            let mut echo = [0u8; 5];
+            client.read_exact(&mut echo).await.unwrap();
+            assert_eq!(&echo, b"HELLO");
+        });
+    }
+
+    /// 直连的普通 HTTP 必须用 origin-form，并且不携带任何代理凭据。
+    #[test]
+    fn direct_plain_http_uses_origin_form_and_no_credentials() {
+        let rt = crate::rt::runtime();
+        rt.block_on(async {
+            let origin = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let origin_addr = origin.local_addr().unwrap();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                let (head, _) = httpio::read_head(&mut stream).await.unwrap();
+                let text = String::from_utf8_lossy(&head).into_owned();
+                stream
+                    .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                tx.send(text).unwrap();
+            });
+
+            let handle = start(
+                UpstreamProxy::new("127.0.0.1", 1, "u", "p"),
+                DirectHosts::for_tests(&["lf3-ad-platform.byteadverts.com"], origin_addr),
+            )
+            .await
+            .unwrap();
+
+            let mut client = TcpStream::connect(("127.0.0.1", handle.port))
+                .await
+                .unwrap();
+            client
+                .write_all(
+                    b"GET http://lf3-ad-platform.byteadverts.com/asset?v=1 HTTP/1.1\r\nHost: lf3-ad-platform.byteadverts.com\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            let (response, _) = httpio::read_head(&mut client).await.unwrap();
+            assert_eq!(httpio::parse_status_code(&response).unwrap(), 204);
+
+            let received = rx.await.unwrap();
+            assert!(
+                received.starts_with("GET /asset?v=1 HTTP/1.1\r\n"),
+                "实际请求行：{received}"
+            );
+            assert!(!received.to_ascii_lowercase().contains("proxy-authorization"));
+        });
+    }
+
+    /// 配了直连列表以后，未命中的域名仍然必须走上游并带认证头。
+    #[test]
+    fn non_matching_host_still_goes_through_upstream() {
+        let rt = crate::rt::runtime();
+        rt.block_on(async {
+            let fake = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let fake_port = fake.local_addr().unwrap().port();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let (mut stream, _) = fake.accept().await.unwrap();
+                let (head, _) = httpio::read_head(&mut stream).await.unwrap();
+                let req = httpio::parse_request_head(&head).unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await
+                    .unwrap();
+                tx.send((req.method.clone(), req.has_header("proxy-authorization")))
+                    .unwrap();
+            });
+
+            // 直连目标指向一个不会被用到的地址：命中才会连它。
+            let unused = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let handle = start(
+                UpstreamProxy::new("127.0.0.1", fake_port, "u", "p"),
+                DirectHosts::for_tests(
+                    &["lf3-ad-platform.byteadverts.com"],
+                    unused.local_addr().unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+
+            let mut client = TcpStream::connect(("127.0.0.1", handle.port))
+                .await
+                .unwrap();
+            client
+                .write_all(b"CONNECT other.example.test:443 HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let (head, _) = httpio::read_head(&mut client).await.unwrap();
+            assert_eq!(httpio::parse_status_code(&head).unwrap(), 200);
+
+            let (method, had_auth) = rx.await.unwrap();
+            assert_eq!(method, "CONNECT");
+            assert!(had_auth, "未命中直连的请求必须带上游认证头");
         });
     }
 }

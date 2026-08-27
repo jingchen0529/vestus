@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { ToastProvider, useToast } from "@/components/ui/toast";
-import { Header } from "@/components/layout/Header";
+import { ThemeProvider } from "@/hooks/useTheme";
+import { Sidebar, NavTab } from "@/components/layout/Sidebar";
 import { LoginCard } from "@/components/auth/LoginCard";
 import { ChangePasswordCard } from "@/components/auth/ChangePasswordCard";
 import { PlatformLauncher } from "@/components/browser/PlatformLauncher";
+import { SystemSettings } from "@/components/settings/SystemSettings";
 import { authService, UserAccount } from "@/services/authService";
 import {
   DesktopConfigView,
@@ -21,6 +23,8 @@ function MainLayout() {
   const [authReady, setAuthReady] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [productName, setProductName] = useState("Vestus");
+  const [logoUrl, setLogoUrl] = useState<string | undefined>(undefined);
+  const [activeTab, setActiveTab] = useState<NavTab>("platforms");
   const [desktopConfig, setDesktopConfig] = useState<DesktopConfigView | null>(null);
   const [desktopConfigLoading, setDesktopConfigLoading] = useState(false);
   const [desktopConfigError, setDesktopConfigError] = useState<string | null>(null);
@@ -54,8 +58,11 @@ function MainLayout() {
   useEffect(() => {
     if (!desktopRuntime) return;
     let mounted = true;
-    void authService.getProductName().then((name) => {
-      if (mounted) setProductName(name);
+    void authService.getProductInfo().then((info) => {
+      if (mounted) {
+        setProductName(info.productName || "Vestus");
+        setLogoUrl(info.logoUrl);
+      }
     });
     return () => {
       mounted = false;
@@ -68,7 +75,6 @@ function MainLayout() {
       !desktopRuntime ||
       !authReady ||
       !currentUser ||
-      currentUser.mustChangePassword ||
       !authService.isAuthenticated()
     ) {
       return;
@@ -124,13 +130,12 @@ function MainLayout() {
       active = false;
       if (unlistenFn) unlistenFn();
     };
-  }, [desktopRuntime, authReady, currentUser?.id, currentUser?.mustChangePassword]);
+  }, [desktopRuntime, authReady, currentUser?.id]);
 
   const syncDesktopConfig = async (announce = false) => {
     if (
       !desktopRuntime ||
       !currentUser ||
-      currentUser.mustChangePassword ||
       !authService.isAuthenticated()
     )
       return;
@@ -184,13 +189,12 @@ function MainLayout() {
       !desktopRuntime ||
       !authReady ||
       !currentUser ||
-      currentUser.mustChangePassword ||
       !authService.isAuthenticated()
     ) {
       return;
     }
     void syncDesktopConfig(false);
-  }, [desktopRuntime, authReady, currentUser?.id, currentUser?.mustChangePassword]);
+  }, [desktopRuntime, authReady, currentUser?.id]);
 
   const handleLoginSuccess = (user: UserAccount) => {
     setAuthNotice(null);
@@ -223,13 +227,13 @@ function MainLayout() {
 
   if (!desktopRuntime) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-slate-950 p-6 text-slate-200">
-        <div className="max-w-md rounded-2xl border border-slate-800 bg-slate-900/80 p-6 text-center shadow-2xl">
-          <h1 className="text-lg font-semibold text-white">Vestus 桌面客户端</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-400">
+      <div className="min-h-screen w-full flex items-center justify-center bg-background p-6 text-foreground">
+        <div className="max-w-md rounded-2xl border border-border bg-card/90 p-6 text-center shadow-2xl backdrop-blur-xl">
+          <h1 className="text-lg font-semibold text-foreground">Vestus 桌面客户端</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
             桌面端用户登录只能在 Tauri 客户端中使用。浏览器端仅提供管理员后台。
           </p>
-          <p className="mt-4 text-xs text-slate-500">请访问管理员提供的 Web 后台地址。</p>
+          <p className="mt-4 text-xs text-muted-foreground/80">请访问管理员提供的 Web 后台地址。</p>
         </div>
       </div>
     );
@@ -237,7 +241,7 @@ function MainLayout() {
 
   if (!authReady) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-slate-950 text-slate-300">
+      <div className="min-h-screen w-full flex items-center justify-center bg-background text-muted-foreground">
         <div className="text-sm">正在验证登录状态…</div>
       </div>
     );
@@ -248,43 +252,48 @@ function MainLayout() {
     return (
       <LoginCard
         productName={productName}
+        logoUrl={logoUrl}
         notice={authNotice}
         onLoginSuccess={handleLoginSuccess}
       />
     );
   }
 
-  if (currentUser.mustChangePassword) {
-    return (
-      <ChangePasswordCard
-        username={currentUser.username}
-        onLogout={handleLogout}
-        onPasswordChanged={() => {
-          setAuthNotice(null);
-          setCurrentUser(null);
-          setDesktopConfig(null);
-        }}
-      />
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
-      <Header
+    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground font-sans selection:bg-primary selection:text-primary-foreground transition-colors relative">
+      {/* Draggable header region across main window */}
+      <div data-tauri-drag-region className="absolute top-0 left-56 right-0 h-8 z-30 select-none cursor-default" />
+
+      <Sidebar
         productName={productName}
+        logoUrl={logoUrl}
         user={currentUser}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
         onLogout={handleLogout}
       />
 
-      <main className="flex-1 overflow-y-auto px-5 py-8 sm:px-8 sm:py-10">
-        <PlatformLauncher
-          status={status}
-          desktopConfig={desktopConfig}
-          configLoading={desktopConfigLoading}
-          configError={desktopConfigError}
-          onRetryConfig={() => syncDesktopConfig(true)}
-          onOpenBrowser={handleOpenBrowser}
-        />
+      <main className="flex-1 h-screen overflow-y-auto px-5 py-6 pt-8 sm:px-8 sm:py-7 sm:pt-8">
+        {activeTab === "platforms" ? (
+          <PlatformLauncher
+            status={status}
+            desktopConfig={desktopConfig}
+            configLoading={desktopConfigLoading}
+            configError={desktopConfigError}
+            onRetryConfig={() => syncDesktopConfig(true)}
+            onOpenBrowser={handleOpenBrowser}
+          />
+        ) : (
+          <SystemSettings
+            productName={productName}
+            logoUrl={logoUrl}
+            user={currentUser}
+            status={status}
+            desktopConfig={desktopConfig}
+            configLoading={desktopConfigLoading}
+            onSyncConfig={() => syncDesktopConfig(true)}
+          />
+        )}
       </main>
     </div>
   );
@@ -292,9 +301,11 @@ function MainLayout() {
 
 export function App() {
   return (
-    <ToastProvider>
-      <MainLayout />
-    </ToastProvider>
+    <ThemeProvider defaultTheme="light" storageKey="vestus-desktop-theme">
+      <ToastProvider>
+        <MainLayout />
+      </ToastProvider>
+    </ThemeProvider>
   );
 }
 

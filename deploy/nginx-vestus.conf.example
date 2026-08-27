@@ -1,0 +1,50 @@
+# Replace every admin.example.com and certificate path before enabling this file.
+# The 11 MiB proxy limit covers the application's default 10 MiB file limit
+# plus multipart framing overhead. Keep both limits in sync when changing them.
+
+server {
+    # Deliberately omit default_server so this template can coexist with the
+    # stock Ubuntu site. If no other default exists, this first server becomes
+    # the default automatically.
+    listen 80;
+    listen [::]:80;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name admin.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name admin.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/admin.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/admin.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Reject an unexpected Host even when this is the only TLS virtual host.
+    # Upload response URLs are assembled from the forwarded public host.
+    if ($host != admin.example.com) {
+        return 444;
+    }
+
+    client_max_body_size 11m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+}

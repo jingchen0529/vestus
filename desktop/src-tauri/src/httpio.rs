@@ -148,6 +148,53 @@ pub fn split_host_port(authority: &str) -> Option<(String, u16)> {
     Some((host.to_string(), port.parse().ok()?))
 }
 
+/// 从 `http://host/path?query` 中取出 `/path?query`。
+///
+/// 目标站点直连时需要 origin-form 请求行；缺少路径时按 `/` 处理。
+pub fn path_from_absolute_target(target: &str) -> Option<String> {
+    let rest = target
+        .strip_prefix("http://")
+        .or_else(|| target.strip_prefix("https://"))?;
+    match rest.find(['/', '?', '#']) {
+        Some(index) => {
+            let path = &rest[index..];
+            if path.starts_with('/') {
+                Some(path.to_string())
+            } else {
+                // `http://host?query` 这种写法补上根路径
+                Some(format!("/{path}"))
+            }
+        }
+        None => Some("/".to_string()),
+    }
+}
+
+/// 直连目标站点时改写请求头。
+///
+/// 与 [`crate::upstream::UpstreamProxy::rewrite_plain_head`] 的区别是：请求行
+/// 改成 origin-form，并且不注入任何代理认证——直连路径上绝不出现上游凭据。
+pub fn rewrite_origin_form_head(req: &RequestHead) -> String {
+    let path = path_from_absolute_target(&req.target).unwrap_or_else(|| "/".to_string());
+    let mut out = format!("{} {} {}\r\n", req.method, path, req.version);
+
+    for line in &req.header_lines {
+        let name = line.split_once(':').map(|(k, _)| k.trim()).unwrap_or("");
+        let drop = matches!(
+            name.to_ascii_lowercase().as_str(),
+            "proxy-authorization" | "proxy-connection" | "connection" | "keep-alive"
+        );
+        if !drop {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+
+    // 与代理路径一致：一请求一连接，响应边界最清晰。
+    out.push_str("Connection: close\r\n");
+    out.push_str("\r\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +221,37 @@ mod tests {
         let (host, port) = split_host_port("[::1]:443").unwrap();
         assert_eq!(host, "::1");
         assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn extracts_origin_form_path() {
+        assert_eq!(
+            path_from_absolute_target("http://example.com/a/b?x=1").unwrap(),
+            "/a/b?x=1"
+        );
+        assert_eq!(
+            path_from_absolute_target("http://example.com").unwrap(),
+            "/"
+        );
+        assert_eq!(
+            path_from_absolute_target("http://example.com?x=1").unwrap(),
+            "/?x=1"
+        );
+        assert!(path_from_absolute_target("example.com/a").is_none());
+    }
+
+    #[test]
+    fn direct_rewrite_uses_origin_form_and_injects_no_credentials() {
+        let head = b"GET http://direct.example.com/a?x=1 HTTP/1.1\r\nHost: direct.example.com\r\nProxy-Authorization: Basic spoofed\r\nAccept: */*\r\n\r\n";
+        let req = parse_request_head(head).unwrap();
+        let out = rewrite_origin_form_head(&req);
+
+        assert!(out.starts_with("GET /a?x=1 HTTP/1.1\r\n"));
+        assert!(out.contains("Host: direct.example.com"));
+        assert!(out.contains("Accept: */*"));
+        assert!(!out.to_ascii_lowercase().contains("proxy-authorization"));
+        assert!(!out.contains("Basic"));
+        assert!(out.ends_with("\r\n\r\n"));
     }
 
     #[test]

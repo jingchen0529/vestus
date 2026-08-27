@@ -42,6 +42,28 @@ const rustCommands = read("src-tauri/src/lib.rs");
 assert(!rustCommands.includes("commands::close_browser"), "Rust 仍注册多余的关闭浏览器 IPC");
 assert(!rustCommands.includes("commands::stop_proxy"), "Rust 仍注册多余的停止代理 IPC");
 
+// 页面自动化已移除：不得再参与编译，也不得再开调试端点。
+for (const removed of ["mod page;", "mod cdp;"]) {
+  assert(!rustCommands.includes(removed), `页面自动化模块又参与编译了：${removed}`);
+}
+assert(
+  !rustCommands.includes("commands::run_page_script"),
+  "Rust 仍注册页面自动化 IPC：run_page_script"
+);
+const rustBrowser = read("src-tauri/src/browser.rs");
+assert(
+  !rustBrowser.includes('OsString::from("--remote-debugging-port'),
+  "浏览器又开了 DevTools 调试端点，页面自动化已移除，不需要本地控制通道"
+);
+
+// 直连只有适配器一个执行点，其余模块不得绕开路由决策自行出站。
+const rustSrcDir = new URL("src-tauri/src/", root);
+for (const name of readdirSync(rustSrcDir).filter((file) => file.endsWith(".rs"))) {
+  if (name === "adapter.rs" || name === "bypass.rs") continue;
+  const source = readFileSync(join(rustSrcDir.pathname, name), "utf8");
+  assert(!source.includes("direct.connect("), `${name} 绕开适配器直接发起直连`);
+}
+
 const desktopSource = [
   "src/App.tsx",
   "src/components/auth/LoginCard.tsx",
@@ -72,6 +94,7 @@ for (const command of [
   "desktop_restore_session",
   "desktop_logout",
   "desktop_product_name",
+  "desktop_product_info",
   "desktop_change_password",
   "sync_desktop_config",
   "open_browser",
@@ -88,6 +111,7 @@ for (const forbidden of [
   "批量改价",
   "close_browser",
   "stop_proxy",
+  "run_page_script",
   "browser_navigate",
   "browser_back",
   "browser_forward",

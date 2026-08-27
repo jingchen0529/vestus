@@ -1,0 +1,32 @@
+[Unit]
+Description=Vestus API and Web Admin
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=vestus
+Group=vestus
+WorkingDirectory=/opt/vestus/current
+EnvironmentFile=/etc/vestus/vestus.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/opt/vestus/current/.venv/bin/python /opt/vestus/current/init_db.py
+ExecStart=/opt/vestus/current/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/vestus/uploads
+
+[Install]
+WantedBy=multi-user.target

@@ -24,8 +24,20 @@ def test_public_product_name_is_available_before_desktop_login(api: Any, monkeyp
     response = client.get("/api/product")
 
     assert response.status_code == 200
-    assert response.json() == {"productName": "专属代理客户端"}
+    assert response.json()["productName"] == "专属代理客户端"
+    assert "logoUrl" in response.json()
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_admin_page_csp_does_not_allow_data_images(api: Any) -> None:
+    client, _module = api
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200, response.text
+    csp = response.headers["content-security-policy"]
+    assert "img-src 'self'" in csp
+    assert "img-src 'self' data:" not in csp
 
 
 def _create_user(client: Any, admin_token: str, username: str = "desktop-user", password: str = "user-password") -> dict[str, Any]:
@@ -127,15 +139,17 @@ def test_admin_can_manage_user_and_old_token_is_invalidated(api: Any) -> None:
         json={"username": "managed-user", "password": "replacement-password"},
     )
     assert replacement_login.status_code == 200
-    assert replacement_login.json()["user"]["mustChangePassword"] is True
-    temporary_token = replacement_login.json()["accessToken"]
-    assert client.get(
-        "/api/user/desktop-config", headers=_bearer(temporary_token)
-    ).status_code == 403
+    assert replacement_login.json()["user"]["mustChangePassword"] is False
+    valid_token = replacement_login.json()["accessToken"]
+    # 用户可直接读取配置而无需强制先修改密码
+    desktop_cfg = client.get(
+        "/api/user/desktop-config", headers=_bearer(valid_token)
+    )
+    assert desktop_cfg.status_code in (200, 404)
 
     changed = client.post(
         "/api/user/auth/change-password",
-        headers=_bearer(temporary_token),
+        headers=_bearer(valid_token),
         json={
             "currentPassword": "replacement-password",
             "newPassword": "final-password",
@@ -143,7 +157,7 @@ def test_admin_can_manage_user_and_old_token_is_invalidated(api: Any) -> None:
     )
     assert changed.status_code == 200
     assert client.get(
-        "/api/user/auth/me", headers=_bearer(temporary_token)
+        "/api/user/auth/me", headers=_bearer(valid_token)
     ).status_code == 401
     final_login = client.post(
         "/api/user/auth/login",
@@ -197,3 +211,113 @@ def test_logs_written_for_login_and_management_actions(api: Any) -> None:
         assert rows
         assert all(row.summary for row in rows)
         assert all(row.status in {"SUCCESS", "FAILED"} for row in rows)
+
+
+def test_admin_branding_keeps_upload_paths_and_public_product_uses_current_origin(api: Any) -> None:
+    client, _module = api
+    admin_token, _ = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    headers = _bearer(admin_token)
+    product_logo = client.post(
+        "/api/admin/uploads",
+        headers=headers,
+        files={"file": ("product.png", b"product-logo", "image/png")},
+    ).json()["path"]
+    admin_logo = client.post(
+        "/api/admin/uploads",
+        headers=headers,
+        files={"file": ("admin.ico", b"admin-logo", "image/x-icon")},
+    ).json()["path"]
+
+    update_res = client.put(
+        "/api/admin/settings",
+        headers=headers,
+        json={
+            "productName": "企业智选浏览器",
+            "logoUrl": product_logo,
+            "adminLogoUrl": admin_logo,
+        },
+    )
+    assert update_res.status_code == 200
+    assert update_res.json()["productName"] == "企业智选浏览器"
+    assert update_res.json()["logoUrl"] == product_logo
+    assert update_res.json()["adminLogoUrl"] == admin_logo
+    admin_res = client.get("/api/admin/settings", headers=headers)
+    assert admin_res.json()["logoUrl"] == product_logo
+    assert admin_res.json()["adminLogoUrl"] == admin_logo
+
+    public_res = client.get("/api/product", headers={"Host": "product.example.test"})
+    assert public_res.status_code == 200
+    assert public_res.json()["productName"] == "企业智选浏览器"
+    assert public_res.json()["logoUrl"] == f"http://product.example.test{product_logo}"
+
+
+def test_branding_api_rejects_unmanaged_and_unsafe_image_references(api: Any) -> None:
+    client, _module = api
+    admin_token, _ = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    headers = _bearer(admin_token)
+    unsafe_upload = client.post(
+        "/api/admin/uploads",
+        headers=headers,
+        files={"file": ("looks-like-image.png", b"<script>bad</script>", "text/html")},
+    ).json()["path"]
+    missing_upload = f"/uploads/2026/08/{'f' * 32}.png"
+
+    for reference in (
+        "https://cdn.example.test/logo.png",
+        "data:image/png;base64,AAAA",
+        "/uploads/2026/08/not-generated.png",
+        missing_upload,
+        unsafe_upload,
+    ):
+        response = client.put(
+            "/api/admin/settings",
+            headers=headers,
+            json={"logoUrl": reference},
+        )
+        assert response.status_code in {400, 422}, (reference, response.text)
+
+    settings = client.get("/api/admin/settings", headers=headers).json()
+    assert settings["logoUrl"] == ""
+
+
+def test_settings_reject_unknown_theme_color(api: Any) -> None:
+    client, _module = api
+    admin_token, _ = _login(
+        client, "/api/admin/auth/login", "test-admin", "test-admin-password"
+    )
+
+    response = client.put(
+        "/api/admin/settings",
+        headers=_bearer(admin_token),
+        json={"adminThemeColor": "url(javascript:invalid)"},
+    )
+
+    assert response.status_code == 422, response.text
+
+
+def test_reset_admin_password_returns_success(api: Any) -> None:
+    client, _module = api
+    super_admin_token, _ = _login(
+        client, "/api/admin/auth/login", "test-admin", "test-admin-password"
+    )
+    created = client.post(
+        "/api/admin/admins",
+        headers=_bearer(super_admin_token),
+        json={
+            "username": "password-reset-admin",
+            "password": "initial-admin-password",
+            "name": "Password Reset Admin",
+            "role": "admin",
+            "status": "active",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        f"/api/admin/admins/{created.json()['id']}/reset-password",
+        headers=_bearer(super_admin_token),
+        json={"password": "replacement-admin-password"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"success": True}

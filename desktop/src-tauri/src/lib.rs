@@ -2,8 +2,9 @@
 //!
 //! 模块划分：
 //! - [`httpio`]   最小 HTTP 报文头解析
-//! - [`upstream`] 上游代理连接，全应用唯一出站点
-//! - [`adapter`]  本地 HTTP 代理适配器，为 Chromium 补上游认证
+//! - [`upstream`] 上游代理连接，默认路径唯一出站点
+//! - [`bypass`]   管理员下发的直连域名列表，第二个也是最后一个出站点
+//! - [`adapter`]  本地 HTTP 代理适配器，为 Chromium 补上游认证并做代理/直连路由
 //! - [`probe`]    出口 IP 探测
 //! - [`config`]   管理员下发代理配置的内存校验
 //! - [`auth`]     桌面用户认证（令牌仅存 Rust 与系统钥匙串）
@@ -14,6 +15,7 @@
 mod adapter;
 mod auth;
 mod browser;
+mod bypass;
 mod commands;
 mod config;
 mod httpio;
@@ -38,6 +40,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             auth::desktop_login,
             auth::desktop_product_name,
+            auth::desktop_product_info,
             auth::desktop_restore_session,
             auth::desktop_logout,
             auth::desktop_change_password,

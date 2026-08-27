@@ -2,12 +2,15 @@
 //!
 //! OA 的浏览器语义是「每次点击都创建一个新的、临时的 Chromium 环境」。
 //! 这里保留 Tauri 作为登录壳，只把业务网站交给随应用发布的 Chromium。
+//!
+//! 起始网址作为命令行最后一个参数交给 Chromium，配合 `--new-window` 直接
+//! 打开；本模块不与浏览器建立任何控制通道，也不开调试端点。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -43,7 +46,6 @@ pub struct BrowserSessionManager {
 }
 
 struct BrowserSessionInner {
-    next_id: AtomicU64,
     accepting_launches: AtomicBool,
     sessions: Mutex<HashMap<u64, ManagedBrowser>>,
 }
@@ -65,7 +67,6 @@ impl Default for BrowserSessionManager {
     fn default() -> Self {
         Self {
             inner: Arc::new(BrowserSessionInner {
-                next_id: AtomicU64::new(0),
                 accepting_launches: AtomicBool::new(true),
                 sessions: Mutex::new(HashMap::new()),
             }),
@@ -78,9 +79,13 @@ impl BrowserSessionManager {
     ///
     /// `local_proxy` must already be the validated loopback adapter URL. The
     /// upstream credential never becomes a process argument.
+    ///
+    /// `session_id` 由状态机分配（[`crate::state::AppState::mark_browser_opened`]），
+    /// 这样「状态里的浏览器令牌」和「这里管理的进程」永远是同一个编号。
     pub fn launch<R, F>(
         &self,
         app: &AppHandle<R>,
+        session_id: u64,
         local_proxy: &str,
         target_url: &str,
         on_exit: F,
@@ -93,7 +98,6 @@ impl BrowserSessionManager {
             return Err(BrowserError::ShuttingDown);
         }
         let executable = resolve_chromium_executable(app)?;
-        let session_id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let profile_dir = create_profile_dir(app, session_id)?;
         self.launch_process(
             session_id,
@@ -395,16 +399,14 @@ fn resolve_chromium_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf
         candidates.push(resources.join("chromium").join("chrome.exe"));
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        candidates.push(resources.join("chromium").join("chrome"));
+    }
+
     #[cfg(target_os = "macos")]
     {
-        candidates.push(
-            resources
-                .join("chromium")
-                .join("Chromium.app")
-                .join("Contents")
-                .join("MacOS")
-                .join("Chromium"),
-        );
+        candidates.extend(bundled_macos_executables(&resources.join("chromium")));
         #[cfg(any(debug_assertions, test))]
         {
             candidates.push(PathBuf::from(
@@ -422,11 +424,42 @@ fn resolve_chromium_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf
         .ok_or(BrowserError::ChromiumMissing)
 }
 
+/// 随包 macOS 浏览器的候选可执行文件。
+///
+/// Playwright 会随版本改这个 bundle 的名字（`Chromium.app` →
+/// `Google Chrome for Testing.app`），所以扫描资源目录里的 `.app` 而不是把名字
+/// 写死；`desktop/scripts/prepare-chromium.mjs` 保证目录里只放一个 `.app`。
+#[cfg(target_os = "macos")]
+fn bundled_macos_executables(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut executables = Vec::new();
+    for entry in entries.flatten() {
+        let bundle = entry.path();
+        if bundle.extension().and_then(|extension| extension.to_str()) != Some("app") {
+            continue;
+        }
+        if let Ok(files) = std::fs::read_dir(bundle.join("Contents").join("MacOS")) {
+            executables.extend(
+                files
+                    .flatten()
+                    .map(|file| file.path())
+                    .filter(|path| path.is_file()),
+            );
+        }
+    }
+    // 目录遍历顺序由文件系统决定；排序保证同一份资源每次都启动同一个进程。
+    executables.sort();
+    executables
+}
+
 fn chromium_arguments(profile_dir: &Path, local_proxy: &str, target_url: &str) -> Vec<OsString> {
     vec![
         OsString::from(format!("--user-data-dir={}", profile_dir.display())),
         OsString::from(format!("--proxy-server={local_proxy}")),
         // Chromium 默认绕过 loopback；去掉隐式例外，避免目标 URL 直连。
+        // 直连例外统一由 [`crate::bypass`] 在适配器里判断，不交给 Chromium。
         OsString::from("--proxy-bypass-list=<-loopback>"),
         OsString::from("--disable-quic"),
         OsString::from("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
@@ -465,6 +498,10 @@ mod tests {
                 && argument.contains("vestus-profile-test")));
         assert!(rendered.contains(&"--proxy-server=http://127.0.0.1:51234".into()));
         assert!(rendered.contains(&"--proxy-bypass-list=<-loopback>".into()));
+        // 不再开调试端点：没有页面自动化，也就没有本地控制通道
+        assert!(!rendered
+            .iter()
+            .any(|argument| argument.starts_with("--remote-debugging-port")));
         assert!(rendered.contains(&"--disable-quic".into()));
         assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
         assert!(!rendered.join(" ").contains("proxy-password"));
@@ -611,6 +648,35 @@ mod tests {
             Err(BrowserError::ShuttingDown)
         ));
         assert!(!rejected_profile.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // 随包浏览器的 bundle 名字由 Playwright 决定，会随版本变；解析必须靠扫描，
+    // 否则升级 Playwright 就会变成「安装包里有浏览器却报找不到」。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundled_macos_executables_accept_any_app_bundle_name() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "vestus-chromium-scan-test-{}-{unique}",
+            std::process::id()
+        ));
+        let macos_dir = root
+            .join("Google Chrome for Testing.app")
+            .join("Contents")
+            .join("MacOS");
+        std::fs::create_dir_all(&macos_dir).unwrap();
+        let executable = macos_dir.join("Google Chrome for Testing");
+        std::fs::write(&executable, b"").unwrap();
+        // 同级的附属目录不是 .app，不能被当成浏览器。
+        std::fs::create_dir_all(root.join("resources")).unwrap();
+
+        assert_eq!(bundled_macos_executables(&root), vec![executable]);
+        assert!(bundled_macos_executables(&root.join("missing")).is_empty());
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

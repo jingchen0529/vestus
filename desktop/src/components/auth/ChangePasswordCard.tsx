@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
+import { ThemeToggle } from "@/components/layout/ThemeToggle";
 
 interface ChangePasswordCardProps {
   username: string;
@@ -54,21 +55,27 @@ export const ChangePasswordCard: React.FC<ChangePasswordCardProps> = ({
   };
 
   return (
-    <div className="min-h-screen w-full bg-slate-950 p-4 flex items-center justify-center">
-      <Card className="w-full max-w-md border-slate-800 bg-slate-900/90 shadow-2xl">
+    <div className="min-h-screen w-full bg-background text-foreground p-4 flex items-center justify-center relative transition-colors">
+      {/* Draggable window header region */}
+      <div data-tauri-drag-region className="absolute top-0 left-0 right-0 h-10 z-10 select-none cursor-default" />
+      <div className="absolute top-4 right-4 z-20">
+        <ThemeToggle variant="compact" />
+      </div>
+
+      <Card className="w-full max-w-md border-border bg-card/90 shadow-xl backdrop-blur-xl">
         <CardHeader>
-          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300">
+          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300">
             <ShieldCheck className="h-5 w-5" />
           </div>
-          <CardTitle className="text-base text-slate-100">请修改临时密码</CardTitle>
-          <CardDescription className="text-xs text-slate-400">
+          <CardTitle className="text-base text-foreground">请修改临时密码</CardTitle>
+          <CardDescription className="text-xs text-muted-foreground">
             账号 {username} 的临时密码由管理员重置。修改后需要使用新密码重新登录。
           </CardDescription>
         </CardHeader>
         <form onSubmit={submit}>
           <CardContent className="space-y-4">
             {message && (
-              <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+              <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-600 dark:text-rose-300">
                 {message}
               </div>
             )}

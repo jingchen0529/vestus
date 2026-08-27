@@ -3,6 +3,11 @@
 
 export type UserRole = "client";
 
+export interface ProductBranding {
+  productName: string;
+  logoUrl?: string;
+}
+
 export interface UserAccount {
   id: string;
   username: string;
@@ -105,6 +110,24 @@ class AuthService {
       return value || "Vestus";
     } catch {
       return "Vestus";
+    }
+  }
+
+  public async getProductInfo(): Promise<ProductBranding> {
+    if (!isTauriRuntime()) return { productName: "Vestus" };
+    try {
+      const info = await invokeDesktop<ProductBranding>("desktop_product_info");
+      if (info && info.productName) {
+        return {
+          productName: info.productName.trim() || "Vestus",
+          logoUrl: info.logoUrl?.trim() || undefined,
+        };
+      }
+      const name = await this.getProductName();
+      return { productName: name };
+    } catch {
+      const name = await this.getProductName();
+      return { productName: name };
     }
   }
 

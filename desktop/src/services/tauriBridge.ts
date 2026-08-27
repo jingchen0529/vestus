@@ -4,11 +4,16 @@
 export interface DesktopPlatform {
   id: number;
   name: string;
+  icon_url?: string | null;
 }
 
 export interface DesktopConfigView {
   proxy_assigned: boolean;
+  /** 通过已分配代理探测到的真实公网出口 IP。 */
+  proxy_ip?: string | null;
   platforms: DesktopPlatform[];
+  /** 管理员下发的直连域名（已归一化）。这些域名不走代理，用真实出口 IP 访问。 */
+  direct_hosts: string[];
 }
 
 export type Phase =
@@ -23,6 +28,11 @@ export interface StatusView {
   message: string;
   browser_open: boolean;
   error_code?: string;
+}
+
+export interface BrowserHandleView {
+  /** 仅用于把状态机里的会话和 Chromium 进程对上，前端不需要它做别的事。 */
+  browser_id: number;
 }
 
 // 检查是否运行在桌面原生 Tauri 环境
@@ -43,8 +53,8 @@ export const tauriBridge = {
     return await invokeDesktop<DesktopConfigView>("sync_desktop_config");
   },
 
-  async openBrowser(platformId: number): Promise<void> {
-    await invokeDesktop<void>("open_browser", {
+  async openBrowser(platformId: number): Promise<BrowserHandleView> {
+    return await invokeDesktop<BrowserHandleView>("open_browser", {
       platformId,
     });
   },
