@@ -13,6 +13,9 @@ EnvironmentFile=/etc/vestus/vestus.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStartPre=/opt/vestus/current/.venv/bin/python /opt/vestus/current/init_db.py
+# --port 必须和 Nginx 里反代的端口一致，改一处就要改两处。
+# 单 worker 是故意的：多进程会并发建表并重复引导第一个管理员。
+# --forwarded-allow-ips 只信任本机 Nginx，否则 X-Forwarded-* 可被任意来源伪造。
 ExecStart=/opt/vestus/current/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=5

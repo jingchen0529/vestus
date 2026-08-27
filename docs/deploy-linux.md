@@ -166,6 +166,36 @@ sudo systemctl reload nginx
 默认应用文件上限为 10 MiB，Nginx 模板使用 `client_max_body_size 11m` 预留 multipart
 开销。修改 `VESTUS_UPLOAD_MAX_BYTES` 时必须同步调整 Nginx 限制。
 
+### 变体：Nginx 直接提供静态文件
+
+上面的模板把 `/` 全量反代给后端，管理端走后端的 `/admin` 路由。如果域名的根目录
+已经用来提供前端静态文件，或者后端不监听 8000，改用
+`deploy/nginx-vestus-split.conf.example`：`/` 是 `web/dist` 静态根，后端只接收
+`/api/`、`/uploads/` 和 `/healthz`。
+
+```bash
+sudo cp /opt/vestus/current/deploy/nginx-vestus-proxy-headers.conf.example \
+  /etc/nginx/vestus-proxy-headers.conf
+sudo cp /opt/vestus/current/deploy/nginx-vestus-split.conf.example \
+  /etc/nginx/sites-available/vestus
+sudoedit /etc/nginx/sites-available/vestus   # 替换域名、证书路径、upstream 端口
+sudo ln -sf /etc/nginx/sites-available/vestus /etc/nginx/sites-enabled/vestus
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+这种布局下管理端地址是域名根目录而不是 `/admin`，后端的 `/admin` 路由和
+`/assets` 挂载都不再被使用。三处必须同时对齐：`upstream` 里的端口、systemd 中
+`uvicorn --port` 的值、以及 `client_max_body_size` 与 `VESTUS_UPLOAD_MAX_BYTES`。
+
+Nginx 以 `www-data` 读取静态根，确认它能穿透到目录：
+
+```bash
+sudo -u www-data test -r /opt/vestus/current/web/dist/index.html && echo readable
+```
+
+`/healthz` 经反向代理后是公开且无鉴权的，因此它只返回 `status` 和 `database`
+两个字段，不包含数据库地址；排查连接问题请看 `journalctl -u vestus`。
+
 ## 7. 更新、备份与恢复
 
 更新前同时备份数据库、上传目录和受保护的环境文件，保证三者属于同一恢复点。

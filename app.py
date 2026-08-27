@@ -686,8 +686,10 @@ async def root() -> Dict[str, str]:
 
 @app.get("/healthz", tags=["system"])
 async def healthz() -> Dict[str, Any]:
+    # 反向代理会把这个端点暴露在公网且不带鉴权，所以只回存活状态。
+    # 数据库地址、库名一律不外泄；本机排障请看 journalctl。
     ok = db.ping()
-    return {"status": "ok" if ok else "degraded", "database": "ok" if ok else "unavailable", "databaseUrl": db.url.split("@")[-1]}
+    return {"status": "ok" if ok else "degraded", "database": "ok" if ok else "unavailable"}
 
 
 def _absolute_upload_reference(request: Request, relative_path: str) -> str:
