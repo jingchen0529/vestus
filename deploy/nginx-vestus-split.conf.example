@@ -27,9 +27,11 @@ server {
 }
 
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
+    # http2 写在 listen 上是为了兼容 Ubuntu 22.04(1.18) 和 24.04(1.24)。
+    # 独立的 `http2 on;` 指令要到 nginx 1.25.1 才有，在这两个版本上会让
+    # nginx -t 直接失败。
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name admin.example.com;
 
     ssl_certificate /etc/letsencrypt/live/admin.example.com/fullchain.pem;
