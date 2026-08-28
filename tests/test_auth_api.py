@@ -17,6 +17,23 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_public_network_ip_reports_the_request_egress_without_caching(
+    api: Any,
+    monkeypatch: Any,
+) -> None:
+    client, _module = api
+    monkeypatch.setenv("VESTUS_TRUST_PROXY", "1")
+
+    response = client.get(
+        "/api/network/ip",
+        headers={"X-Forwarded-For": "198.51.100.27, 10.0.0.8"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ip": "198.51.100.27"}
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_public_product_name_is_available_before_desktop_login(api: Any, monkeypatch: Any) -> None:
     client, _module = api
     monkeypatch.setenv("VESTUS_PRODUCT_NAME", "专属代理客户端")

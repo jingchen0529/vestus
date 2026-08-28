@@ -6,7 +6,7 @@
     "resources": {
       "resources/chromium/": "chromium/"
     },
-    "macos": {
+    "macOS": {
       "dmg": {
         "background": "icons/dmg-background.png",
         "windowSize": {

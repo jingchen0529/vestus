@@ -416,7 +416,7 @@ mod tests {
             port: "9".into(),
             username: "proxy-user".into(),
             password: "proxy-password".into(),
-            probe_url: crate::config::DEFAULT_PROBE_URL.into(),
+            probe_url: "https://api.example.test/api/network/ip".into(),
             bypass_hosts: Vec::new(),
         })
         .unwrap();

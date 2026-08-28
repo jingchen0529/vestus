@@ -17,13 +17,14 @@ use url::Url;
 use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
 use crate::browser::BrowserSessionManager;
 use crate::bypass::DirectHosts;
-use crate::config::{self, DesktopPlatform, ProxyForm, ValidatedConfig, DEFAULT_PROBE_URL};
+use crate::config::{self, DesktopPlatform, ProxyForm, ValidatedConfig};
 use crate::probe;
 use crate::rt;
 use crate::state::{AppState, Session, StatusView};
 use crate::{adapter, upstream::UpstreamProxy};
 
 const SESSION_WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
+const NETWORK_IP_PATH: &str = "/api/network/ip";
 
 /// 前端能看到的错误形态。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -124,6 +125,10 @@ struct ValidatedDesktopConfig {
     lease: String,
 }
 
+fn network_probe_url(api_base: &str) -> String {
+    format!("{}{NETWORK_IP_PATH}", api_base.trim_end_matches('/'))
+}
+
 fn should_spawn_session_watchdog(config: &ValidatedDesktopConfig) -> bool {
     config.proxy.is_some() || !config.platforms.is_empty()
 }
@@ -177,7 +182,7 @@ fn validate_desktop_config(
                 port: proxy.port.to_string(),
                 username: proxy.username,
                 password: proxy.password,
-                probe_url: DEFAULT_PROBE_URL.to_string(),
+                probe_url: network_probe_url(api_base),
                 bypass_hosts: proxy.bypass_hosts,
             };
             let config = config::validate(&form)
@@ -340,7 +345,7 @@ pub async fn sync_desktop_config<R: Runtime>(
     }
     emit_status(&app, &state);
 
-    let _proxy_ip = match probe_proxy(&proxy_config).await {
+    let proxy_ip = match probe_proxy(&proxy_config).await {
         Ok(ip) => ip,
         Err(error) => {
             if state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
@@ -454,7 +459,7 @@ pub async fn sync_desktop_config<R: Runtime>(
     emit_status(&app, &state);
     Ok(DesktopConfigSyncReport {
         proxy_assigned: true,
-        proxy_ip: Some(proxy_config.host.clone()),
+        proxy_ip: Some(proxy_ip),
         platforms: platform_views,
         direct_hosts: direct_host_view,
     })
@@ -615,19 +620,13 @@ pub async fn open_browser<R: Runtime>(
 
 /// 获取用户当前本机的公网出口 IP（直连模式下展示）。
 #[tauri::command(rename_all = "camelCase")]
-pub async fn get_direct_ip() -> CmdResult<String> {
-    let endpoints = [
-        "https://api.ipify.org",
-        "https://icanhazip.com",
-        "https://ifconfig.me/ip",
-        "https://ip.sb",
-    ];
-    for endpoint in endpoints {
-        if let Ok(ip) = probe::probe_direct(endpoint).await {
-            return Ok(ip);
-        }
-    }
-    Ok("127.0.0.1 (本机网络)".to_string())
+pub async fn get_direct_ip(auth: tauri::State<'_, DesktopAuthState>) -> CmdResult<String> {
+    require_desktop_auth(&auth)?;
+    let api_base = auth.api_base_url().map_err(auth_command_error)?;
+    let probe_url = network_probe_url(api_base);
+    probe::probe_direct(&probe_url)
+        .await
+        .map_err(|error| CommandError::new(format!("获取本机公网 IP 失败：{error}"), error.code()))
 }
 
 fn emit_status<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
@@ -675,6 +674,10 @@ mod tests {
         assert_eq!(validated.platforms[1].id, 2);
         let config = validated.proxy.unwrap();
         assert_eq!(config.password, "server-only-secret");
+        assert_eq!(
+            config.probe_url,
+            "https://api.example.test/vestus/api/network/ip"
+        );
         // 直连域名同样只认服务端下发，并在这里完成归一化
         assert_eq!(
             config.direct_hosts.entries(),

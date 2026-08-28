@@ -667,6 +667,18 @@ async def root() -> Dict[str, str]:
     return {"service": "vestus", "status": "ok", "docs": "/docs"}
 
 
+@app.get("/api/network/ip", tags=["system"])
+async def network_ip(request: Request, response: Response) -> Dict[str, str]:
+    """Return the source IP observed by the Vestus API for this request path."""
+    observed = _client_ip(request)
+    try:
+        address = str(ipaddress.ip_address(observed))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="无法识别请求来源 IP") from exc
+    response.headers["Cache-Control"] = "no-store"
+    return {"ip": address}
+
+
 @app.get("/healthz", tags=["system"])
 async def healthz() -> Dict[str, Any]:
     # 反向代理会把这个端点暴露在公网且不带鉴权，所以只回存活状态。

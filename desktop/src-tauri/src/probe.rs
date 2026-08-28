@@ -91,7 +91,9 @@ pub async fn probe_via_upstream(
 /// 直接通过本机网络探测真实出口 IP（直连模式）。
 pub async fn probe_direct(probe_url: &str) -> Result<String, ProbeError> {
     let parsed = url::Url::parse(probe_url).map_err(|e| ProbeError::BadUrl(e.to_string()))?;
-    let _ = parsed.host_str().ok_or_else(|| ProbeError::BadUrl("缺少主机名".into()))?;
+    let _ = parsed
+        .host_str()
+        .ok_or_else(|| ProbeError::BadUrl("缺少主机名".into()))?;
 
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -125,12 +127,12 @@ fn parse_ip(body: &str) -> Option<String> {
         return None;
     }
 
-    // 裸 IP，例如 api.ipify.org 的默认响应
+    // 裸 IP 文本
     if trimmed.parse::<std::net::IpAddr>().is_ok() {
         return Some(trimmed.to_string());
     }
 
-    // JSON：ipify 的 ?format=json、httpbin 的 /ip 等
+    // JSON：Vestus 自有探测接口以及常见兼容字段
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
         for key in ["ip", "origin", "clientIp", "client_ip"] {
             if let Some(raw) = value.get(key).and_then(|v| v.as_str()) {

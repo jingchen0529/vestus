@@ -14,7 +14,10 @@ import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { useTheme } from "@/hooks/useTheme";
 import { ACCENT_COLOR_PRESETS, AccentColor } from "@/theme/accentColors";
 import { cn } from "@/lib/utils";
-import { getProxyIpDisplay } from "@/components/settings/proxyIpDisplay";
+import {
+  getDirectConnectionStatus,
+  getProxyIpDisplay,
+} from "@/components/settings/proxyIpDisplay";
 import { UserAccount } from "@/services/authService";
 import { tauriBridge, DesktopConfigView, StatusView } from "@/services/tauriBridge";
 
@@ -101,7 +104,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
 
   const getConnectionStatusText = () => {
     if (!proxyEnabled) {
-      return directIpLoading ? "正在检测…" : "直连正常";
+      return getDirectConnectionStatus(directIp, directIpLoading);
     }
     switch (status.phase) {
       case "ready":
@@ -116,6 +119,8 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
         return "未就绪";
     }
   };
+
+  const directIpFailed = !directIpLoading && directIp === "获取失败";
 
   return (
     <section className="mx-auto w-full max-w-3xl space-y-4">
@@ -212,7 +217,11 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
                   className={cn(
                     "h-2 w-2 rounded-full shrink-0",
                     !proxyEnabled
-                      ? "bg-emerald-500"
+                      ? directIpFailed
+                        ? "bg-destructive"
+                        : directIpLoading || !directIp
+                        ? "bg-amber-500 animate-ping"
+                        : "bg-emerald-500"
                       : status.phase === "ready" || status.phase === "browser_running"
                       ? "bg-emerald-500"
                       : status.phase === "testing"

@@ -8,11 +8,6 @@ use serde::Deserialize;
 use crate::bypass::DirectHosts;
 use crate::upstream::UpstreamProxy;
 
-/// 出口 IP 检测地址，返回纯文本 IP。
-///
-/// 写成归一化后的形式（带尾斜杠），否则和 [`normalize_url`] 的输出对不上。
-pub const DEFAULT_PROBE_URL: &str = "https://api.ipify.org/";
-
 /// 服务端响应中的代理表单，含明文口令，仅存在于 Rust 内存中。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProxyForm {
@@ -112,7 +107,7 @@ pub fn validate(form: &ProxyForm) -> Result<ValidatedConfig, ConfigError> {
         return Err(ConfigError::Invalid("请填写代理密码".into()));
     }
 
-    let probe_url = normalize_url(&form.probe_url, DEFAULT_PROBE_URL, "出口检测地址")?;
+    let probe_url = normalize_url(&form.probe_url, "出口检测地址")?;
 
     // 直连例外必须在这里拦下：适配器只认已校验过的列表。
     let direct_hosts = DirectHosts::parse(&form.bypass_hosts)
@@ -128,9 +123,11 @@ pub fn validate(form: &ProxyForm) -> Result<ValidatedConfig, ConfigError> {
     })
 }
 
-fn normalize_url(input: &str, fallback: &str, label: &str) -> Result<String, ConfigError> {
-    let text = input.trim();
-    let candidate = if text.is_empty() { fallback } else { text };
+fn normalize_url(input: &str, label: &str) -> Result<String, ConfigError> {
+    let candidate = input.trim();
+    if candidate.is_empty() {
+        return Err(ConfigError::Invalid(format!("{label}不能为空")));
+    }
     let parsed = url::Url::parse(candidate)
         .map_err(|_| ConfigError::Invalid(format!("{label}格式不正确：{candidate}")))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -149,18 +146,31 @@ mod tests {
             port: "8080".into(),
             username: "proxy_user".into(),
             password: "s3cret".into(),
-            probe_url: String::new(),
+            probe_url: "https://api.example.test/api/network/ip".into(),
             bypass_hosts: Vec::new(),
         }
     }
 
     #[test]
-    fn accepts_valid_form_and_fills_defaults() {
+    fn accepts_valid_form_with_explicit_probe_url() {
         let cfg = validate(&form()).unwrap();
         assert_eq!(cfg.port, 8080);
-        assert_eq!(cfg.probe_url, DEFAULT_PROBE_URL);
+        assert_eq!(cfg.probe_url, "https://api.example.test/api/network/ip");
         // 缺省没有任何直连例外
         assert!(cfg.direct_hosts.is_empty());
+    }
+
+    #[test]
+    fn rejects_missing_probe_url_instead_of_using_a_third_party_default() {
+        let mut f = form();
+        f.probe_url.clear();
+
+        let error = match validate(&f) {
+            Ok(_) => panic!("缺少自有探测地址时不应回退到第三方服务"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), "出口检测地址不能为空");
     }
 
     #[test]
