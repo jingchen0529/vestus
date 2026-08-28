@@ -3,8 +3,18 @@
 //! OA 的浏览器语义是「每次点击都创建一个新的、临时的 Chromium 环境」。
 //! 这里保留 Tauri 作为登录壳，只把业务网站交给随应用发布的 Chromium。
 //!
-//! 起始网址作为命令行最后一个参数交给 Chromium，配合 `--new-window` 直接
-//! 打开；本模块不与浏览器建立任何控制通道，也不开调试端点。
+//! 起始网址作为命令行最后一个参数交给 Chromium 直接打开；本模块不与浏览器
+//! 建立任何控制通道，也不开调试端点。
+//!
+//! 「临时环境」由每次新建的 `--user-data-dir` 加退出时的 [`cleanup_profile`]
+//! 保证，不依赖 `--incognito`：profile 本来就用完即焚，隐身模式换不来额外的
+//! 隐私，却会限制站点的 localStorage/IndexedDB，还让目标站点能直接识别出
+//! 隐身特征。同理也不传 `--new-window`——每个会话都是独立 user-data-dir 上
+//! 的全新进程，本来就只会开出一个新窗口。
+//!
+//! 窗口几何显式下发而不用 `--start-maximized`：后者要等窗口建好再最大化，
+//! 这次 resize 和渲染器首帧存在竞态，在远程桌面/无独显的机器上会停在空白
+//! 帧上（表现为内容区灰屏、刷新才恢复）。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -20,6 +30,8 @@ use tauri::{AppHandle, Manager, Runtime};
 #[cfg(any(debug_assertions, test))]
 const CHROMIUM_PATH_ENV: &str = "VESTUS_CHROMIUM_PATH";
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// 低于这个边长的工作区当作读数异常，退回让 Chromium 自己决定窗口大小。
+const MIN_WINDOW_EDGE: u32 = 320;
 type ProcessSlot = Arc<Mutex<Option<Child>>>;
 type BrowserCloseEntry = (ProcessSlot, PathBuf);
 
@@ -55,12 +67,25 @@ struct ManagedBrowser {
     profile_dir: PathBuf,
 }
 
+/// 启动时直接下发给 Chromium 的窗口几何。
+///
+/// Chromium 的 `--window-position` / `--window-size` 按逻辑像素解释，所以这里
+/// 存的是已经除过显示器缩放比的值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowGeometry {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
 struct LaunchProcessRequest<'a> {
     session_id: u64,
     executable: &'a Path,
     profile_dir: PathBuf,
     local_proxy: Option<&'a str>,
     target_url: &'a str,
+    window: Option<WindowGeometry>,
 }
 
 impl Default for BrowserSessionManager {
@@ -94,16 +119,19 @@ impl BrowserSessionManager {
         }
         let executable = resolve_chromium_executable(app)?;
         let profile_dir = create_profile_dir(app, session_id)?;
+        let window = primary_window_geometry(app);
         self.launch_process(
             session_id,
             &executable,
             profile_dir,
             local_proxy,
             target_url,
+            window,
             on_exit,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn launch_process<F>(
         &self,
         session_id: u64,
@@ -111,6 +139,7 @@ impl BrowserSessionManager {
         profile_dir: PathBuf,
         local_proxy: Option<&str>,
         target_url: &str,
+        window: Option<WindowGeometry>,
         on_exit: F,
     ) -> Result<u64, BrowserError>
     where
@@ -123,6 +152,7 @@ impl BrowserSessionManager {
                 profile_dir,
                 local_proxy,
                 target_url,
+                window,
             },
             on_exit,
             || {},
@@ -145,8 +175,9 @@ impl BrowserSessionManager {
             profile_dir,
             local_proxy,
             target_url,
+            window,
         } = request;
-        let arguments = chromium_arguments(&profile_dir, local_proxy, target_url);
+        let arguments = chromium_arguments(&profile_dir, local_proxy, target_url, window);
 
         let mut command = Command::new(executable);
         command
@@ -449,7 +480,52 @@ fn bundled_macos_executables(root: &Path) -> Vec<PathBuf> {
     executables
 }
 
-fn chromium_arguments(profile_dir: &Path, local_proxy: Option<&str>, target_url: &str) -> Vec<OsString> {
+/// 主显示器的工作区几何，拿不到就返回 None 让 Chromium 自己决定。
+fn primary_window_geometry<R: Runtime>(app: &AppHandle<R>) -> Option<WindowGeometry> {
+    let monitor = app.primary_monitor().ok().flatten()?;
+    let area = monitor.work_area();
+    window_geometry(
+        area.position.x,
+        area.position.y,
+        area.size.width,
+        area.size.height,
+        monitor.scale_factor(),
+    )
+}
+
+/// 把物理像素的工作区换算成 Chromium 要的逻辑像素。
+///
+/// 缩放比或尺寸读数不可信时返回 None——错的几何比没有几何更糟，宁可退回
+/// Chromium 的默认行为。
+fn window_geometry(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale_factor: f64,
+) -> Option<WindowGeometry> {
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return None;
+    }
+    let logical_width = (f64::from(width) / scale_factor).round();
+    let logical_height = (f64::from(height) / scale_factor).round();
+    if logical_width < f64::from(MIN_WINDOW_EDGE) || logical_height < f64::from(MIN_WINDOW_EDGE) {
+        return None;
+    }
+    Some(WindowGeometry {
+        x: (f64::from(x) / scale_factor).round() as i32,
+        y: (f64::from(y) / scale_factor).round() as i32,
+        width: logical_width as u32,
+        height: logical_height as u32,
+    })
+}
+
+fn chromium_arguments(
+    profile_dir: &Path,
+    local_proxy: Option<&str>,
+    target_url: &str,
+    window: Option<WindowGeometry>,
+) -> Vec<OsString> {
     let mut args = vec![
         OsString::from(format!("--user-data-dir={}", profile_dir.display())),
     ];
@@ -462,14 +538,24 @@ fn chromium_arguments(profile_dir: &Path, local_proxy: Option<&str>, target_url:
     args.extend(vec![
         OsString::from("--disable-quic"),
         OsString::from("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
-        OsString::from("--incognito"),
         OsString::from("--disable-background-mode"),
         OsString::from("--no-first-run"),
         OsString::from("--no-default-browser-check"),
-        OsString::from("--start-maximized"),
-        OsString::from("--new-window"),
-        OsString::from(target_url),
     ]);
+    match window {
+        Some(geometry) => {
+            args.push(OsString::from(format!(
+                "--window-position={},{}",
+                geometry.x, geometry.y
+            )));
+            args.push(OsString::from(format!(
+                "--window-size={},{}",
+                geometry.width, geometry.height
+            )));
+        }
+        None => args.push(OsString::from("--start-maximized")),
+    }
+    args.push(OsString::from(target_url));
     args
 }
 
@@ -486,6 +572,7 @@ mod tests {
             profile,
             Some("http://127.0.0.1:51234"),
             "https://platform.example.test/",
+            None,
         );
         let rendered: Vec<String> = arguments
             .into_iter()
@@ -507,14 +594,108 @@ mod tests {
         assert!(!rendered.join(" ").contains("proxy-password"));
     }
 
+    /// 临时环境靠 user-data-dir 加退出清理保证。隐身模式不增加隐私、又会被站点
+    /// 识别，`--new-window` 在独立 profile 上也是多余的，两个都不能再出现。
+    #[test]
+    fn chromium_arguments_omit_incognito_and_new_window() {
+        let rendered: Vec<String> = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            None,
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(!rendered.contains(&"--incognito".into()));
+        assert!(!rendered.contains(&"--new-window".into()));
+    }
+
+    /// 拿到显示器几何时必须显式下发窗口大小，而不是靠启动后再最大化——那次
+    /// resize 会和渲染器首帧竞态，导致内容区停在空白帧上。
+    #[test]
+    fn chromium_arguments_prefer_explicit_geometry_over_start_maximized() {
+        let geometry = WindowGeometry {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let rendered: Vec<String> = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            Some(geometry),
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(rendered.contains(&"--window-position=0,0".into()));
+        assert!(rendered.contains(&"--window-size=1920,1040".into()));
+        assert!(!rendered.contains(&"--start-maximized".into()));
+        // 起始网址必须始终是最后一个参数
+        assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
+    }
+
+    /// 读不到可信的显示器几何时退回 Chromium 自己最大化，不能两个都不给。
+    #[test]
+    fn chromium_arguments_fall_back_to_start_maximized_without_geometry() {
+        let rendered: Vec<String> = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            None,
+            "https://platform.example.test/",
+            None,
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(rendered.contains(&"--start-maximized".into()));
+        assert!(!rendered.iter().any(|arg| arg.starts_with("--window-size")));
+    }
+
+    /// Chromium 按逻辑像素解释窗口参数，高 DPI 下必须除掉缩放比，
+    /// 否则窗口会大出屏幕一倍。
+    #[test]
+    fn window_geometry_converts_physical_pixels_to_logical() {
+        assert_eq!(
+            window_geometry(0, 0, 3840, 2080, 2.0),
+            Some(WindowGeometry {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1040,
+            })
+        );
+        // 工作区不从原点开始（任务栏在上、或副屏在左）时位置同样要换算
+        assert_eq!(
+            window_geometry(-2560, 100, 2560, 1400, 1.0),
+            Some(WindowGeometry {
+                x: -2560,
+                y: 100,
+                width: 2560,
+                height: 1400,
+            })
+        );
+    }
+
+    #[test]
+    fn window_geometry_rejects_unusable_readings() {
+        // 缩放比非法
+        assert_eq!(window_geometry(0, 0, 1920, 1080, 0.0), None);
+        assert_eq!(window_geometry(0, 0, 1920, 1080, -1.0), None);
+        assert_eq!(window_geometry(0, 0, 1920, 1080, f64::NAN), None);
+        // 换算后的窗口小得不可用
+        assert_eq!(window_geometry(0, 0, 300, 1080, 1.0), None);
+        assert_eq!(window_geometry(0, 0, 1920, 200, 1.0), None);
+    }
+
     #[test]
     fn chromium_arguments_direct_mode_uses_no_proxy_server() {
         let profile = Path::new("/tmp/vestus-profile-test-direct");
-        let arguments = chromium_arguments(
-            profile,
-            None,
-            "https://platform.example.test/",
-        );
+        let arguments = chromium_arguments(profile, None, "https://platform.example.test/", None);
         let rendered: Vec<String> = arguments
             .into_iter()
             .map(|value| value.to_string_lossy().into_owned())
@@ -567,6 +748,7 @@ mod tests {
                     profile,
                     Some("http://127.0.0.1:51234"),
                     "https://platform.example.test/",
+                    None,
                     move || {
                         callbacks.fetch_add(1, Ordering::SeqCst);
                     },
@@ -626,6 +808,7 @@ mod tests {
                     profile_dir: launch_profile,
                     local_proxy: Some("http://127.0.0.1:51234"),
                     target_url: "https://platform.example.test/",
+                    window: None,
                 },
                 || {},
                 move || {
@@ -660,6 +843,7 @@ mod tests {
                 rejected_profile.clone(),
                 Some("http://127.0.0.1:51234"),
                 "https://platform.example.test/",
+                None,
                 || {},
             ),
             Err(BrowserError::ShuttingDown)
