@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -108,51 +108,54 @@ const htmlContent = `<!DOCTYPE html>
     /* Bottom Info Card */
     .info-panel {
       position: absolute;
-      left: 24px;
-      right: 24px;
-      bottom: 22px;
-      background: rgba(255, 255, 255, 0.95);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1.5px solid rgba(203, 213, 225, 0.9);
-      border-radius: 14px;
-      padding: 14px 18px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.03);
+      left: 20px;
+      right: 20px;
+      bottom: 48px;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(203, 213, 225, 0.85);
+      border-radius: 12px;
+      padding: 11px 16px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03);
     }
 
     .panel-header {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 7px;
+      margin-bottom: 6px;
+      white-space: nowrap;
     }
     .badge {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      font-size: 11.5px;
-      font-weight: 800;
+      font-size: 11px;
+      font-weight: 700;
       color: #9a3412;
       background: #ffedd5;
       border: 1px solid #fed7aa;
-      padding: 2.5px 8px;
-      border-radius: 6px;
-      letter-spacing: 0.2px;
+      padding: 2px 7px;
+      border-radius: 5px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
     .panel-desc {
-      font-size: 12px;
+      font-size: 11.5px;
       color: #334155;
-      line-height: 1.4;
-      font-weight: 600;
+      line-height: 1.3;
+      font-weight: 500;
+      white-space: nowrap;
     }
 
     /* Command block */
     .cmd-box {
-      margin-top: 8px;
+      margin-top: 6px;
       background: #090d16;
-      border: 1.5px solid #1e293b;
-      border-radius: 9px;
-      padding: 9px 14px;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 7px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -161,31 +164,32 @@ const htmlContent = `<!DOCTYPE html>
     }
     .cmd-code {
       font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-      font-size: 12.5px;
+      font-size: 11.5px;
       color: #38bdf8;
-      word-break: break-all;
+      white-space: nowrap;
       font-weight: 600;
-      letter-spacing: 0.3px;
+      letter-spacing: 0.2px;
     }
     .cmd-tag {
-      font-size: 10.5px;
+      font-size: 10px;
       font-weight: 600;
-      color: #cbd5e1;
-      background: rgba(255, 255, 255, 0.15);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      padding: 2.5px 7px;
-      border-radius: 5px;
+      color: #94a3b8;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
       white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .panel-footer {
-      margin-top: 8px;
-      font-size: 11.5px;
+      margin-top: 6px;
+      font-size: 11px;
       color: #475569;
       display: flex;
       align-items: center;
-      gap: 5px;
-      font-weight: 500;
+      gap: 4px;
+      white-space: nowrap;
     }
     .panel-footer b {
       color: #0f172a;
@@ -249,19 +253,49 @@ const chromeExec = join(
 );
 
 const outputPng = join(iconsDir, "dmg-background.png");
+const outputTiff = join(iconsDir, "dmg-background.tiff");
 const previewArtifact = join(artifactDir, "dmg_installer_preview.png");
 
-// 1. Generate DMG background image at exact 660x440 dimensions for 1:1 Finder window alignment
+const bg1xPng = join(desktopRoot, ".cache", "bg_1x.png");
+const bg2xPng = join(desktopRoot, ".cache", "bg_2x.png");
+const bg1xTiff = join(desktopRoot, ".cache", "bg_1x.tiff");
+const bg2xTiff = join(desktopRoot, ".cache", "bg_2x.tiff");
+
+// 1. Generate 1x (660x440)
 execFileSync(chromeExec, [
   "--headless=new",
   "--disable-gpu",
   "--hide-scrollbars",
   "--window-size=660,440",
-  `--screenshot=${outputPng}`,
+  `--screenshot=${bg1xPng}`,
   tempHtml,
 ]);
 
-console.log(`Generated DMG background (660x440): ${outputPng}`);
+// 2. Generate 2x Retina (1320x880)
+execFileSync(chromeExec, [
+  "--headless=new",
+  "--disable-gpu",
+  "--hide-scrollbars",
+  "--force-device-scale-factor=2",
+  "--window-size=660,440",
+  `--screenshot=${bg2xPng}`,
+  tempHtml,
+]);
+
+// Also save 660x440 as default PNG
+copyFileSync(bg1xPng, outputPng);
+
+// 3. Build Multi-Resolution TIFF for Retina displays
+try {
+  execFileSync("sips", ["-s", "format", "tiff", bg1xPng, "--out", bg1xTiff]);
+  execFileSync("sips", ["-s", "format", "tiff", bg2xPng, "--out", bg2xTiff]);
+  execFileSync("/usr/bin/tiffutil", ["-cathidpicheck", bg1xTiff, bg2xTiff, "-out", outputTiff]);
+  console.log(`Generated Multi-Resolution Retina TIFF: ${outputTiff}`);
+} catch (e) {
+  console.warn("Notice on TIFF creation:", e.message);
+}
+
+console.log(`Generated DMG backgrounds: ${outputPng}, ${outputTiff}`);
 
 // 2. Also generate a complete preview with mockup app icon and Applications folder
 const previewHtmlContent = `<!DOCTYPE html>
@@ -436,14 +470,14 @@ const previewHtmlContent = `<!DOCTYPE html>
     /* Bottom Info Card */
     .info-panel {
       position: absolute;
-      left: 24px;
-      right: 24px;
-      bottom: 20px;
-      background: rgba(255, 255, 255, 0.92);
-      backdrop-filter: blur(16px);
-      border: 1px solid rgba(226, 232, 240, 0.95);
-      border-radius: 14px;
-      padding: 13px 18px;
+      left: 20px;
+      right: 20px;
+      bottom: 48px;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(203, 213, 225, 0.85);
+      border-radius: 12px;
+      padding: 11px 16px;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
       z-index: 10;
     }

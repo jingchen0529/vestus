@@ -8,7 +8,7 @@
     },
     "macOS": {
       "dmg": {
-        "background": "icons/dmg-background.png",
+        "background": "icons/dmg-background.tiff",
         "windowSize": {
           "width": 660,
           "height": 440

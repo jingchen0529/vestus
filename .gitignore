@@ -65,6 +65,9 @@ desktop/src-tauri/resources/chromium/*
 !desktop/src-tauri/resources/chromium/.gitkeep
 .cache/
 
+# Locally built installers (produced by scripts/build-local-dmg.mjs).
+desktop/*.dmg
+
 # Local tooling and agent artifacts (not part of the project).
 .codegraph
 .omo/
