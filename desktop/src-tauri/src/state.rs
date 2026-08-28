@@ -59,7 +59,7 @@ struct DesktopAssignment {
 /// stay inside the adapter and are deliberately absent here.
 pub struct BrowserLaunchInfo {
     pub target_url: String,
-    pub port: u16,
+    pub port: Option<u16>,
 }
 
 /// 前端渲染所需的完整快照。
@@ -81,6 +81,7 @@ struct Inner {
     desktop: Option<DesktopAssignment>,
     next_desktop_revision: u64,
     next_browser_id: u64,
+    direct_browser_ids: HashSet<u64>,
 }
 
 /// 全局状态，注册进 Tauri 的 `manage`。
@@ -102,6 +103,7 @@ impl Default for AppState {
                 desktop: None,
                 next_desktop_revision: 0,
                 next_browser_id: 0,
+                direct_browser_ids: HashSet::new(),
             })),
             desktop_sync_gate: Arc::new(AsyncMutex::new(())),
         }
@@ -267,12 +269,12 @@ impl AppState {
         auth_generation: u64,
         auth_profile_key: Option<&str>,
         platform_id: i64,
+        direct_mode: bool,
     ) -> Option<BrowserLaunchInfo> {
         let guard = self.inner.lock().expect("状态锁已中毒");
         if guard.shutting_down {
             return None;
         }
-        let session = guard.session.as_ref()?;
         let desktop = guard.desktop.as_ref()?;
         if desktop.user_id != user_id
             || desktop.auth_generation != auth_generation
@@ -287,44 +289,68 @@ impl AppState {
             .url
             .clone();
 
-        Some(BrowserLaunchInfo {
-            target_url,
-            port: session.adapter.port,
-        })
+        let port = if direct_mode {
+            None
+        } else {
+            let session = guard.session.as_ref()?;
+            Some(session.adapter.port)
+        };
+
+        Some(BrowserLaunchInfo { target_url, port })
     }
 
     /// Reserve one browser slot before spawning Chromium. Multiple slots may
     /// coexist, including several launches of the same platform.
-    pub fn mark_browser_opened(&self) -> Option<u64> {
+    pub fn mark_browser_opened(&self, direct_mode: bool) -> Option<u64> {
         let mut guard = self.inner.lock().expect("状态锁已中毒");
-        if guard.shutting_down || !guard.phase.can_open_browser() || guard.session.is_none() {
+        if guard.shutting_down {
+            return None;
+        }
+        if !direct_mode && (!guard.phase.can_open_browser() || guard.session.is_none()) {
             return None;
         }
         guard.next_browser_id = guard.next_browser_id.wrapping_add(1).max(1);
         let browser_id = guard.next_browser_id;
         if let Some(session) = guard.session.as_mut() {
             session.browser_ids.insert(browser_id);
+        } else {
+            guard.direct_browser_ids.insert(browser_id);
         }
         guard.phase = Phase::BrowserRunning;
-        guard.message = "独立代理浏览器运行中".into();
+        guard.message = if direct_mode {
+            "独立直连浏览器运行中".into()
+        } else {
+            "独立代理浏览器运行中".into()
+        };
         Some(browser_id)
     }
 
     /// One managed Chromium process exited.
     pub fn mark_browser_closed_for(&self, browser_id: u64) {
         let mut guard = self.inner.lock().expect("状态锁已中毒");
+        let mut removed = false;
         if let Some(session) = guard.session.as_mut() {
-            if !session.browser_ids.remove(&browser_id) {
-                return;
-            }
+            removed = session.browser_ids.remove(&browser_id);
+        }
+        if !removed {
+            guard.direct_browser_ids.remove(&browser_id);
         }
         let any_open = guard
             .session
             .as_ref()
-            .is_some_and(|session| !session.browser_ids.is_empty());
+            .is_some_and(|session| !session.browser_ids.is_empty())
+            || !guard.direct_browser_ids.is_empty();
         if guard.phase == Phase::BrowserRunning && !any_open {
-            guard.phase = Phase::Ready;
-            guard.message = "浏览器已关闭，代理配置仍然可用".into();
+            guard.phase = if guard.session.is_some() {
+                Phase::Ready
+            } else {
+                Phase::Unconfigured
+            };
+            guard.message = if guard.session.is_some() {
+                "浏览器已关闭，代理配置仍然可用".into()
+            } else {
+                "浏览器已关闭".into()
+            };
         }
     }
 
@@ -334,6 +360,7 @@ impl AppState {
         if let Some(old) = guard.session.take() {
             old.adapter.stop();
         }
+        guard.direct_browser_ids.clear();
         guard.desktop = None;
         guard.phase = Phase::Unconfigured;
         guard.message = "已停止代理适配器".into();
@@ -347,6 +374,7 @@ impl AppState {
         if let Some(old) = guard.session.take() {
             old.adapter.stop();
         }
+        guard.direct_browser_ids.clear();
         guard.desktop = None;
         guard.phase = Phase::Unconfigured;
         guard.message = "客户端正在退出".into();
@@ -364,7 +392,8 @@ impl AppState {
         let browser_open = guard
             .session
             .as_ref()
-            .is_some_and(|session| !session.browser_ids.is_empty());
+            .is_some_and(|session| !session.browser_ids.is_empty())
+            || !guard.direct_browser_ids.is_empty();
 
         StatusView {
             phase: guard.phase,
@@ -447,15 +476,15 @@ mod tests {
     fn multiple_browser_tokens_are_independent_and_stale_exit_is_ignored() {
         let state = AppState::default();
         install_ready_session(&state, 7);
-        let old_first = state.mark_browser_opened().unwrap();
-        let old_second = state.mark_browser_opened().unwrap();
+        let old_first = state.mark_browser_opened(false).unwrap();
+        let old_second = state.mark_browser_opened(false).unwrap();
         state.mark_browser_closed_for(old_first);
         assert!(state.snapshot().browser_open);
         assert_eq!(state.snapshot().phase, Phase::BrowserRunning);
 
         state.teardown();
         install_ready_session(&state, 8);
-        let current = state.mark_browser_opened().unwrap();
+        let current = state.mark_browser_opened(false).unwrap();
 
         // Delayed callbacks from either old process must not consume the new
         // user's browser token.
@@ -467,6 +496,18 @@ mod tests {
         state.mark_browser_closed_for(current);
         assert!(!state.snapshot().browser_open);
         assert_eq!(state.snapshot().phase, Phase::Ready);
+    }
+
+    #[test]
+    fn direct_mode_can_open_browser_without_ready_session() {
+        let state = AppState::default();
+        let browser_id = state.mark_browser_opened(true).unwrap();
+        assert!(state.snapshot().browser_open);
+        assert_eq!(state.snapshot().phase, Phase::BrowserRunning);
+        assert_eq!(state.snapshot().message, "独立直连浏览器运行中");
+
+        state.mark_browser_closed_for(browser_id);
+        assert!(!state.snapshot().browser_open);
     }
 
     #[test]

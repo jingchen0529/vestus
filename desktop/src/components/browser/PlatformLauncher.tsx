@@ -19,6 +19,7 @@ interface PlatformLauncherProps {
   desktopConfig: DesktopConfigView | null;
   configLoading: boolean;
   configError: string | null;
+  proxyEnabled?: boolean;
   onRetryConfig: () => void;
   onOpenBrowser: (platformId: number) => Promise<void> | void;
 }
@@ -28,6 +29,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
   desktopConfig,
   configLoading,
   configError,
+  proxyEnabled = true,
   onRetryConfig,
   onOpenBrowser,
 }) => {
@@ -41,9 +43,10 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
     "from-emerald-600 to-teal-600",
   ];
   const canLaunch =
-    Boolean(desktopConfig?.proxy_assigned) &&
     platforms.length > 0 &&
-    (status.phase === "ready" || status.phase === "browser_running");
+    (!proxyEnabled ||
+      (Boolean(desktopConfig?.proxy_assigned) &&
+        (status.phase === "ready" || status.phase === "browser_running")));
 
   const handleOpenPlatform = async (platform: DesktopPlatform) => {
     setLaunchingPlatformId(platform.id);
@@ -56,11 +59,18 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
 
   return (
     <section className="mx-auto w-full max-w-3xl">
-      <div className="mb-4">
-        <h2 className="text-lg font-semibold text-foreground">选择平台</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          点击管理员分配的平台，在独立浏览器窗口中打开。
-        </p>
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">选择平台</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            点击管理员分配的平台，在独立浏览器窗口中打开。
+          </p>
+        </div>
+        {!proxyEnabled && (
+          <span className="rounded-full bg-secondary/80 px-2.5 py-0.5 text-[11px] font-medium text-secondary-foreground border border-border">
+            本机直连模式
+          </span>
+        )}
       </div>
 
       {(configLoading || configError) && (

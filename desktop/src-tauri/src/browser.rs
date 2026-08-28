@@ -59,7 +59,7 @@ struct LaunchProcessRequest<'a> {
     session_id: u64,
     executable: &'a Path,
     profile_dir: PathBuf,
-    local_proxy: &'a str,
+    local_proxy: Option<&'a str>,
     target_url: &'a str,
 }
 
@@ -77,16 +77,11 @@ impl Default for BrowserSessionManager {
 impl BrowserSessionManager {
     /// Start one independent Chromium process with a fresh profile.
     ///
-    /// `local_proxy` must already be the validated loopback adapter URL. The
-    /// upstream credential never becomes a process argument.
-    ///
-    /// `session_id` 由状态机分配（[`crate::state::AppState::mark_browser_opened`]），
-    /// 这样「状态里的浏览器令牌」和「这里管理的进程」永远是同一个编号。
     pub fn launch<R, F>(
         &self,
         app: &AppHandle<R>,
         session_id: u64,
-        local_proxy: &str,
+        local_proxy: Option<&str>,
         target_url: &str,
         on_exit: F,
     ) -> Result<u64, BrowserError>
@@ -114,7 +109,7 @@ impl BrowserSessionManager {
         session_id: u64,
         executable: &Path,
         profile_dir: PathBuf,
-        local_proxy: &str,
+        local_proxy: Option<&str>,
         target_url: &str,
         on_exit: F,
     ) -> Result<u64, BrowserError>
@@ -454,13 +449,17 @@ fn bundled_macos_executables(root: &Path) -> Vec<PathBuf> {
     executables
 }
 
-fn chromium_arguments(profile_dir: &Path, local_proxy: &str, target_url: &str) -> Vec<OsString> {
-    vec![
+fn chromium_arguments(profile_dir: &Path, local_proxy: Option<&str>, target_url: &str) -> Vec<OsString> {
+    let mut args = vec![
         OsString::from(format!("--user-data-dir={}", profile_dir.display())),
-        OsString::from(format!("--proxy-server={local_proxy}")),
-        // Chromium 默认绕过 loopback；去掉隐式例外，避免目标 URL 直连。
-        // 直连例外统一由 [`crate::bypass`] 在适配器里判断，不交给 Chromium。
-        OsString::from("--proxy-bypass-list=<-loopback>"),
+    ];
+    if let Some(proxy) = local_proxy {
+        args.push(OsString::from(format!("--proxy-server={proxy}")));
+        args.push(OsString::from("--proxy-bypass-list=<-loopback>"));
+    } else {
+        args.push(OsString::from("--no-proxy-server"));
+    }
+    args.extend(vec![
         OsString::from("--disable-quic"),
         OsString::from("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
         OsString::from("--incognito"),
@@ -470,7 +469,8 @@ fn chromium_arguments(profile_dir: &Path, local_proxy: &str, target_url: &str) -
         OsString::from("--start-maximized"),
         OsString::from("--new-window"),
         OsString::from(target_url),
-    ]
+    ]);
+    args
 }
 
 #[cfg(test)]
@@ -484,7 +484,7 @@ mod tests {
         let profile = Path::new("/tmp/vestus-profile-test");
         let arguments = chromium_arguments(
             profile,
-            "http://127.0.0.1:51234",
+            Some("http://127.0.0.1:51234"),
             "https://platform.example.test/",
         );
         let rendered: Vec<String> = arguments
@@ -505,6 +505,23 @@ mod tests {
         assert!(rendered.contains(&"--disable-quic".into()));
         assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
         assert!(!rendered.join(" ").contains("proxy-password"));
+    }
+
+    #[test]
+    fn chromium_arguments_direct_mode_uses_no_proxy_server() {
+        let profile = Path::new("/tmp/vestus-profile-test-direct");
+        let arguments = chromium_arguments(
+            profile,
+            None,
+            "https://platform.example.test/",
+        );
+        let rendered: Vec<String> = arguments
+            .into_iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(rendered.contains(&"--no-proxy-server".into()));
+        assert!(!rendered.iter().any(|arg| arg.starts_with("--proxy-server=")));
     }
 
     #[test]
@@ -548,7 +565,7 @@ mod tests {
                     id,
                     &executable,
                     profile,
-                    "http://127.0.0.1:51234",
+                    Some("http://127.0.0.1:51234"),
                     "https://platform.example.test/",
                     move || {
                         callbacks.fetch_add(1, Ordering::SeqCst);
@@ -607,7 +624,7 @@ mod tests {
                     session_id: 1,
                     executable: &launch_executable,
                     profile_dir: launch_profile,
-                    local_proxy: "http://127.0.0.1:51234",
+                    local_proxy: Some("http://127.0.0.1:51234"),
                     target_url: "https://platform.example.test/",
                 },
                 || {},
@@ -641,7 +658,7 @@ mod tests {
                 2,
                 &executable,
                 rejected_profile.clone(),
-                "http://127.0.0.1:51234",
+                Some("http://127.0.0.1:51234"),
                 "https://platform.example.test/",
                 || {},
             ),

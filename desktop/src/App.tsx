@@ -28,6 +28,14 @@ function MainLayout() {
   const [desktopConfig, setDesktopConfig] = useState<DesktopConfigView | null>(null);
   const [desktopConfigLoading, setDesktopConfigLoading] = useState(false);
   const [desktopConfigError, setDesktopConfigError] = useState<string | null>(null);
+  const [proxyEnabled, setProxyEnabled] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem("vestus-desktop-proxy-enabled");
+      return stored !== null ? stored === "true" : true;
+    } catch {
+      return true;
+    }
+  });
 
   const [status, setStatus] = useState<StatusView>({
     phase: "unconfigured",
@@ -216,10 +224,27 @@ function MainLayout() {
     else info("已安全退出", "请重新登录以继续使用系统");
   };
 
+  const handleProxyEnabledChange = (enabled: boolean) => {
+    setProxyEnabled(enabled);
+    try {
+      localStorage.setItem("vestus-desktop-proxy-enabled", String(enabled));
+    } catch {}
+    if (enabled) {
+      info("已切换为代理模式", "平台访问将通过专属代理网络转发");
+    } else {
+      info("已切换为直连模式", "平台访问将直接使用本机网络访问");
+    }
+  };
+
   const handleOpenBrowser = async (platformId: number) => {
     try {
-      await tauriBridge.openBrowser(platformId);
-      success("代理浏览器已启动", "已在新的临时浏览器环境中打开平台");
+      const directMode = !proxyEnabled;
+      await tauriBridge.openBrowser(platformId, directMode);
+      if (directMode) {
+        success("直连浏览器已启动", "已在新的临时浏览器环境中直接打开平台（本机直连）");
+      } else {
+        success("代理浏览器已启动", "已在新的临时浏览器环境中打开平台（专属代理）");
+      }
     } catch (err: any) {
       error("打开浏览器失败", err.message || "请稍后重试或联系管理员");
     }
@@ -280,6 +305,7 @@ function MainLayout() {
             desktopConfig={desktopConfig}
             configLoading={desktopConfigLoading}
             configError={desktopConfigError}
+            proxyEnabled={proxyEnabled}
             onRetryConfig={() => syncDesktopConfig(true)}
             onOpenBrowser={handleOpenBrowser}
           />
@@ -291,6 +317,8 @@ function MainLayout() {
             status={status}
             desktopConfig={desktopConfig}
             configLoading={desktopConfigLoading}
+            proxyEnabled={proxyEnabled}
+            onProxyEnabledChange={handleProxyEnabledChange}
             onSyncConfig={() => syncDesktopConfig(true)}
           />
         )}

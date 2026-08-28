@@ -90,6 +90,36 @@ pub async fn probe_via_upstream(
     parse_ip(&body).ok_or(ProbeError::Unparsable)
 }
 
+/// 直接通过本机网络探测真实出口 IP（直连模式）。
+pub async fn probe_direct(probe_url: &str) -> Result<String, ProbeError> {
+    let parsed = url::Url::parse(probe_url).map_err(|e| ProbeError::BadUrl(e.to_string()))?;
+    let _ = parsed.host_str().ok_or_else(|| ProbeError::BadUrl("缺少主机名".into()))?;
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+
+    let resp = client
+        .get(probe_url)
+        .send()
+        .await
+        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(ProbeError::Status(status.as_u16()));
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+
+    parse_ip(&body).ok_or(ProbeError::Unparsable)
+}
+
 /// 从响应体中取出 IP。支持裸 IP 文本，以及常见的 JSON 字段。
 fn parse_ip(body: &str) -> Option<String> {
     let trimmed = body.trim();

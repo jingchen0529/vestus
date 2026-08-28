@@ -46,6 +46,7 @@ pub fn run() {
             auth::desktop_change_password,
             commands::sync_desktop_config,
             commands::open_browser,
+            commands::get_direct_ip,
             commands::get_status,
         ])
         .build(tauri::generate_context!())

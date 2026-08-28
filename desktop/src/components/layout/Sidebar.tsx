@@ -87,14 +87,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </nav>
       </div>
 
-      {/* Bottom: Theme Toggle & User Info & Logout */}
-      <div className="flex flex-col gap-2.5 pt-3 border-t border-border/80">
-        {/* Theme Quick Switcher */}
-        <div className="px-1">
-          <ThemeToggle variant="segmented" className="w-full justify-between" />
-        </div>
-
-        {/* User Info Block */}
+      {/* Bottom: User Info & Actions in a single row */}
+      <div className="pt-3 border-t border-border/80">
         <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-muted/40 border border-border/60">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary border border-primary/20 flex items-center justify-center text-xs font-bold shrink-0">
@@ -102,25 +96,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1">
-                <span className="text-xs font-semibold text-foreground truncate">
+                <span className="text-xs font-semibold text-foreground truncate" title={user.name}>
                   {user.name}
                 </span>
               </div>
-              <p className="text-[10px] text-muted-foreground truncate">
+              <p className="text-[10px] text-muted-foreground truncate" title={user.company || user.username}>
                 {user.company || user.username}
               </p>
             </div>
           </div>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded-lg shrink-0"
-            title="退出登录"
-            onClick={onLogout}
-          >
-            <LogOut className="w-3.5 h-3.5" />
-          </Button>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <ThemeToggle
+              variant="icon-button"
+              className="h-7 w-7 rounded-lg border-0 bg-transparent shadow-none hover:bg-muted text-muted-foreground hover:text-foreground shrink-0"
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-500/10 rounded-lg shrink-0"
+              title="退出登录"
+              onClick={onLogout}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </Button>
+          </div>
         </div>
       </div>
     </aside>

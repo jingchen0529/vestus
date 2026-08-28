@@ -323,7 +323,7 @@ pub async fn sync_desktop_config<R: Runtime>(
     }
     emit_status(&app, &state);
 
-    let proxy_ip = match probe_proxy(&proxy_config).await {
+    let _proxy_ip = match probe_proxy(&proxy_config).await {
         Ok(ip) => ip,
         Err(error) => {
             if state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
@@ -437,7 +437,7 @@ pub async fn sync_desktop_config<R: Runtime>(
     emit_status(&app, &state);
     Ok(DesktopConfigSyncReport {
         proxy_assigned: true,
-        proxy_ip: Some(proxy_ip),
+        proxy_ip: Some(proxy_config.host.clone()),
         platforms: platform_views,
         direct_hosts: direct_host_view,
     })
@@ -547,7 +547,9 @@ pub async fn open_browser<R: Runtime>(
     auth: tauri::State<'_, DesktopAuthState>,
     browsers: tauri::State<'_, BrowserSessionManager>,
     platform_id: i64,
+    direct_mode: Option<bool>,
 ) -> CmdResult<BrowserHandleView> {
+    let direct_mode = direct_mode.unwrap_or(false);
     let _lifecycle_guard = state.lock_desktop_sync().await;
     require_desktop_auth(&auth)?;
     let (user_id, profile_key, auth_generation) =
@@ -558,6 +560,7 @@ pub async fn open_browser<R: Runtime>(
             auth_generation,
             profile_key.as_deref(),
             platform_id,
+            direct_mode,
         )
         .ok_or_else(|| {
             CommandError::new(
@@ -565,20 +568,26 @@ pub async fn open_browser<R: Runtime>(
                 "platform_not_allowed",
             )
         })?;
-    let browser_id = state.mark_browser_opened().ok_or_else(|| {
+    let browser_id = state.mark_browser_opened(direct_mode).ok_or_else(|| {
         CommandError::new("请先同步并测试代理，通过后才能打开浏览器", "not_ready")
     })?;
 
-    let local_proxy = format!("http://127.0.0.1:{}", launch.port);
+    let local_proxy = launch.port.map(|p| format!("http://127.0.0.1:{p}"));
     let target = Url::parse(&launch.target_url)
         .map_err(|error| CommandError::new(format!("起始网址无法解析：{error}"), "invalid_form"))?;
     let state_for_exit = state.inner().clone();
     let app_for_exit = app.clone();
     if let Err(error) =
-        browsers.launch(&app, browser_id, &local_proxy, target.as_str(), move || {
-            state_for_exit.mark_browser_closed_for(browser_id);
-            let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());
-        })
+        browsers.launch(
+            &app,
+            browser_id,
+            local_proxy.as_deref(),
+            target.as_str(),
+            move || {
+                state_for_exit.mark_browser_closed_for(browser_id);
+                let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());
+            },
+        )
     {
         state.mark_browser_closed_for(browser_id);
         emit_status(&app, &state);
@@ -587,6 +596,23 @@ pub async fn open_browser<R: Runtime>(
 
     emit_status(&app, &state);
     Ok(BrowserHandleView { browser_id })
+}
+
+/// 获取用户当前本机的公网出口 IP（直连模式下展示）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_direct_ip() -> CmdResult<String> {
+    let endpoints = [
+        "https://api.ipify.org",
+        "https://icanhazip.com",
+        "https://ifconfig.me/ip",
+        "https://ip.sb",
+    ];
+    for endpoint in endpoints {
+        if let Ok(ip) = probe::probe_direct(endpoint).await {
+            return Ok(ip);
+        }
+    }
+    Ok("127.0.0.1 (本机网络)".to_string())
 }
 
 fn emit_status<R: Runtime>(app: &AppHandle<R>, state: &AppState) {

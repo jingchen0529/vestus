@@ -25,16 +25,18 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
         )}
         title={
           theme === "dark"
-            ? "当前：暗黑模式（点击切换跟随系统）"
+            ? "当前：暗黑模式（点击切换为跟随系统）"
             : theme === "light"
-            ? "当前：明亮模式（点击切换暗黑模式）"
-            : "当前：跟随系统（点击切换明亮模式）"
+            ? "当前：明亮模式（点击切换为暗黑模式）"
+            : "当前：跟随系统（点击切换为明亮模式）"
         }
       >
-        {resolvedTheme === "dark" ? (
-          <Moon className="h-4 w-4 text-sky-400" />
+        {theme === "system" ? (
+          <Laptop className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
+        ) : resolvedTheme === "dark" ? (
+          <Moon className="h-3.5 w-3.5 text-sky-400" />
         ) : (
-          <Sun className="h-4 w-4 text-amber-500" />
+          <Sun className="h-3.5 w-3.5 text-amber-500" />
         )}
       </button>
     );
