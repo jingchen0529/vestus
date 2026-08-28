@@ -159,6 +159,8 @@ jobs:
       # bundle 目标来自 tauri.<platform>.conf.json：nsis / dmg / deb+appimage。
       - name: Tauri build
         working-directory: desktop
+        env:
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
         run: npm run desktop:build -- --target ${{ matrix.rust_target }}
 
       - name: Collect installers

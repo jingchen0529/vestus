@@ -81,7 +81,10 @@ function run() {
   );
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd: fileURLToPath(new URL("../", import.meta.url)),
-    env: process.env,
+    env: {
+      ...process.env,
+      TAURI_BUNDLER_DMG_IGNORE_CI: process.env.TAURI_BUNDLER_DMG_IGNORE_CI || "true",
+    },
     stdio: "inherit",
   });
   if (result.error) throw result.error;
