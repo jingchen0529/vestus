@@ -1,5 +1,4 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -60,7 +59,7 @@ assert(
 const rustSrcDir = new URL("src-tauri/src/", root);
 for (const name of readdirSync(rustSrcDir).filter((file) => file.endsWith(".rs"))) {
   if (name === "adapter.rs" || name === "bypass.rs") continue;
-  const source = readFileSync(join(rustSrcDir.pathname, name), "utf8");
+  const source = readFileSync(new URL(`src-tauri/src/${name}`, root), "utf8");
   assert(!source.includes("direct.connect("), `${name} 绕开适配器直接发起直连`);
 }
 
@@ -87,7 +86,7 @@ for (const forbidden of [
 const assetsDir = new URL("dist/assets/", root);
 const desktopBundle = readdirSync(assetsDir)
   .filter((name) => name.endsWith(".js"))
-  .map((name) => readFileSync(join(assetsDir.pathname, name), "utf8"))
+  .map((name) => readFileSync(new URL(`dist/assets/${name}`, root), "utf8"))
   .join("\n");
 for (const command of [
   "desktop_login",
