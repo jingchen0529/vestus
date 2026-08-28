@@ -111,79 +111,85 @@ const htmlContent = `<!DOCTYPE html>
       left: 24px;
       right: 24px;
       bottom: 22px;
-      background: rgba(255, 255, 255, 0.9);
+      background: rgba(255, 255, 255, 0.95);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(226, 232, 240, 0.95);
+      border: 1.5px solid rgba(203, 213, 225, 0.9);
       border-radius: 14px;
-      padding: 13px 18px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.02);
+      padding: 14px 18px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.03);
     }
 
     .panel-header {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 6px;
+      margin-bottom: 7px;
     }
     .badge {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      color: #b45309;
-      background: #fef3c7;
-      border: 1px solid #fde68a;
-      padding: 2px 8px;
+      font-size: 11.5px;
+      font-weight: 800;
+      color: #9a3412;
+      background: #ffedd5;
+      border: 1px solid #fed7aa;
+      padding: 2.5px 8px;
       border-radius: 6px;
+      letter-spacing: 0.2px;
     }
     .panel-desc {
-      font-size: 11.5px;
-      color: #475569;
+      font-size: 12px;
+      color: #334155;
       line-height: 1.4;
-      font-weight: 500;
+      font-weight: 600;
     }
 
     /* Command block */
     .cmd-box {
       margin-top: 8px;
-      background: #0f172a;
-      border: 1px solid #1e293b;
-      border-radius: 8px;
-      padding: 8px 12px;
+      background: #090d16;
+      border: 1.5px solid #1e293b;
+      border-radius: 9px;
+      padding: 9px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
     }
     .cmd-code {
-      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 11.5px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+      font-size: 12.5px;
       color: #38bdf8;
       word-break: break-all;
-      user-select: all;
-      font-weight: 500;
+      font-weight: 600;
+      letter-spacing: 0.3px;
     }
     .cmd-tag {
-      font-size: 10px;
-      color: #94a3b8;
-      background: rgba(255, 255, 255, 0.1);
-      padding: 2px 6px;
-      border-radius: 4px;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: #cbd5e1;
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 2.5px 7px;
+      border-radius: 5px;
       white-space: nowrap;
     }
 
     .panel-footer {
-      margin-top: 7px;
-      font-size: 11px;
-      color: #64748b;
+      margin-top: 8px;
+      font-size: 11.5px;
+      color: #475569;
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 5px;
+      font-weight: 500;
     }
     .panel-footer b {
-      color: #334155;
+      color: #0f172a;
+      font-weight: 700;
     }
   </style>
 </head>
@@ -198,8 +204,8 @@ const htmlContent = `<!DOCTYPE html>
   <!-- Drag Arrow -->
   <div class="arrow-container">
     <svg class="arrow-svg" viewBox="0 0 120 26" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M4 13H106" stroke="url(#paint0_linear)" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 4"/>
-      <path d="M98 5L114 13L98 21" stroke="#2563EB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M4 13H106" stroke="url(#paint0_linear)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="4 4"/>
+      <path d="M96 5L114 13L96 21" stroke="#2563EB" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
       <defs>
         <linearGradient id="paint0_linear" x1="4" y1="13" x2="114" y2="13" gradientUnits="userSpaceOnUse">
           <stop stop-color="#93C5FD"/>
@@ -214,14 +220,14 @@ const htmlContent = `<!DOCTYPE html>
   <div class="info-panel">
     <div class="panel-header">
       <span class="badge">⚠️ macOS 安全提示</span>
-      <span class="panel-desc">由于系统 Gatekeeper 限制，首次打开若提示<b>「已损坏」</b>或<b>「无法打开」</b>：</span>
+      <span class="panel-desc">由于系统 Gatekeeper 拦截未公证应用，首次打开若提示<b>「已损坏」</b>或<b>「无法打开」</b>：</span>
     </div>
     <div class="cmd-box">
       <span class="cmd-code">sudo xattr -rd com.apple.quarantine "/Applications/Vestus.app"</span>
       <span class="cmd-tag">终端命令</span>
     </div>
     <div class="panel-footer">
-      <span>💡 打开<b>「终端 (Terminal)」</b>粘贴执行上述命令并输入开机密码，即可正常打开使用。</span>
+      <span>💡 打开<b>「终端 (Terminal)」</b>复制粘贴运行上述命令并输入开机密码，即可正常打开使用。</span>
     </div>
   </div>
 </body>
@@ -245,17 +251,18 @@ const chromeExec = join(
 const outputPng = join(iconsDir, "dmg-background.png");
 const previewArtifact = join(artifactDir, "dmg_installer_preview.png");
 
-// 1. Generate DMG background image at standard 660x440
+// 1. Generate DMG background image at ultra-sharp 2x Retina resolution
 execFileSync(chromeExec, [
   "--headless=new",
   "--disable-gpu",
   "--hide-scrollbars",
+  "--force-device-scale-factor=2",
   "--window-size=660,440",
   `--screenshot=${outputPng}`,
   tempHtml,
 ]);
 
-console.log(`Generated DMG background: ${outputPng}`);
+console.log(`Generated 2x Retina DMG background: ${outputPng}`);
 
 // 2. Also generate a complete preview with mockup app icon and Applications folder
 const previewHtmlContent = `<!DOCTYPE html>
@@ -573,7 +580,8 @@ execFileSync(chromeExec, [
   "--headless=new",
   "--disable-gpu",
   "--hide-scrollbars",
-  "--window-size=688,496",
+  "--force-device-scale-factor=2",
+  "--window-size=688,488",
   `--screenshot=${previewArtifact}`,
   tempPreviewHtml,
 ]);
