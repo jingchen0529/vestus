@@ -71,17 +71,17 @@ export const LoginCard: React.FC<LoginCardProps> = ({
       <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] bg-indigo-600/10 dark:bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute top-[40%] left-[60%] w-[350px] h-[350px] bg-emerald-600/5 dark:bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
 
-      <div className="w-full max-w-md relative z-10">
-        <Card className="border-border bg-card/90 backdrop-blur-xl shadow-xl">
-          <CardHeader className="pb-4 pt-6 flex flex-col items-center justify-center text-center">
-            <div className="flex flex-col items-center justify-center gap-3 w-full">
+      <div className="w-full max-w-[340px] relative z-10">
+        <Card className="border-border bg-card/95 backdrop-blur-xl shadow-xl">
+          <CardHeader className="pb-3 pt-5 flex flex-col items-center justify-center text-center">
+            <div className="flex flex-col items-center justify-center gap-2.5 w-full">
               <img
                 src={displayLogo}
                 alt={productName || "Logo"}
-                className="w-12 h-12 object-contain rounded-2xl border border-border/60 bg-background shadow-sm shrink-0"
+                className="w-10 h-10 object-contain rounded-xl border border-border/60 bg-background shadow-xs shrink-0"
               />
               <div className="min-w-0 max-w-full">
-                <CardTitle className="text-base font-bold text-foreground text-center truncate">
+                <CardTitle className="text-sm font-semibold text-foreground text-center truncate">
                   {productName || "Vestus"}
                 </CardTitle>
               </div>
@@ -89,31 +89,32 @@ export const LoginCard: React.FC<LoginCardProps> = ({
           </CardHeader>
 
           <form onSubmit={handleSubmit}>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3 pb-5">
               {errMsg && (
-                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-300 text-xs flex items-center gap-2">
+                <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-300 text-xs flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-rose-500 dark:bg-rose-400 shrink-0" />
-                  <span>{errMsg}</span>
+                  <span className="truncate">{errMsg}</span>
                 </div>
               )}
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-foreground flex items-center justify-between">
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-muted-foreground flex items-center justify-between">
                   <span>登录账号</span>
                 </label>
                 <Input
                   type="text"
-                  placeholder="请输入管理员为您分配的登录账号"
+                  placeholder="请输入登录账号"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  icon={<User className="w-4 h-4" />}
+                  icon={<User className="w-3.5 h-3.5" />}
+                  className="h-8.5 text-xs"
                   autoFocus
                   disabled={loading}
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-foreground flex items-center justify-between">
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-muted-foreground flex items-center justify-between">
                   <span>登录密码</span>
                 </label>
                 <Input
@@ -121,7 +122,8 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                   placeholder="请输入登录密码"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  icon={<Lock className="w-4 h-4" />}
+                  icon={<Lock className="w-3.5 h-3.5" />}
+                  className="h-8.5 text-xs"
                   rightElement={
                     <button
                       type="button"
@@ -131,9 +133,9 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                       title={showPassword ? "隐藏密码" : "显示密码"}
                     >
                       {showPassword ? (
-                        <EyeOff className="w-4 h-4" />
+                        <EyeOff className="w-3.5 h-3.5" />
                       ) : (
-                        <Eye className="w-4 h-4" />
+                        <Eye className="w-3.5 h-3.5" />
                       )}
                     </button>
                   }
@@ -143,11 +145,11 @@ export const LoginCard: React.FC<LoginCardProps> = ({
 
               <Button
                 type="submit"
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium shadow-lg shadow-blue-500/25 h-10 mt-2"
+                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium shadow-md shadow-blue-500/20 h-8.5 text-xs mt-1"
                 disabled={loading}
               >
                 {loading ? "正在验证身份…" : "立即登录系统"}
-                <ArrowRight className="w-4 h-4 ml-1.5" />
+                <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
               </Button>
             </CardContent>
           </form>

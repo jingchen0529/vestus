@@ -5,8 +5,8 @@
 //!    「连不上」「超时」区分开，界面才能给出准确提示；
 //! 2. 再用 reqwest 走完整 HTTPS 请求拿到出口 IP。
 //!
-//! reqwest 客户端一律带 `.no_proxy()`：关掉系统代理自动读取，
-//! 保证除了我们显式指定的这一条，不存在第二条出口。
+//! 代理探测使用显式 [`reqwest::Proxy`]；添加显式代理本身会关闭系统代理自动读取。
+//! 只有直连探测使用 `.no_proxy()`，保证它不会继承系统代理。
 
 use std::time::Duration;
 
@@ -65,8 +65,6 @@ pub async fn probe_via_upstream(
 
     let client = reqwest::Client::builder()
         .proxy(proxy)
-        // 关闭系统代理自动读取，避免出现我们没指定的第二条出口
-        .no_proxy()
         .timeout(PROBE_TIMEOUT)
         .build()
         .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
@@ -167,6 +165,65 @@ fn sanitize(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn upstream_probe_routes_request_through_configured_proxy() {
+        let origin = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let origin_addr = origin.local_addr().unwrap();
+        let origin_task = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let _ = crate::httpio::read_head(&mut stream).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n198.51.100.1",
+                )
+                .await
+                .unwrap();
+        });
+
+        let proxy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_addr = proxy.local_addr().unwrap();
+        let probe_url = format!("http://{origin_addr}/");
+        let expected_proxy_target = probe_url.clone();
+        let proxy_task = tokio::spawn(async move {
+            let (mut preflight, _) = proxy.accept().await.unwrap();
+            let (head, _) = crate::httpio::read_head(&mut preflight).await.unwrap();
+            let request = crate::httpio::parse_request_head(&head).unwrap();
+            assert_eq!(request.method, "CONNECT");
+            assert_eq!(request.target, origin_addr.to_string());
+            preflight
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+
+            let (mut proxied, _) = proxy.accept().await.unwrap();
+            let (head, _) = crate::httpio::read_head(&mut proxied).await.unwrap();
+            let request = crate::httpio::parse_request_head(&head).unwrap();
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.target, expected_proxy_target);
+            proxied
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n203.0.113.7",
+                )
+                .await
+                .unwrap();
+        });
+
+        let upstream = UpstreamProxy::new(
+            proxy_addr.ip().to_string(),
+            proxy_addr.port(),
+            "proxy-user",
+            "proxy-password",
+        );
+
+        let ip = probe_via_upstream(&upstream, &probe_url).await.unwrap();
+
+        assert_eq!(ip, "203.0.113.7");
+        proxy_task.await.unwrap();
+        origin_task.abort();
+    }
 
     #[test]
     fn parses_bare_ip() {
