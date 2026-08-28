@@ -634,6 +634,74 @@ mod tests {
         });
     }
 
+    /// 明文 HTTP 必须一请求一连接。
+    ///
+    /// 这是后续请求不会绕过认证注入和路由判断的根本保证：`serve_plain` 只改写
+    /// 第一个请求头，之后就是 [`tokio::io::copy_bidirectional`] 原样透传，所以
+    /// 一旦连接能被复用，第二个请求就会既不带 `Proxy-Authorization`、也不重新
+    /// 走一遍直连/代理路由。这里从外部证明这条连接在一个响应后就结束了。
+    #[test]
+    fn plain_http_connection_is_not_reused_for_a_second_request() {
+        let rt = crate::rt::runtime();
+        rt.block_on(async {
+            let fake = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let fake_port = fake.local_addr().unwrap().port();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let (mut stream, _) = fake.accept().await.unwrap();
+                let (head, _) = httpio::read_head(&mut stream).await.unwrap();
+                let text = String::from_utf8_lossy(&head).into_owned();
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                    )
+                    .await
+                    .unwrap();
+                tx.send(text).unwrap();
+                // 上游按 Connection: close 的约定关闭连接。
+            });
+
+            let handle = start(
+                UpstreamProxy::new("127.0.0.1", fake_port, "u", "p"),
+                DirectHosts::empty(),
+            )
+            .await
+            .unwrap();
+
+            let mut client = TcpStream::connect(("127.0.0.1", handle.port))
+                .await
+                .unwrap();
+            client
+                .write_all(
+                    b"GET http://example.com/one HTTP/1.1\r\nHost: example.com\r\nProxy-Connection: keep-alive\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            // 客户端的复用意图不能透传给上游，且必须换成 close。
+            let forwarded = rx.await.unwrap();
+            assert!(
+                forwarded.contains("Connection: close"),
+                "实际转发的请求头：{forwarded}"
+            );
+            assert!(!forwarded.to_ascii_lowercase().contains("keep-alive"));
+
+            // 上游关闭后客户端连接必须随之结束。读不到 EOF 就说明连接可被复用，
+            // 那么下一个请求会绕过认证与路由。
+            let mut body = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.read_to_end(&mut body),
+            )
+            .await
+            .expect("上游关闭后客户端连接必须结束，否则明文连接会被复用")
+            .unwrap();
+            let text = String::from_utf8_lossy(&body);
+            assert!(text.starts_with("HTTP/1.1 200"), "实际响应：{text}");
+            assert!(text.ends_with("hi"), "响应体未完整透传：{text}");
+        });
+    }
+
     /// 配了直连列表以后，未命中的域名仍然必须走上游并带认证头。
     #[test]
     fn non_matching_host_still_goes_through_upstream() {

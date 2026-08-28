@@ -254,6 +254,23 @@ mod tests {
         assert!(out.ends_with("\r\n\r\n"));
     }
 
+    /// 直连路径同样一请求一连接。这个 `Connection: close` 承载的是路由正确性：
+    /// 连接一旦被复用，同一条连接上的后续请求会被 `copy_bidirectional` 原样
+    /// 透传，既绕过 origin-form 改写，也绕过直连/代理的路由判断——那时第二个
+    /// 请求可能是另一个域名，却被发到第一个域名的连接上。
+    #[test]
+    fn direct_rewrite_forces_connection_close_over_client_keep_alive() {
+        let head = b"GET http://direct.example.com/a HTTP/1.1\r\nHost: direct.example.com\r\nConnection: keep-alive\r\nProxy-Connection: keep-alive\r\n\r\n";
+        let req = parse_request_head(head).unwrap();
+        let out = rewrite_origin_form_head(&req);
+
+        assert!(out.contains("Connection: close"));
+        // 客户端的复用意图一个都不能透传下去
+        assert!(!out.to_ascii_lowercase().contains("keep-alive"));
+        assert!(!out.to_ascii_lowercase().contains("proxy-connection"));
+        assert_eq!(out.matches("Connection:").count(), 1);
+    }
+
     #[test]
     fn reads_head_and_keeps_leftover() {
         let rt = tokio::runtime::Builder::new_current_thread()
