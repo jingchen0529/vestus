@@ -104,7 +104,7 @@ pub struct DesktopPlatformView {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DesktopConfigSyncReport {
     pub proxy_assigned: bool,
-    /// 通过当前上游代理探测到的公网出口 IP；没有分配代理时为空。
+    /// 通过当前全局上游代理探测到的公网出口 IP；没有 active 代理时为空。
     pub proxy_ip: Option<String>,
     pub platforms: Vec<DesktopPlatformView>,
     /// 归一化后的直连域名，仅用于界面提示「这些域名不走代理」。
@@ -122,6 +122,10 @@ struct ValidatedDesktopConfig {
     platforms: Vec<DesktopPlatform>,
     profile_key: String,
     lease: String,
+}
+
+fn should_spawn_session_watchdog(config: &ValidatedDesktopConfig) -> bool {
+    config.proxy.is_some() || !config.platforms.is_empty()
 }
 
 fn validate_desktop_config(
@@ -309,6 +313,19 @@ pub async fn sync_desktop_config<R: Runtime>(
     let platform_views = platform_views(&validated.platforms);
 
     let Some(proxy_config) = validated.proxy else {
+        // Platform-only configurations still need lease monitoring so a
+        // revoked platform allowlist closes any direct browser sessions.
+        if should_spawn_session_watchdog(&validated) {
+            spawn_session_watchdog(
+                app.clone(),
+                state.inner().clone(),
+                auth.inner().clone(),
+                user_id,
+                auth_generation,
+                assignment_revision,
+                validated.lease.clone(),
+            );
+        }
         emit_status(&app, &state);
         return Ok(DesktopConfigSyncReport {
             proxy_assigned: false,
@@ -363,7 +380,7 @@ pub async fn sync_desktop_config<R: Runtime>(
                 emit_status(&app, &state);
             }
             return Err(CommandError::new(
-                "管理员已更新桌面配置，请重新同步",
+                "管理员已更新全局桌面配置，请重新同步",
                 "desktop_config_changed",
             ));
         }
@@ -537,7 +554,7 @@ async fn start_adapter(
         .map_err(|e| CommandError::new(format!("本地代理适配器启动失败：{e}"), "adapter_start"))
 }
 
-/// 用管理员分配的本地代理启动一个新的外置 Chromium。
+/// 用管理员启用的全局代理启动一个新的外置 Chromium。
 ///
 /// 每次调用都会创建新的临时 profile，同一平台也允许多开。
 #[tauri::command(rename_all = "camelCase")]
@@ -577,18 +594,16 @@ pub async fn open_browser<R: Runtime>(
         .map_err(|error| CommandError::new(format!("起始网址无法解析：{error}"), "invalid_form"))?;
     let state_for_exit = state.inner().clone();
     let app_for_exit = app.clone();
-    if let Err(error) =
-        browsers.launch(
-            &app,
-            browser_id,
-            local_proxy.as_deref(),
-            target.as_str(),
-            move || {
-                state_for_exit.mark_browser_closed_for(browser_id);
-                let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());
-            },
-        )
-    {
+    if let Err(error) = browsers.launch(
+        &app,
+        browser_id,
+        local_proxy.as_deref(),
+        target.as_str(),
+        move || {
+            state_for_exit.mark_browser_closed_for(browser_id);
+            let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());
+        },
+    ) {
         state.mark_browser_closed_for(browser_id);
         emit_status(&app, &state);
         return Err(CommandError::new(error.to_string(), "browser_start"));
@@ -629,7 +644,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "proxy": {
                 "id": 9,
-                "name": "专属代理",
+                "name": "全局代理",
                 "host": "203.0.113.8",
                 "port": 8080,
                 "username": "assigned-user",
@@ -668,6 +683,17 @@ mod tests {
                 "*.byteadverts.com".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn platform_only_desktop_config_starts_lease_watchdog() {
+        let mut wire = desktop_wire();
+        wire.proxy = None;
+
+        let validated = validate_desktop_config(wire, TEST_API_BASE).unwrap();
+
+        assert!(!validated.platforms.is_empty());
+        assert!(should_spawn_session_watchdog(&validated));
     }
 
     #[test]

@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS `platform` (
   KEY `idx_platform_status` (`status`), KEY `idx_platform_sort_order` (`sort_order`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Legacy compatibility only: current desktop configuration reads the global
+-- active proxy and never reads this per-user assignment table. Older admin
+-- clients may still write rows here.
 CREATE TABLE IF NOT EXISTS `user_proxy_assignment` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `user_id` BIGINT NOT NULL,
@@ -83,6 +86,9 @@ CREATE TABLE IF NOT EXISTS `user_proxy_assignment` (
   KEY `idx_user_proxy_assignment_proxy` (`proxy_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Legacy compatibility only: current desktop configuration reads all active
+-- platforms globally and never reads this per-user assignment table. Older
+-- admin clients may still write rows here.
 CREATE TABLE IF NOT EXISTS `user_platform_assignment` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `user_id` BIGINT NOT NULL,
@@ -119,6 +125,11 @@ CREATE TABLE IF NOT EXISTS `system_setting` (
   `updated_at` DATETIME(6) NOT NULL,
   PRIMARY KEY (`id`), UNIQUE KEY `uq_system_setting_key` (`key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Stable singleton row used to serialize active-proxy changes even when no
+-- proxy is currently active. Application startup also creates it idempotently.
+INSERT IGNORE INTO `system_setting` (`key`, `value`, `updated_at`)
+VALUES ('__global_proxy_activation_lock__', '', UTC_TIMESTAMP(6));
 
 CREATE TABLE IF NOT EXISTS `uploaded_file` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,

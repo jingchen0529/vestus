@@ -17,8 +17,6 @@ import {
   PlatformItem,
   CreatePlatformPayload,
   UpdatePlatformPayload,
-  DesktopConfigResponse,
-  SaveDesktopConfigPayload,
 } from "@/types/platform";
 import {
   AdminUser,
@@ -176,18 +174,6 @@ export const api = {
 
   async getUserStats(): Promise<UserStats> {
     return request<UserStats>("/api/admin/stats");
-  },
-
-  // Desktop Config
-  async getUserDesktopConfig(userId: number): Promise<DesktopConfigResponse> {
-    return request<DesktopConfigResponse>(`/api/admin/users/${userId}/desktop-config`);
-  },
-
-  async saveUserDesktopConfig(userId: number, payload: SaveDesktopConfigPayload): Promise<DesktopConfigResponse> {
-    return request<DesktopConfigResponse>(`/api/admin/users/${userId}/desktop-config`, {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    });
   },
 
   // Proxies

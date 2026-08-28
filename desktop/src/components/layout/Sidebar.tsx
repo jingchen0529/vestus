@@ -50,7 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {productName}
             </h1>
             <p className="text-[10px] text-muted-foreground truncate">
-              专属代理浏览器
+              全局代理浏览器
             </p>
           </div>
         </div>

@@ -39,17 +39,20 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    update,
 )
-from sqlalchemy.dialects.mysql import DATETIME as MySQLDateTime
+from sqlalchemy.dialects.mysql import DATETIME as MySQLDateTime, insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_column, sessionmaker
 
 from file_storage import is_inline_safe, normalize_upload_reference
 from security import decrypt_proxy_password, encrypt_proxy_password, hash_password
 
 
 DEFAULT_SQLITE_PATH = Path(__file__).resolve().with_name("vestus-dev.db")
+GLOBAL_PROXY_LOCK_KEY = "__global_proxy_activation_lock__"
 
 
 class LastSuperAdminError(ValueError):
@@ -546,6 +549,8 @@ class Database:
             Base.metadata.create_all(self.engine)
             self.available = True
             self.initialization_error = None
+            self._ensure_global_proxy_lock()
+            self._normalize_active_proxies()
             self._bootstrap_admin()
         except SQLAlchemyError as exc:
             self.available = False
@@ -558,6 +563,8 @@ class Database:
                 Base.metadata.create_all(self.engine)
                 self.available = True
                 self.initialization_error = None
+                self._ensure_global_proxy_lock()
+                self._normalize_active_proxies()
                 self._bootstrap_admin()
 
     def ping(self) -> bool:
@@ -569,6 +576,69 @@ class Database:
         except SQLAlchemyError:
             self.available = False
             return False
+
+    def _ensure_global_proxy_lock(self) -> None:
+        """Create the stable row used to serialize global proxy activation."""
+        values = {
+            "key": GLOBAL_PROXY_LOCK_KEY,
+            "value": "",
+            "updated_at": utc_now(),
+        }
+        dialect = self.engine.dialect.name
+        with self.engine.begin() as connection:
+            if dialect == "sqlite":
+                statement = (
+                    sqlite_insert(SystemSetting)
+                    .values(**values)
+                    .on_conflict_do_nothing(index_elements=[SystemSetting.key])
+                )
+                connection.execute(statement)
+            elif dialect == "mysql":
+                connection.execute(
+                    mysql_insert(SystemSetting).values(**values).prefix_with("IGNORE")
+                )
+            else:
+                existing = connection.scalar(
+                    select(SystemSetting.id).where(
+                        SystemSetting.key == GLOBAL_PROXY_LOCK_KEY
+                    )
+                )
+                if existing is None:
+                    connection.execute(SystemSetting.__table__.insert().values(**values))
+
+    @staticmethod
+    def _lock_global_proxy_activation(session: Session) -> None:
+        """Take a real write lock that works even when no proxy is active.
+
+        A direct UPDATE is deliberately the first proxy-state statement. MySQL
+        locks this stable row, while SQLite acquires its database write lock;
+        ``SELECT ... FOR UPDATE`` alone is ineffective on SQLite and cannot lock
+        an empty active-proxy result set reliably on every isolation level.
+        """
+        result = session.execute(
+            update(SystemSetting)
+            .where(SystemSetting.key == GLOBAL_PROXY_LOCK_KEY)
+            .values(updated_at=utc_now())
+        )
+        if result.rowcount != 1:
+            raise RuntimeError("global proxy activation lock is missing")
+
+    def _normalize_active_proxies(self) -> None:
+        """Keep only the most recently updated legacy active proxy."""
+        with self.session() as db:
+            self._lock_global_proxy_activation(db)
+            active_proxies = db.scalars(
+                select(Proxy)
+                .where(Proxy.status == "active")
+                .order_by(desc(Proxy.updated_at), desc(Proxy.id))
+                .with_for_update()
+            ).all()
+            if len(active_proxies) <= 1:
+                return
+            replaced_at = utc_now()
+            for proxy in active_proxies[1:]:
+                proxy.status = "disabled"
+                proxy.updated_at = replaced_at
 
     def _bootstrap_admin(self) -> None:
         # Deliberately no weak built-in password.  Set both variables in a
@@ -719,30 +789,52 @@ class Database:
             List[Tuple[Platform, Optional[UploadedFile]]],
         ]
     ]:
-        """Load a user's assigned proxy and platforms in one SQL snapshot."""
+        """Load the global active proxy and platforms for one desktop user.
+
+        The user remains part of the snapshot so deleted accounts cannot obtain
+        configuration and each response can retain its user-scoped profile key.
+        Legacy assignment rows are intentionally ignored.
+        """
+        active_proxy = aliased(Proxy)
+        active_proxy_id = (
+            select(active_proxy.id)
+            .where(active_proxy.status == "active")
+            .order_by(desc(active_proxy.updated_at), desc(active_proxy.id))
+            .limit(1)
+            .scalar_subquery()
+        )
         rows = session.execute(
             select(User, Proxy, Platform, UploadedFile)
+            .select_from(User)
             .outerjoin(
-                UserProxyAssignment,
-                UserProxyAssignment.user_id == User.id,
+                Proxy,
+                Proxy.id == active_proxy_id,
             )
-            .outerjoin(Proxy, Proxy.id == UserProxyAssignment.proxy_id)
             .outerjoin(
-                UserPlatformAssignment,
-                UserPlatformAssignment.user_id == User.id,
+                Platform,
+                Platform.status == "active",
             )
-            .outerjoin(Platform, Platform.id == UserPlatformAssignment.platform_id)
             .outerjoin(UploadedFile, UploadedFile.path == Platform.icon_url)
             .where(User.id == user_id, User.deleted_at.is_(None))
-            .order_by(Platform.sort_order, Platform.id)
+            .order_by(
+                desc(Proxy.updated_at),
+                desc(Proxy.id),
+                Platform.sort_order,
+                Platform.id,
+            )
         ).all()
         if not rows:
             return None
         user = rows[0][0]
         proxy = rows[0][1]
-        platforms = [
-            (row[2], row[3]) for row in rows if row[2] is not None
-        ]
+        platforms: List[Tuple[Platform, Optional[UploadedFile]]] = []
+        seen_platform_ids: set[int] = set()
+        for row in rows:
+            platform = row[2]
+            if platform is None or platform.id in seen_platform_ids:
+                continue
+            seen_platform_ids.add(platform.id)
+            platforms.append((platform, row[3]))
         return user, proxy, platforms
 
     @staticmethod
@@ -785,7 +877,7 @@ class Database:
         *,
         desktop: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Return assignments, filtering disabled resources for desktop users."""
+        """Return the global active resources for an existing desktop user."""
         numeric_user_id = int(user_id)
         with self.session() as session:
             snapshot = self._load_user_desktop_snapshot(session, numeric_user_id)
@@ -824,7 +916,7 @@ class Database:
             return result
 
     def get_user_desktop_lease(self, user_id: int | str) -> Optional[str]:
-        """Hash all assignment metadata that can change a running desktop route.
+        """Hash all global resource metadata that can change a desktop route.
 
         Password changes are represented by a digest of the Fernet ciphertext;
         the plaintext is never decrypted or hashed for lease generation.
@@ -892,6 +984,16 @@ class Database:
 
     def insert_proxy(self, values: Dict[str, Any]) -> Dict[str, Any]:
         with self.session() as db:
+            status = values.get("status", "active")
+            if status == "active":
+                self._lock_global_proxy_activation(db)
+                replaced_at = utc_now()
+                active_proxies = db.scalars(
+                    select(Proxy).where(Proxy.status == "active").with_for_update()
+                ).all()
+                for active_proxy in active_proxies:
+                    active_proxy.status = "disabled"
+                    active_proxy.updated_at = replaced_at
             item = Proxy(
                 name=values["name"].strip(),
                 host=values["host"].strip(),
@@ -899,7 +1001,7 @@ class Database:
                 username=values["username"].strip(),
                 encrypted_password=encrypt_proxy_password(values["password"]),
                 bypass_hosts=list(values.get("bypass_hosts") or []),
-                status=values.get("status", "active"),
+                status=status,
             )
             db.add(item)
             db.flush()
@@ -907,9 +1009,25 @@ class Database:
 
     def update_proxy(self, proxy_id: int | str, values: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         with self.session() as db:
-            item = db.get(Proxy, int(proxy_id))
+            numeric_id = int(proxy_id)
+            activates_proxy = values.get("status") == "active"
+            if activates_proxy:
+                self._lock_global_proxy_activation(db)
+            item = db.scalar(
+                select(Proxy).where(Proxy.id == numeric_id).with_for_update()
+            )
             if item is None:
                 return None
+            if activates_proxy:
+                replaced_at = utc_now()
+                active_proxies = db.scalars(
+                    select(Proxy)
+                    .where(Proxy.status == "active", Proxy.id != numeric_id)
+                    .with_for_update()
+                ).all()
+                for active_proxy in active_proxies:
+                    active_proxy.status = "disabled"
+                    active_proxy.updated_at = replaced_at
             for key in ("name", "host", "port", "username", "status"):
                 if key not in values:
                     continue
@@ -1006,7 +1124,7 @@ class Database:
             return True
 
     def set_user_desktop_config(self, user_id: int | str, proxy_id: Optional[int], platform_ids: Optional[List[int]] = None) -> Dict[str, Any]:
-        """Atomically replace a user's proxy and platform assignments."""
+        """Legacy compatibility writer; assignments no longer affect reads."""
         numeric_user_id = int(user_id)
         selected_platform_ids = [int(item) for item in (platform_ids or [])]
         with self.session() as session:

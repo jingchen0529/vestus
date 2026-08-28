@@ -15,8 +15,8 @@
 - `admin`：后台管理员
 - `user`：桌面端用户
 - `user_log`：管理员和桌面端用户操作日志
-- `proxy` / `platform`：管理员维护的代理和平台入口
-- `user_proxy_assignment` / `user_platform_assignment`：桌面用户配置关联
+- `proxy` / `platform`：管理员维护的全局代理和平台入口；所有 active 平台及唯一 active 代理供全部桌面用户共享
+- `user_proxy_assignment` / `user_platform_assignment`：历史用户配置关联表，仅为兼容保留，桌面配置读取不再使用
 - `system_setting`：产品名称、Logo 与界面颜色配置
 - `uploaded_file`：上传文件元数据（只保存相对路径）
 
@@ -61,7 +61,7 @@ VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app:app
 - 桌面端用户认证：`POST/GET /api/user/auth/login|me`，`POST /api/user/auth/logout|change-password`
 - 桌面端用户管理：`/api/admin/users`
 - 代理和平台管理：`/api/admin/proxies`、`/api/admin/platforms`
-- 用户桌面配置：管理员 `/api/admin/users/{id}/desktop-config`，桌面端 `/api/user/desktop-config`
+- 全局桌面配置：桌面端 `/api/user/desktop-config`；已废弃的管理员 `/api/admin/users/{id}/desktop-config` 按用户接口统一返回 HTTP 410
 - 配置存续校验：桌面端 `GET /api/user/desktop-config/lease`
 - 产品名称：登录前公开读取 `GET /api/product`
 - 日志分页：`GET /api/admin/user-logs`
@@ -72,7 +72,19 @@ VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app:app
 不会进入 React/JavaScript。Web 管理端把登录响应中的令牌只保存在页面内存，同时用 HttpOnly
 Cookie 支持刷新后的会话恢复；Cookie 认证的写请求还必须通过同源 `Origin` 校验。令牌有效期和
 账号表中的 `token_version` 会在每次请求校验；停用、重置密码、退出登录后旧令牌立即失效。桌面端还会
-定期校验配置 lease；管理员变更或撤销代理/平台分配后，旧代理和浏览器会被关闭。
+定期校验配置 lease；管理员变更、停用或替换全局代理/平台后，所有受影响桌面端的旧代理和浏览器会被关闭。
+
+## 全局桌面配置
+
+桌面端配置不再按用户分配：`platform.status = 'active'` 的全部平台会下发给每个桌面用户，
+`proxy.status = 'active'` 的代理由每个桌面用户共享。代理最多只能有一个 active；创建或启用新代理
+会在同一事务中停用原 active 代理。代理状态变更会先更新 `system_setting` 中的内部单例锁行，确保即使
+当前没有 active 代理，并发创建或启用操作也会串行执行。允许没有 active 代理，客户端此时使用保留的直连模式开关。
+
+`user_proxy_assignment` 和 `user_platform_assignment` 是 legacy compatibility 表，可以继续存在；当前 HTTP API
+不再写入或读取它们，它们也不会参与 `/api/user/desktop-config` 或 lease 计算。升级已有数据库时，
+建议先备份。服务启动时若发现多条 active 代理，会自动保留 `updated_at` 最新的一条；时间相同时保留
+`id` 最大的一条，其余代理改为 disabled。assignment 表中的历史数据不会被该过程删除或改写。
 
 生产环境必须固定设置 `VESTUS_SECRET_KEY` 与 `VESTUS_PROXY_SECRET_KEY`；代理密码下发链路必须使用
 HTTPS，桌面端需在构建时设置 `VESTUS_API_BASE_URL=https://...`。同时建议启用 Secure Cookie 和
@@ -120,7 +132,7 @@ PNG、JPEG、GIF、WebP、ICO，且配置表仍只保存 `path` 半路径。SVG�
 
 ## 直连域名（bypassHosts）
 
-`proxy` 表的 `bypass_hosts` 列（JSON 字符串数组）记录不走代理、由客户端直接连接的主机名，
+`proxy` 表的 `bypass_hosts` 列（JSON 字符串数组）记录不走全局代理、由客户端直接连接的主机名，
 `NULL` 或空数组表示全部流量走该代理。`POST/PATCH /api/admin/proxies` 用 `bypassHosts` 读写，
 `GET /api/admin/proxies` 与 `GET /api/user/desktop-config` 都会返回归一化后的列表，并且它已
 计入配置 lease——只改直连域名同样会让桌面端重建路由。

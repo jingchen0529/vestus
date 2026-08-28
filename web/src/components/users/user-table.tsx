@@ -22,7 +22,6 @@ import {
   KeyRound,
   PowerOff,
   Power,
-  Sliders,
   Building,
   Phone,
   Clock,
@@ -35,7 +34,6 @@ interface UserTableProps {
   onEditUser: (user: DesktopUser) => void;
   onToggleStatus: (user: DesktopUser) => void;
   onResetPassword: (user: DesktopUser) => void;
-  onConfigureDesktop: (user: DesktopUser) => void;
   onDeleteUser: (user: DesktopUser) => void;
   isLoading?: boolean;
 }
@@ -45,7 +43,6 @@ export function UserTable({
   onEditUser,
   onToggleStatus,
   onResetPassword,
-  onConfigureDesktop,
   onDeleteUser,
   isLoading,
 }: UserTableProps) {
@@ -157,17 +154,6 @@ export function UserTable({
               {/* Actions */}
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-1.5">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onConfigureDesktop(user)}
-                    className="h-8 px-2 text-xs gap-1 hover:border-primary hover:text-primary"
-                    title="配置专属代理与平台"
-                  >
-                    <Sliders className="h-3.5 w-3.5" />
-                    <span className="hidden xl:inline">配置桌面</span>
-                  </Button>
-
                   <Button
                     variant={user.status === "active" ? "outline" : "secondary"}
                     size="sm"

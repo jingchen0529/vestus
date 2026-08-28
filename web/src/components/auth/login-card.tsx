@@ -80,7 +80,7 @@ export function LoginCard() {
               {displayTitle}
             </CardTitle>
             <CardDescription className="text-slate-500 text-xs mt-1">
-              管理员、桌面端用户、专属代理池与审计日志统一控制中心
+              管理员、桌面端用户、全局共享代理与审计日志统一控制中心
             </CardDescription>
           </div>
         </CardHeader>

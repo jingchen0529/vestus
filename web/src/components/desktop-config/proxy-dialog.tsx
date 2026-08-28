@@ -133,10 +133,10 @@ export function ProxyDialog({
         <DialogHeader>
           <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 mb-1">
             <Server className="h-5 w-5" />
-            <DialogTitle>{isEditing ? "编辑专属代理" : "新增专属网络代理"}</DialogTitle>
+            <DialogTitle>{isEditing ? "编辑全局代理" : "新增全局网络代理"}</DialogTitle>
           </div>
           <DialogDescription className="text-xs">
-            配置用于桌面端浏览器网络中继的 HTTP/SOCKS 代理节点信息
+            配置所有桌面用户共享的 HTTP/SOCKS 代理节点。系统最多启用一个；启用新节点会自动停用旧节点。
           </DialogDescription>
         </DialogHeader>
 

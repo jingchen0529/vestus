@@ -69,7 +69,7 @@ export function OverviewStats({
         <CardContent className="p-5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              专属代理池
+              全局共享代理池
             </span>
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
               <Server className="h-5 w-5" />
@@ -79,15 +79,15 @@ export function OverviewStats({
             <span className="text-3xl font-bold tracking-tight text-foreground">
               {proxies.length}
             </span>
-            <span className="text-xs text-muted-foreground">套配置</span>
+            <span className="text-xs text-muted-foreground">个代理节点</span>
           </div>
           <div className="mt-4 flex items-center gap-3 text-xs border-t pt-3">
             <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
               <CheckCircle2 className="h-3.5 w-3.5" />
-              <span>{activeProxies} 在线启用</span>
+              <span>{activeProxies} 个启用</span>
             </div>
             <div className="flex items-center gap-1 text-slate-500">
-              <span>{proxies.length - activeProxies} 停用</span>
+              <span>所有用户共享 · 最多启用 1 个</span>
             </div>
           </div>
         </CardContent>

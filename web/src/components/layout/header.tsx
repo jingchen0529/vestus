@@ -13,8 +13,8 @@ interface HeaderProps {
 const tabTitles: Record<NavTab, { title: string; subtitle: string }> = {
   dashboard: { title: "控制总览", subtitle: "系统状态与综合统计指标" },
   users: { title: "桌面用户管理", subtitle: "管理桌面客户端受权账号、并发与到期时间" },
-  desktop: { title: "用户桌面配置", subtitle: "按用户分配专属代理节点与可访问业务平台" },
-  platforms: { title: "平台统一管理", subtitle: "统一维护业务平台入口，再按桌面用户授权" },
+  desktop: { title: "全局代理配置", subtitle: "配置所有桌面用户共享的代理节点，系统最多启用一个" },
+  platforms: { title: "平台统一管理", subtitle: "统一维护业务平台入口与可用状态" },
   admins: { title: "系统管理控制", subtitle: "超级管理员与普通管理员受权及安全控制" },
   settings: { title: "系统全局配置", subtitle: "自定义管理端与桌面端品牌名称、Logo 图标及主题配色风格" },
   logs: { title: "审计日志追踪", subtitle: "完整追踪桌面端与管理员操作轨迹" },

@@ -485,23 +485,6 @@ class PlatformUpdate(BaseModel):
         return normalize_upload_reference(value) if value is not None else None
 
 
-class DesktopConfigUpdate(BaseModel):
-    proxy_id: Optional[int] = Field(default=None, alias="proxyId", ge=1)
-    platform_ids: Optional[List[int]] = Field(default_factory=list, alias="platformIds", max_length=1000)
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
-
-    @field_validator("platform_ids")
-    @classmethod
-    def validate_platform_ids(cls, value: Optional[List[int]]) -> Optional[List[int]]:
-        if value is None:
-            return []
-        if any(item <= 0 for item in value):
-            raise ValueError("platform IDs must be positive")
-        if len(value) != len(set(value)):
-            raise ValueError("platform IDs must be unique")
-        return value
-
-
 def _client_ip(request: Request) -> str:
     # Only trust forwarding headers when explicitly enabled by deployment.
     if os.getenv("VESTUS_TRUST_PROXY", "0") == "1":
@@ -1207,30 +1190,20 @@ async def delete_user(user_id: int, request: Request, auth: Dict[str, Any] = Dep
     return {"success": deleted}
 
 
-@app.get("/api/admin/users/{user_id}/desktop-config", tags=["desktop-config"])
+@app.get("/api/admin/users/{user_id}/desktop-config", tags=["desktop-config"], deprecated=True)
 async def get_user_desktop_config(user_id: int, _auth: Dict[str, Any] = Depends(admin_auth)) -> Dict[str, Any]:
-    result = db.get_user_desktop_config(user_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    return result
-
-
-@app.patch("/api/admin/users/{user_id}/desktop-config", tags=["desktop-config"])
-async def update_user_desktop_config(user_id: int, payload: DesktopConfigUpdate, request: Request, auth: Dict[str, Any] = Depends(admin_auth)) -> Dict[str, Any]:
-    try:
-        result = db.set_user_desktop_config(user_id, payload.proxy_id, payload.platform_ids)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    user = db.get_user(user_id)
-    target_name = user["username"] if user else str(user_id)
-    _log(
-        auth, request, "USER_DESKTOP_CONFIG_UPDATE", f"更新用户 {target_name} 的桌面配置",
-        target_type="user", target_id=user_id, target_name=target_name,
-        details={"proxyId": payload.proxy_id, "platformIds": payload.platform_ids},
+    raise HTTPException(
+        status_code=410,
+        detail="桌面代理和平台已改为全局共享配置",
     )
-    return result
+
+
+@app.patch("/api/admin/users/{user_id}/desktop-config", tags=["desktop-config"], deprecated=True)
+async def update_user_desktop_config(user_id: int, _auth: Dict[str, Any] = Depends(admin_auth)) -> Dict[str, Any]:
+    raise HTTPException(
+        status_code=410,
+        detail="桌面代理和平台已改为全局共享配置",
+    )
 
 
 @app.get("/api/admin/stats", tags=["users"])

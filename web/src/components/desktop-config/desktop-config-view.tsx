@@ -32,21 +32,10 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
-import { DesktopUser } from "@/types/user";
-import { DesktopConfigResponse, PlatformItem } from "@/types/platform";
 import { ProxyDialog } from "./proxy-dialog";
-import { UserConfigCard } from "./user-config-card";
 
 interface DesktopConfigViewProps {
-  users: DesktopUser[];
   proxies: ProxyItem[];
-  platforms: PlatformItem[];
-  selectedUserId: number | null;
-  onSelectUser: (userId: number | null) => void;
-  userConfig: DesktopConfigResponse | null;
-  isLoadingUserConfig?: boolean;
-  onSaveUserConfig: (userId: number, proxyId: number | null, platformIds: number[]) => Promise<void>;
-  onRefreshAll: () => void;
   onRefresh: () => void;
   isRefreshing?: boolean;
   onCreateProxy: (payload: CreateProxyPayload) => Promise<void>;
@@ -56,15 +45,7 @@ interface DesktopConfigViewProps {
 }
 
 export function DesktopConfigView({
-  users,
   proxies,
-  platforms,
-  selectedUserId,
-  onSelectUser,
-  userConfig,
-  isLoadingUserConfig,
-  onSaveUserConfig,
-  onRefreshAll,
   onRefresh,
   isRefreshing = false,
   onCreateProxy,
@@ -143,22 +124,10 @@ export function DesktopConfigView({
 
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-300">
-      <UserConfigCard
-        users={users}
-        proxies={proxies}
-        platforms={platforms}
-        selectedUserId={selectedUserId}
-        onSelectUser={onSelectUser}
-        config={userConfig}
-        isLoadingConfig={isLoadingUserConfig}
-        onSaveConfig={onSaveUserConfig}
-        onRefreshAll={onRefreshAll}
-      />
-
       {/* Notice Banner */}
       <div className="flex items-center gap-2.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs text-emerald-700 dark:text-emerald-300">
         <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-        <span>代理统一生效机制：所有处于「启用」状态的网络代理节点将自动对全量桌面端生效，无需为每个用户逐一分配。</span>
+        <span>全局最多启用一条代理；启用新代理时会自动停用原代理，当前启用代理将下发给全部桌面用户。</span>
       </div>
 
       {/* 1. Metric Stats Cards */}
@@ -180,7 +149,7 @@ export function DesktopConfigView({
         <Card className="border-border/80 shadow-sm">
           <CardContent className="p-4 flex items-center justify-between">
             <div>
-              <p className="text-xs text-muted-foreground font-medium">正常启用（生效分发）</p>
+              <p className="text-xs text-muted-foreground font-medium">当前生效代理</p>
               <p className="text-2xl font-bold tracking-tight mt-1 text-emerald-600 dark:text-emerald-400">
                 {stats.active}
               </p>

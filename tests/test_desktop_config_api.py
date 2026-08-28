@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from threading import Barrier, BrokenBarrierError
 from typing import Any
 
 from sqlalchemy import event, inspect, select
@@ -32,7 +35,413 @@ def _create_user(client: Any, admin_token: str) -> dict[str, Any]:
     return response.json()
 
 
-def test_desktop_config_assignment_permissions_and_encryption(api: Any) -> None:
+def _create_named_user(
+    client: Any,
+    admin_token: str,
+    *,
+    username: str,
+    password: str,
+) -> dict[str, Any]:
+    response = client.post(
+        "/api/admin/users",
+        headers=_bearer(admin_token),
+        json={
+            "username": username,
+            "password": password,
+            "name": username,
+            "expiresAt": "2099-12-31",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_active_proxy_and_platforms_are_shared_by_every_desktop_user(api: Any) -> None:
+    client, module = api
+    admin_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "test-admin",
+        "test-admin-password",
+    )
+    first_user = _create_named_user(
+        client,
+        admin_token,
+        username="shared-user-one",
+        password="shared-password-one",
+    )
+    second_user = _create_named_user(
+        client,
+        admin_token,
+        username="shared-user-two",
+        password="shared-password-two",
+    )
+
+    proxy = client.post(
+        "/api/admin/proxies",
+        headers=_bearer(admin_token),
+        json={
+            "name": "Global Proxy",
+            "host": "global-proxy.example.test",
+            "port": 3128,
+            "username": "global-user",
+            "password": "global-secret",
+        },
+    ).json()
+    legacy_disabled_proxy = client.post(
+        "/api/admin/proxies",
+        headers=_bearer(admin_token),
+        json={
+            "name": "Legacy Assigned Proxy",
+            "host": "legacy-assigned-proxy.example.test",
+            "port": 8080,
+            "username": "legacy-user",
+            "password": "legacy-secret",
+            "status": "disabled",
+        },
+    ).json()
+    active_platform = client.post(
+        "/api/admin/platforms",
+        headers=_bearer(admin_token),
+        json={
+            "name": "Global Platform",
+            "url": "https://global-platform.example.test",
+            "sortOrder": 10,
+        },
+    ).json()
+    disabled_platform = client.post(
+        "/api/admin/platforms",
+        headers=_bearer(admin_token),
+        json={
+            "name": "Disabled Global Platform",
+            "url": "https://disabled-global-platform.example.test",
+            "status": "disabled",
+        },
+    ).json()
+
+    # Historical assignment rows can remain after an upgrade, but must not
+    # narrow or replace the global resources delivered to either user.
+    with module.db.session() as session:
+        session.add(
+            module.UserProxyAssignment(
+                user_id=first_user["id"],
+                proxy_id=legacy_disabled_proxy["id"],
+            )
+        )
+        session.add(
+            module.UserPlatformAssignment(
+                user_id=first_user["id"],
+                platform_id=disabled_platform["id"],
+            )
+        )
+
+    first_token = _login(
+        client,
+        "/api/user/auth/login",
+        first_user["username"],
+        "shared-password-one",
+    )
+    second_token = _login(
+        client,
+        "/api/user/auth/login",
+        second_user["username"],
+        "shared-password-two",
+    )
+    first_config = client.get(
+        "/api/user/desktop-config",
+        headers=_bearer(first_token),
+    ).json()
+    second_config = client.get(
+        "/api/user/desktop-config",
+        headers=_bearer(second_token),
+    ).json()
+
+    assert first_config["proxy"]["id"] == proxy["id"]
+    assert second_config["proxy"]["id"] == proxy["id"]
+    assert [item["id"] for item in first_config["platforms"]] == [
+        active_platform["id"]
+    ]
+    assert [item["id"] for item in second_config["platforms"]] == [
+        active_platform["id"]
+    ]
+    assert first_config["profileKey"] == f"user-{first_user['id']}"
+    assert second_config["profileKey"] == f"user-{second_user['id']}"
+
+
+def test_creating_an_active_proxy_makes_it_the_only_active_proxy(api: Any) -> None:
+    client, _module = api
+    admin_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "test-admin",
+        "test-admin-password",
+    )
+    headers = _bearer(admin_token)
+    first = client.post(
+        "/api/admin/proxies",
+        headers=headers,
+        json={
+            "name": "First Global Proxy",
+            "host": "first-global-proxy.example.test",
+            "port": 3128,
+            "username": "first-user",
+            "password": "first-secret",
+        },
+    ).json()
+    second = client.post(
+        "/api/admin/proxies",
+        headers=headers,
+        json={
+            "name": "Second Global Proxy",
+            "host": "second-global-proxy.example.test",
+            "port": 8080,
+            "username": "second-user",
+            "password": "second-secret",
+        },
+    ).json()
+
+    proxies = client.get("/api/admin/proxies", headers=headers).json()
+    statuses = {item["id"]: item["status"] for item in proxies}
+    assert statuses == {
+        first["id"]: "disabled",
+        second["id"]: "active",
+    }
+
+
+def test_enabling_a_proxy_disables_the_previous_active_proxy(api: Any) -> None:
+    client, _module = api
+    admin_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "test-admin",
+        "test-admin-password",
+    )
+    headers = _bearer(admin_token)
+    first = client.post(
+        "/api/admin/proxies",
+        headers=headers,
+        json={
+            "name": "Current Global Proxy",
+            "host": "current-global-proxy.example.test",
+            "port": 3128,
+            "username": "current-user",
+            "password": "current-secret",
+        },
+    ).json()
+    replacement = client.post(
+        "/api/admin/proxies",
+        headers=headers,
+        json={
+            "name": "Replacement Global Proxy",
+            "host": "replacement-global-proxy.example.test",
+            "port": 8080,
+            "username": "replacement-user",
+            "password": "replacement-secret",
+            "status": "disabled",
+        },
+    ).json()
+
+    enabled = client.patch(
+        f"/api/admin/proxies/{replacement['id']}",
+        headers=headers,
+        json={"status": "active"},
+    )
+    assert enabled.status_code == 200, enabled.text
+
+    proxies = client.get("/api/admin/proxies", headers=headers).json()
+    statuses = {item["id"]: item["status"] for item in proxies}
+    assert statuses == {
+        first["id"]: "disabled",
+        replacement["id"]: "active",
+    }
+
+
+def test_concurrent_active_proxy_creation_keeps_one_active_proxy(api: Any) -> None:
+    _client, module = api
+    select_barrier = Barrier(2)
+
+    def synchronize_empty_active_reads(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        normalized = " ".join(statement.lower().split())
+        if normalized.startswith("select") and "from proxy" in normalized and "proxy.status" in normalized:
+            try:
+                select_barrier.wait(timeout=1)
+            except BrokenBarrierError:
+                # Once a stable DB lock serializes the transactions, the first
+                # transaction times out here before the second can run SELECT.
+                pass
+
+    event.listen(module.db.engine, "after_cursor_execute", synchronize_empty_active_reads)
+    try:
+        def create_proxy(index: int) -> dict[str, Any]:
+            return module.db.insert_proxy(
+                {
+                    "name": f"Concurrent Global Proxy {index}",
+                    "host": f"concurrent-{index}.example.test",
+                    "port": 3100 + index,
+                    "username": f"concurrent-user-{index}",
+                    "password": f"concurrent-secret-{index}",
+                    "status": "active",
+                }
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(create_proxy, (1, 2)))
+    finally:
+        event.remove(module.db.engine, "after_cursor_execute", synchronize_empty_active_reads)
+
+    assert len(results) == 2
+    with module.db.session() as session:
+        active_proxies = session.scalars(
+            select(module.Proxy).where(module.Proxy.status == "active")
+        ).all()
+    assert len(active_proxies) == 1
+    assert active_proxies[0].name in {result["name"] for result in results}
+
+
+def test_proxy_activation_locks_singleton_before_target_row(api: Any) -> None:
+    client, module = api
+    admin_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "test-admin",
+        "test-admin-password",
+    )
+    proxy = client.post(
+        "/api/admin/proxies",
+        headers=_bearer(admin_token),
+        json={
+            "name": "Lock Order Proxy",
+            "host": "lock-order.example.test",
+            "port": 3128,
+            "username": "lock-order-user",
+            "password": "lock-order-secret",
+            "status": "disabled",
+        },
+    ).json()
+    statements: list[str] = []
+
+    def record_statement(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        statements.append(" ".join(statement.lower().split()))
+
+    event.listen(module.db.engine, "before_cursor_execute", record_statement)
+    try:
+        updated = module.db.update_proxy(proxy["id"], {"status": "active"})
+    finally:
+        event.remove(module.db.engine, "before_cursor_execute", record_statement)
+
+    assert updated is not None and updated["status"] == "active"
+    singleton_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith("update system_setting")
+    )
+    target_proxy_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith("select")
+        and "from proxy" in statement
+        and "proxy.id =" in statement
+    )
+    assert singleton_lock_index < target_proxy_lock_index
+
+
+def test_startup_normalizes_legacy_multiple_active_proxies(api: Any) -> None:
+    client, module = api
+    admin_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "test-admin",
+        "test-admin-password",
+    )
+    headers = _bearer(admin_token)
+    first = client.post(
+        "/api/admin/proxies",
+        headers=headers,
+        json={
+            "name": "Legacy Active One",
+            "host": "legacy-one.example.test",
+            "port": 3128,
+            "username": "legacy-one",
+            "password": "legacy-one-secret",
+        },
+    ).json()
+    second = client.post(
+        "/api/admin/proxies",
+        headers=headers,
+        json={
+            "name": "Legacy Active Two",
+            "host": "legacy-two.example.test",
+            "port": 8080,
+            "username": "legacy-two",
+            "password": "legacy-two-secret",
+            "status": "disabled",
+        },
+    ).json()
+
+    with module.db.session() as session:
+        older = session.get(module.Proxy, first["id"])
+        newer = session.get(module.Proxy, second["id"])
+        assert older is not None and newer is not None
+        older.status = "active"
+        newer.status = "active"
+        older.updated_at = module.utc_now() - timedelta(minutes=1)
+        newer.updated_at = module.utc_now()
+
+    module.db.initialize()
+
+    proxies = client.get("/api/admin/proxies", headers=headers).json()
+    active_ids = [item["id"] for item in proxies if item["status"] == "active"]
+    assert active_ids == [second["id"]]
+
+
+def test_user_specific_desktop_config_admin_api_is_gone(api: Any) -> None:
+    client, _module = api
+    admin_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "test-admin",
+        "test-admin-password",
+    )
+    user = _create_user(client, admin_token)
+    headers = _bearer(admin_token)
+
+    read_response = client.get(
+        f"/api/admin/users/{user['id']}/desktop-config",
+        headers=headers,
+    )
+    write_response = client.patch(
+        f"/api/admin/users/{user['id']}/desktop-config",
+        headers=headers,
+        json={"proxyId": None, "platformIds": []},
+    )
+    bodyless_write_response = client.patch(
+        f"/api/admin/users/{user['id']}/desktop-config",
+        headers=headers,
+    )
+
+    assert read_response.status_code == 410
+    assert write_response.status_code == 410
+    assert bodyless_write_response.status_code == 410
+    assert read_response.json()["detail"] == "桌面代理和平台已改为全局共享配置"
+    assert write_response.json()["detail"] == "桌面代理和平台已改为全局共享配置"
+    assert bodyless_write_response.json()["detail"] == "桌面代理和平台已改为全局共享配置"
+
+
+def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> None:
     client, module = api
     tables = set(inspect(module.db.engine).get_table_names())
     assert {
@@ -97,20 +506,6 @@ def test_desktop_config_assignment_permissions_and_encryption(api: Any) -> None:
         json={"name": "First in UI", "url": "http://one.example.test", "sortOrder": 10},
     )
     assert first_platform.status_code == second_platform.status_code == 201
-
-    assigned = client.patch(
-        f"/api/admin/users/{user['id']}/desktop-config",
-        headers=_bearer(admin_token),
-        json={
-            "proxyId": proxy["id"],
-            "platformIds": [first_platform.json()["id"], second_platform.json()["id"]],
-        },
-    )
-    assert assigned.status_code == 200, assigned.text
-    admin_config = assigned.json()
-    assert admin_config["proxy"]["id"] == proxy["id"]
-    assert "password" not in admin_config["proxy"]
-    assert [item["sortOrder"] for item in admin_config["platforms"]] == [10, 20]
 
     snapshot_statements: list[str] = []
 
@@ -212,7 +607,6 @@ def test_desktop_config_assignment_permissions_and_encryption(api: Any) -> None:
     assert {
         "PROXY_CREATE",
         "PLATFORM_CREATE",
-        "USER_DESKTOP_CONFIG_UPDATE",
         "DESKTOP_CONFIG_READ",
     }.issubset(actions)
 
@@ -316,47 +710,20 @@ def test_desktop_config_validation_and_disabled_reference_filtering(api: Any) ->
         "/api/admin/proxies",
         headers=_bearer(admin_token),
         json={"name": "Disabled Proxy", "host": "proxy.test", "port": 8080, "username": "proxy-user", "password": "secret", "status": "disabled"},
-    ).json()
+    )
+    assert disabled_proxy.status_code == 201, disabled_proxy.text
     disabled_platform = client.post(
         "/api/admin/platforms",
         headers=_bearer(admin_token),
         json={"name": "Disabled Platform", "url": "https://disabled.example.test", "status": "disabled"},
-    ).json()
-
-    rejected_proxy = client.patch(
-        f"/api/admin/users/{user['id']}/desktop-config",
-        headers=_bearer(admin_token),
-        json={"proxyId": disabled_proxy["id"], "platformIds": []},
     )
-    assert rejected_proxy.status_code == 400
+    assert disabled_platform.status_code == 201, disabled_platform.text
 
-    rejected_platform = client.patch(
-        f"/api/admin/users/{user['id']}/desktop-config",
-        headers=_bearer(admin_token),
-        json={"proxyId": None, "platformIds": [disabled_platform["id"]]},
-    )
-    assert rejected_platform.status_code == 400
-
-    missing_platform = client.patch(
-        f"/api/admin/users/{user['id']}/desktop-config",
-        headers=_bearer(admin_token),
-        json={"proxyId": None, "platformIds": [999_999]},
-    )
-    assert missing_platform.status_code == 400
-
-    cleared = client.patch(
-        f"/api/admin/users/{user['id']}/desktop-config",
-        headers=_bearer(admin_token),
-        json={"proxyId": None, "platformIds": []},
-    )
-    assert cleared.status_code == 200
-    assert cleared.json()["proxy"] is None
-    cleared_desktop = client.get(
+    filtered_desktop = client.get(
         "/api/user/desktop-config", headers=_bearer(user_token)
     ).json()
-    cleared_desktop.pop("lease")
-    # Clearing the assignment leaves the desktop user with no platform access.
-    assert cleared_desktop == {
+    filtered_desktop.pop("lease")
+    assert filtered_desktop == {
         "proxy": None,
         "platforms": [],
         "profileKey": f"user-{user['id']}",
@@ -395,13 +762,7 @@ def test_platform_management_and_deletion(api: Any) -> None:
     assert create_res.json()["iconUrl"] == icon_path
     platform_id = create_res.json()["id"]
 
-    # 2. Desktop user sees only the platform explicitly assigned to it.
-    assigned = client.patch(
-        f"/api/admin/users/{user['id']}/desktop-config",
-        headers=admin_headers,
-        json={"proxyId": None, "platformIds": [platform_id]},
-    )
-    assert assigned.status_code == 200, assigned.text
+    # 2. Every desktop user sees a newly enabled global platform immediately.
     desktop_res = client.get("/api/user/desktop-config", headers=_bearer(user_token))
     assert desktop_res.status_code == 200
     platforms = desktop_res.json()["platforms"]
@@ -439,8 +800,8 @@ def test_platform_management_and_deletion(api: Any) -> None:
     assert del_again.status_code == 404
 
 
-def test_platforms_are_visible_only_to_assigned_users(api: Any) -> None:
-    client, module = api
+def test_all_active_platforms_are_visible_to_every_user(api: Any) -> None:
+    client, _module = api
     admin_token = _login(
         client,
         "/api/admin/auth/login",
@@ -472,16 +833,6 @@ def test_platforms_are_visible_only_to_assigned_users(api: Any) -> None:
         json={"name": "Not assigned", "url": "https://other.example.test"},
     ).json()
 
-    saved = client.patch(
-        f"/api/admin/users/{first_user['id']}/desktop-config",
-        headers=_bearer(admin_token),
-        json={"proxyId": None, "platformIds": [first_platform["id"]]},
-    )
-    assert saved.status_code == 200, saved.text
-    assert [item["id"] for item in saved.json()["platforms"]] == [
-        first_platform["id"]
-    ]
-
     first_token = _login(
         client,
         "/api/user/auth/login",
@@ -500,22 +851,11 @@ def test_platforms_are_visible_only_to_assigned_users(api: Any) -> None:
     second_config = client.get(
         "/api/user/desktop-config", headers=_bearer(second_token)
     ).json()
-    assert [item["id"] for item in first_config["platforms"]] == [
-        first_platform["id"]
-    ]
-    assert all(item["id"] != other_platform["id"] for item in first_config["platforms"])
-    assert second_config["platforms"] == []
+    expected_platform_ids = [first_platform["id"], other_platform["id"]]
+    assert [item["id"] for item in first_config["platforms"]] == expected_platform_ids
+    assert [item["id"] for item in second_config["platforms"]] == expected_platform_ids
+    assert first_config["proxy"] is None
     assert second_config["proxy"] is None
-
-    with module.db.session() as session:
-        assignments = session.scalars(
-            select(module.UserPlatformAssignment).where(
-                module.UserPlatformAssignment.user_id == first_user["id"]
-            )
-        ).all()
-    assert [assignment.platform_id for assignment in assignments] == [
-        first_platform["id"]
-    ]
 
 
 def test_platform_icon_is_relative_for_admin_and_absolute_for_desktop(api: Any) -> None:
@@ -548,14 +888,6 @@ def test_platform_icon_is_relative_for_admin_and_absolute_for_desktop(api: Any) 
     platform_id = created.json()["id"]
     listed = client.get("/api/admin/platforms", headers=headers).json()
     assert next(item for item in listed if item["id"] == platform_id)["iconUrl"] == icon_path
-
-    assigned = client.patch(
-        f"/api/admin/users/{user['id']}/desktop-config",
-        headers=headers,
-        json={"proxyId": None, "platformIds": [platform_id]},
-    )
-    assert assigned.status_code == 200, assigned.text
-    assert assigned.json()["platforms"][0]["iconUrl"] == icon_path
 
     user_token = _login(
         client,

@@ -30,7 +30,7 @@ export function QuickActions({
           </span>
         </CardTitle>
         <CardDescription className="text-xs">
-          一键开通受权账号、扩展代理节点或维护平台入口
+          一键开通授权账号、配置全局共享代理或维护平台入口
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 pt-1">
@@ -63,10 +63,10 @@ export function QuickActions({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-semibold group-hover:text-emerald-600 transition-colors">
-                添加专属代理
+                添加全局代理
               </div>
               <div className="text-[11px] text-muted-foreground truncate">
-                绑定安全上游代理池
+                所有桌面用户共享，最多启用一个
               </div>
             </div>
           </button>

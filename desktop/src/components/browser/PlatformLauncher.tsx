@@ -63,7 +63,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
         <div>
           <h2 className="text-lg font-semibold text-foreground">选择平台</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            点击管理员分配的平台，在独立浏览器窗口中打开。
+            点击系统已启用的平台，在独立浏览器窗口中打开。
           </p>
         </div>
         {!proxyEnabled && (
@@ -83,7 +83,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
         >
           <div className="flex items-center gap-2 text-xs">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>{configLoading ? "正在加载管理员分配的平台…" : configError}</span>
+            <span>{configLoading ? "正在加载全局平台配置…" : configError}</span>
           </div>
           {!configLoading && (
             <Button
@@ -176,8 +176,8 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
         {!configLoading && !configError && platforms.length === 0 && (
           <div className="rounded-xl border border-dashed border-border bg-card/40 p-8 text-center">
             <Globe className="mx-auto h-7 w-7 text-muted-foreground/60" />
-            <p className="mt-2 text-xs text-foreground font-medium">管理员尚未分配平台入口</p>
-            <p className="mt-1 text-[11px] text-muted-foreground">请联系管理员完成配置后重新加载。</p>
+            <p className="mt-2 text-xs text-foreground font-medium">系统当前没有已启用的平台入口</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">请联系管理员启用平台后重新加载。</p>
           </div>
         )}
       </div>

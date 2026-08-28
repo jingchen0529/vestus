@@ -9,7 +9,7 @@ export interface DesktopPlatform {
 
 export interface DesktopConfigView {
   proxy_assigned: boolean;
-  /** 通过已分配代理探测到的真实公网出口 IP。 */
+  /** 通过当前全局代理探测到的真实公网出口 IP。 */
   proxy_ip?: string | null;
   platforms: DesktopPlatform[];
   /** 管理员下发的直连域名（已归一化）。这些域名不走代理，用真实出口 IP 访问。 */

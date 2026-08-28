@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import react from "@vitejs/plugin-react";
 import { createServer } from "vite";
 
@@ -27,26 +29,50 @@ after(async () => {
   await server.close();
 });
 
-test("配置桌面导航保留被点击的目标用户", async () => {
-  const appModule = await server.ssrLoadModule("/src/App.tsx");
-
-  assert.equal(typeof appModule.getDesktopConfigNavigation, "function");
-  assert.deepEqual(appModule.getDesktopConfigNavigation({ id: 42 }), {
-    tab: "desktop",
-    selectedUserId: 42,
-  });
-});
-
-test("用户桌面配置保存时保留所选代理和平台", async () => {
-  const cardModule = await server.ssrLoadModule(
-    "/src/components/desktop-config/user-config-card.tsx",
+test("代理管理只展示全局单代理规则，不再展示用户分配控件", async () => {
+  const { DesktopConfigView } = await server.ssrLoadModule(
+    "/src/components/desktop-config/desktop-config-view.tsx",
+  );
+  const html = renderToStaticMarkup(
+    createElement(DesktopConfigView, {
+      proxies: [],
+      onRefresh() {},
+      async onCreateProxy() {},
+      async onUpdateProxy() {},
+      async onToggleProxyStatus() {},
+      async onDeleteProxy() {},
+    }),
   );
 
-  assert.equal(typeof cardModule.buildDesktopConfigSelection, "function");
-  assert.deepEqual(cardModule.buildDesktopConfigSelection("8", [12, 5]), {
-    proxyId: 8,
-    platformIds: [12, 5],
-  });
+  assert.doesNotMatch(html, /目标桌面端用户/);
+  assert.doesNotMatch(html, /分配可访问平台/);
+  assert.match(html, /全局最多启用一条代理/);
+});
+
+test("用户列表不再提供按用户配置代理和平台的入口", async () => {
+  const { UserTable } = await server.ssrLoadModule(
+    "/src/components/users/user-table.tsx",
+  );
+  const html = renderToStaticMarkup(
+    createElement(UserTable, {
+      users: [
+        {
+          id: 42,
+          username: "shared-user",
+          name: "Shared User",
+          status: "active",
+          maxSessions: 1,
+        },
+      ],
+      onEditUser() {},
+      onToggleStatus() {},
+      onResetPassword() {},
+      onDeleteUser() {},
+    }),
+  );
+
+  assert.doesNotMatch(html, /配置桌面/);
+  assert.doesNotMatch(html, /配置专属代理与平台/);
 });
 
 test("编辑 locked 用户且未改状态时不会提交 active", async () => {

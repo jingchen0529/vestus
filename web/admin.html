@@ -10,19 +10,19 @@
     header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 14px}.muted{color:#667085;font-size:13px}
     .panel{background:#fff;border:1px solid #e4e7ec;border-radius:8px;padding:20px;box-shadow:0 2px 12px #1f29370d;margin-bottom:18px}
     form.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}form.grid .span-all{grid-column:1/-1}label{display:grid;gap:5px;font-size:13px;color:#344054}input,select,textarea{width:100%;border:1px solid #d0d5dd;border-radius:6px;padding:9px 10px;font-size:14px;background:#fff}textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;resize:vertical}button{border:0;border-radius:6px;padding:9px 14px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}button.secondary{background:#eef2ff;color:#1d4ed8}button.danger{background:#dc2626}button.warn{background:#d97706}button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:8px;align-items:center}.error{color:#b42318;background:#fef3f2;border:1px solid #fecdca;padding:9px;border-radius:6px;font-size:13px;margin-bottom:12px}.notice{color:#027a48;background:#ecfdf3;border:1px solid #abefc6;padding:9px;border-radius:6px;font-size:13px;margin-bottom:12px}.hidden{display:none!important}
-    table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #eef0f3;vertical-align:middle}th{color:#667085;font-weight:600;background:#fafafa}td.actions{white-space:nowrap}.status{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px}.active,.SUCCESS{background:#ecfdf3;color:#027a48}.disabled,.locked{background:#fff4ed;color:#b93815}.FAILED{background:#fef3f2;color:#b42318}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.toolbar input{max-width:280px}.tabs{display:flex;gap:8px;margin-bottom:18px}.tabs button{background:#fff;color:#344054;border:1px solid #d0d5dd}.tabs button.active{background:#1d4ed8;color:#fff;border-color:#1d4ed8}.nowrap{white-space:nowrap}.desktop-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.checklist{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:10px;border:1px solid #e4e7ec;border-radius:6px;background:#fafafa}.check-item{display:flex;align-items:center;gap:7px;padding:7px 8px;border-radius:5px;background:#fff;border:1px solid #eef0f3;cursor:pointer}.check-item input{width:auto;margin:0}.check-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-label{font-size:13px;color:#344054;margin-bottom:5px}.section-note{margin:-6px 0 14px}.server{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.form-title{display:flex;align-items:center;justify-content:space-between;gap:10px}
-    @media(max-width:900px){.desktop-grid{grid-template-columns:1fr}.checklist{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){form.grid{grid-template-columns:1fr}form.grid .span-all{grid-column:auto}header,.toolbar{align-items:flex-start;flex-direction:column}table{display:block;overflow:auto;white-space:nowrap}.tabs{overflow:auto}.checklist{grid-template-columns:1fr}}
+    table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #eef0f3;vertical-align:middle}th{color:#667085;font-weight:600;background:#fafafa}td.actions{white-space:nowrap}.status{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px}.active,.SUCCESS{background:#ecfdf3;color:#027a48}.disabled,.locked{background:#fff4ed;color:#b93815}.FAILED{background:#fef3f2;color:#b42318}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.toolbar input{max-width:280px}.tabs{display:flex;gap:8px;margin-bottom:18px}.tabs button{background:#fff;color:#344054;border:1px solid #d0d5dd}.tabs button.active{background:#1d4ed8;color:#fff;border-color:#1d4ed8}.nowrap{white-space:nowrap}.desktop-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.section-note{margin:-6px 0 14px}.server{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.form-title{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    @media(max-width:900px){.desktop-grid{grid-template-columns:1fr}}@media(max-width:760px){form.grid{grid-template-columns:1fr}form.grid .span-all{grid-column:auto}header,.toolbar{align-items:flex-start;flex-direction:column}table{display:block;overflow:auto;white-space:nowrap}.tabs{overflow:auto}}
   </style>
 </head>
 <body>
 <main>
-  <header><div><h1>Vestus 管理后台</h1><div class="muted">管理员、桌面端用户、桌面配置与用户日志</div></div><div class="actions"><span id="who" class="muted"></span><button id="logout" class="secondary hidden">退出登录</button></div></header>
+  <header><div><h1>Vestus 管理后台</h1><div class="muted">管理员、桌面端用户、全局代理与平台配置、用户日志</div></div><div class="actions"><span id="who" class="muted"></span><button id="logout" class="secondary hidden">退出登录</button></div></header>
   <section id="loginPanel" class="panel">
     <h2>管理员登录</h2><div id="loginError" class="error hidden"></div>
     <form id="loginForm" class="grid"><label>账号<input id="username" autocomplete="username" required></label><label>密码<input id="password" type="password" autocomplete="current-password" required></label><div class="actions" style="align-items:end"><button>登录</button></div></form>
   </section>
   <section id="appPanel" class="hidden">
-    <nav class="tabs"><button data-tab="users" class="active">桌面端用户</button><button data-tab="desktop">桌面配置</button><button data-tab="admins">管理员</button><button data-tab="logs">用户日志</button></nav>
+    <nav class="tabs"><button data-tab="users" class="active">桌面端用户</button><button data-tab="desktop">代理与平台</button><button data-tab="admins">管理员</button><button data-tab="logs">用户日志</button></nav>
     <section id="usersTab">
       <div class="panel"><div class="toolbar"><div><h2>桌面端用户</h2><span id="userStats" class="muted"></span></div><div class="actions"><input id="search" placeholder="搜索账号、姓名或企业"><button id="refreshUsers" class="secondary">刷新</button></div></div><div id="userError" class="error hidden"></div><div style="overflow:auto"><table><thead><tr><th>账号</th><th>姓名/企业</th><th>状态</th><th>到期</th><th>并发</th><th>操作</th></tr></thead><tbody id="users"></tbody></table></div></div>
       <div class="panel"><h2>开通桌面端账号</h2><div id="createError" class="error hidden"></div><form id="createForm" class="grid"><label>账号<input id="newUsername" required></label><label>初始密码<input id="newPassword" type="password" minlength="6" required></label><label>用户名称<input id="newName" required></label><label>企业<input id="newCompany"></label><label>电话<input id="newPhone"></label><label>授权到期<input id="newExpires" type="date"></label><label>最大并发<input id="newSessions" type="number" min="1" value="1" required></label><div class="actions" style="align-items:end"><button>创建账号</button></div></form></div>
@@ -35,16 +35,7 @@
       <div class="panel"><div class="toolbar"><div><h2>用户日志</h2><span id="logStats" class="muted"></span></div><div class="actions"><select id="logStatus"><option value="">全部结果</option><option value="SUCCESS">成功</option><option value="FAILED">失败</option></select><button id="refreshLogs" class="secondary">刷新</button><button id="exportLogs" class="secondary">导出当前页</button></div></div><div id="logError" class="error hidden"></div><div style="overflow:auto"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>摘要</th><th>IP</th><th>结果</th></tr></thead><tbody id="logs"></tbody></table></div></div>
     </section>
     <section id="desktopTab" class="hidden">
-      <div class="panel">
-        <div class="toolbar"><div><h2>用户桌面配置</h2><div class="muted">为桌面端用户分配一套专属代理和可用平台</div></div><button id="refreshDesktop" class="secondary">刷新全部</button></div>
-        <div id="desktopConfigError" class="error hidden"></div><div id="desktopConfigNotice" class="notice hidden"></div>
-        <form id="desktopConfigForm" class="grid">
-          <label>桌面端用户<select id="desktopUser" required><option value="">请选择用户</option></select></label>
-          <label>专属代理<select id="assignedProxy"><option value="">不分配代理</option></select></label>
-          <div class="actions" style="align-items:end"><button id="saveDesktopConfig">保存用户配置</button></div>
-          <div class="span-all"><div class="field-label">可用平台</div><div id="assignedPlatforms" class="checklist"><span class="muted">暂无平台</span></div></div>
-        </form>
-      </div>
+      <div class="panel"><div class="toolbar"><div><h2>全局代理与平台管理</h2><div class="muted">所有 active 平台全桌面用户共享；全局最多一个 active 代理，启用新代理自动停用旧代理。</div></div><button id="refreshDesktop" class="secondary">刷新全部</button></div></div>
       <div class="desktop-grid">
         <div>
           <div class="panel">
@@ -76,7 +67,7 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const state = {user: null, logs: [], desktopUsers: [], proxies: [], platforms: []};
+  const state = {user: null, logs: [], proxies: [], platforms: []};
   const show = (id, value) => { const el=$(id); el.textContent=value||''; el.classList.toggle('hidden', !value); };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const errorText = data => { const detail=data&&data.detail; if(typeof detail==='string') return detail; if(Array.isArray(detail)) return detail.map(item=>item&&item.msg||String(item)).join('；'); if(detail&&typeof detail==='object') return detail.message||JSON.stringify(detail); return '请求失败'; };
@@ -85,35 +76,14 @@
   const sameId = (a,b) => String(a??'')===String(b??'');
   const statusLabel = status => status==='active'?'启用':'停用';
   const statusClass = status => status==='active'?'active':'disabled';
-  const numberId = value => { const result=Number(value); if(!Number.isSafeInteger(result)||result<1) throw new Error('配置编号无效，请刷新后重试'); return result; };
   const setLoggedIn = user => { state.user=user; $('loginPanel').classList.toggle('hidden',!!user); $('appPanel').classList.toggle('hidden',!user); $('logout').classList.toggle('hidden',!user); $('who').textContent=user ? user.name+'（'+(user.role==='super_admin'?'超级管理员':'管理员')+'）' : ''; };
   const loadUsers = async () => { try { show('userError',''); const q=$('search').value.trim(); const rows=await api('/api/admin/users'+(q?'?search='+encodeURIComponent(q):'')); const users=Array.isArray(rows)?rows:rows.items||[]; $('users').innerHTML=users.map(u=>'<tr><td><strong>'+esc(u.username)+'</strong><br><span class="muted">#'+esc(u.id)+'</span></td><td>'+esc(u.name)+'<br><span class="muted">'+esc(u.company||'')+'</span></td><td><span class="status '+esc(u.status)+'">'+(u.status==='active'?'正常':u.status==='locked'?'锁定':'已禁用')+'</span></td><td>'+esc(u.expiresAt||'永久')+'</td><td>'+esc(u.maxSessions)+'</td><td class="actions"><button class="'+(u.status==='active'?'danger':'secondary')+'" data-toggle-user="'+esc(u.id)+'" data-status="'+esc(u.status)+'">'+(u.status==='active'?'停用':'启用')+'</button><button class="warn" data-reset-user="'+esc(u.id)+'">重置密码</button></td></tr>').join('')||'<tr><td colspan="6" class="muted">暂无用户</td></tr>'; const s=await api('/api/admin/stats'); $('userStats').textContent='共 '+(s.total||0)+' 个用户，正常 '+(s.active||0)+'，禁用 '+(s.disabled||0)+'，锁定 '+(s.locked||0); } catch(e){show('userError',e.message)} };
   const loadAdmins = async () => { try { show('adminError',''); const q=$('adminSearch').value.trim(); const rows=await api('/api/admin/admins'+(q?'?search='+encodeURIComponent(q):'')); const admins=Array.isArray(rows)?rows:rows.items||[]; $('admins').innerHTML=admins.map(a=>'<tr><td>'+esc(a.username)+'</td><td>'+esc(a.name)+'</td><td>'+(a.role==='super_admin'?'超级管理员':'普通管理员')+'</td><td><span class="status '+esc(a.status)+'">'+(a.status==='active'?'正常':'已禁用')+'</span></td><td>'+esc(a.lastLoginAt||'—')+'</td><td class="actions">'+(String(a.id)===String(state.user.id)?'':'<button class="'+(a.status==='active'?'danger':'secondary')+'" data-toggle-admin="'+esc(a.id)+'" data-status="'+esc(a.status)+'">'+(a.status==='active'?'停用':'启用')+'</button><button class="warn" data-reset-admin="'+esc(a.id)+'">重置密码</button>')+'</td></tr>').join('')||'<tr><td colspan="6" class="muted">暂无管理员</td></tr>'; $('adminStats').textContent='共 '+admins.length+' 个管理员'; } catch(e){show('adminError',e.message)} };
   const loadLogs = async () => { try { show('logError',''); const status=$('logStatus').value; const data=await api('/api/admin/user-logs?page=1&pageSize=200'+(status?'&status='+status:'')); state.logs=data.items||[]; $('logs').innerHTML=state.logs.map(l=>'<tr><td class="nowrap">'+esc(l.createdAt||'')+'</td><td>'+esc(l.actorUsername||'—')+'<br><span class="muted">'+esc(l.actorType||'')+'</span></td><td>'+esc(l.action)+'</td><td>'+esc(l.summary)+'</td><td>'+esc(l.ipAddress||'—')+'</td><td><span class="status '+esc(l.status)+'">'+(l.status==='SUCCESS'?'成功':'失败')+'</span></td></tr>').join('')||'<tr><td colspan="6" class="muted">暂无日志</td></tr>'; $('logStats').textContent='共 '+(data.total||state.logs.length)+' 条记录'; } catch(e){show('logError',e.message)} };
 
-  const renderDesktopUsers = () => {
-    const current=$('desktopUser').value;
-    $('desktopUser').innerHTML='<option value="">请选择用户</option>'+state.desktopUsers.map(user=>'<option value="'+esc(user.id)+'">'+esc(user.username)+' · '+esc(user.name||'未命名')+(user.status==='active'?'':'（不可用）')+'</option>').join('');
-    if(state.desktopUsers.some(user=>sameId(user.id,current))) $('desktopUser').value=current;
-  };
-  const loadDesktopUsers = async () => {
-    try {
-      show('desktopConfigError','');
-      const rows=await api('/api/admin/users');
-      state.desktopUsers=items(rows).map(user=>({id:user.id,username:user.username||'',name:user.name||'',status:user.status||'disabled'})).filter(user=>user.id!==undefined&&user.id!==null);
-      renderDesktopUsers();
-      return true;
-    } catch(error) { show('desktopConfigError',error.message); return false; }
-  };
-  const proxyOptions = () => {
-    const current=$('assignedProxy').value;
-    $('assignedProxy').innerHTML='<option value="">不分配代理</option>'+state.proxies.map(proxy=>'<option value="'+esc(proxy.id)+'">'+esc(proxy.name)+'（'+esc(proxy.host)+':'+esc(proxy.port)+'）'+(proxy.status==='active'?'':' · 已停用')+'</option>').join('');
-    if(state.proxies.some(proxy=>sameId(proxy.id,current))) $('assignedProxy').value=current;
-  };
   const renderProxies = () => {
     $('proxies').innerHTML=state.proxies.map(proxy=>'<tr><td><strong>'+esc(proxy.name)+'</strong><br><span class="muted">#'+esc(proxy.id)+'</span></td><td class="server">'+esc(proxy.host)+':'+esc(proxy.port)+(proxy.bypassHosts.length?'<br><span class="muted">直连 '+proxy.bypassHosts.length+' 个域名</span>':'')+'</td><td>'+esc(proxy.username||'—')+'</td><td><span class="status '+statusClass(proxy.status)+'">'+statusLabel(proxy.status)+'</span></td><td class="actions"><button type="button" class="secondary" data-edit-proxy="'+esc(proxy.id)+'">编辑</button></td></tr>').join('')||'<tr><td colspan="5" class="muted">暂无代理</td></tr>';
-    $('proxyStats').textContent='共 '+state.proxies.length+' 套，启用 '+state.proxies.filter(proxy=>proxy.status==='active').length+' 套';
-    proxyOptions();
+    $('proxyStats').textContent='共 '+state.proxies.length+' 套，当前 active '+state.proxies.filter(proxy=>proxy.status==='active').length+' 套（最多 1 套）';
   };
   const loadProxies = async () => {
     try {
@@ -124,45 +94,21 @@
       return true;
     } catch(error) { show('proxyListError',error.message); return false; }
   };
-  const checkedPlatformIds = () => Array.from(document.querySelectorAll('#assignedPlatforms input[type="checkbox"]:checked')).map(input=>input.value);
-  const renderAssignedPlatforms = selectedIds => {
-    const selected=new Set((selectedIds||[]).map(String));
-    $('assignedPlatforms').innerHTML=state.platforms.map(platform=>'<label class="check-item"><input type="checkbox" value="'+esc(platform.id)+'"'+(selected.has(String(platform.id))?' checked':'')+'><span title="'+esc(platform.url)+'">'+esc(platform.name)+(platform.status==='active'?'':'（已停用）')+'</span></label>').join('')||'<span class="muted">暂无平台，请先创建平台</span>';
-  };
-  const renderPlatforms = selectedIds => {
+  const renderPlatforms = () => {
     $('platforms').innerHTML=state.platforms.map(platform=>'<tr><td><strong>'+esc(platform.name)+'</strong><br><span class="muted">#'+esc(platform.id)+'</span></td><td class="server">'+esc(platform.url)+'</td><td>'+esc(platform.sortOrder)+'</td><td><span class="status '+statusClass(platform.status)+'">'+statusLabel(platform.status)+'</span></td><td class="actions"><button type="button" class="secondary" data-edit-platform="'+esc(platform.id)+'">编辑</button></td></tr>').join('')||'<tr><td colspan="5" class="muted">暂无平台</td></tr>';
-    $('platformStats').textContent='共 '+state.platforms.length+' 个，启用 '+state.platforms.filter(platform=>platform.status==='active').length+' 个';
-    renderAssignedPlatforms(selectedIds===undefined?checkedPlatformIds():selectedIds);
+    $('platformStats').textContent='共 '+state.platforms.length+' 个，active '+state.platforms.filter(platform=>platform.status==='active').length+' 个（全桌面用户共享）';
   };
   const loadPlatforms = async () => {
     try {
       show('platformListError','');
-      const selected=checkedPlatformIds();
       const rows=await api('/api/admin/platforms');
       state.platforms=items(rows).map(platform=>({id:platform.id,name:platform.name||'',url:platform.url||'',sortOrder:Number.isFinite(Number(platform.sortOrder))?Number(platform.sortOrder):0,status:platform.status==='active'?'active':'disabled',createdAt:platform.createdAt||'',updatedAt:platform.updatedAt||''})).filter(platform=>platform.id!==undefined&&platform.id!==null);
-      renderPlatforms(selected);
+      renderPlatforms();
       return true;
     } catch(error) { show('platformListError',error.message); return false; }
   };
-  const loadDesktopConfig = async userId => {
-    show('desktopConfigError',''); show('desktopConfigNotice','');
-    if(!userId) { $('assignedProxy').value=''; renderAssignedPlatforms([]); return; }
-    const requestUser=String(userId);
-    try {
-      const config=await api('/api/admin/users/'+encodeURIComponent(requestUser)+'/desktop-config');
-      if($('desktopUser').value!==requestUser) return;
-      const proxyId=config.proxy&&config.proxy.id!==undefined?config.proxy.id:config.proxyId;
-      const platformIds=Array.isArray(config.platforms)?config.platforms.map(platform=>platform.id):config.platformIds||[];
-      $('assignedProxy').value=proxyId===null||proxyId===undefined?'':String(proxyId);
-      renderAssignedPlatforms(platformIds);
-    } catch(error) {
-      if($('desktopUser').value===requestUser) show('desktopConfigError',error.message);
-    }
-  };
   const loadDesktop = async () => {
-    show('desktopConfigError',''); show('desktopConfigNotice','');
-    await Promise.all([loadDesktopUsers(),loadProxies(),loadPlatforms()]);
-    if($('desktopUser').value) await loadDesktopConfig($('desktopUser').value);
+    await Promise.all([loadProxies(),loadPlatforms()]);
   };
 
   const resetProxyForm = () => {
@@ -192,22 +138,6 @@
   $('users').addEventListener('click',async e=>{const toggle=e.target.dataset.toggleUser,reset=e.target.dataset.resetUser;if(toggle){await postAction('/api/admin/users/'+toggle+'/'+(e.target.dataset.status==='active'?'disable':'enable'),{},'userError',loadUsers)}if(reset){const password=prompt('请输入新的临时密码（至少 6 位）');if(password) await postAction('/api/admin/users/'+reset+'/reset-password',{password},'userError',loadUsers)}});
   $('admins').addEventListener('click',async e=>{const toggle=e.target.dataset.toggleAdmin,reset=e.target.dataset.resetAdmin;if(toggle){await postAction('/api/admin/admins/'+toggle+'/'+(e.target.dataset.status==='active'?'disable':'enable'),{},'adminError',loadAdmins)}if(reset){const password=prompt('请输入新的临时密码（至少 6 位）');if(password) await postAction('/api/admin/admins/'+reset+'/reset-password',{password},'adminError',loadAdmins)}});
 
-  $('desktopUser').addEventListener('change',()=>loadDesktopConfig($('desktopUser').value));
-  $('desktopConfigForm').addEventListener('submit',async event=>{
-    event.preventDefault(); show('desktopConfigError',''); show('desktopConfigNotice','');
-    const userId=$('desktopUser').value,button=$('saveDesktopConfig');
-    try {
-      if(!userId) throw new Error('请先选择桌面端用户');
-      const proxyValue=$('assignedProxy').value;
-      const payload={proxyId:proxyValue?numberId(proxyValue):null,platformIds:checkedPlatformIds().map(numberId)};
-      button.disabled=true; button.textContent='保存中…';
-      await api('/api/admin/users/'+encodeURIComponent(userId)+'/desktop-config',{method:'PATCH',body:JSON.stringify(payload)});
-      await loadDesktopConfig(userId);
-      const user=state.desktopUsers.find(item=>sameId(item.id,userId));
-      show('desktopConfigNotice',(user?user.username:'该用户')+' 的桌面配置已保存');
-    } catch(error) { show('desktopConfigError',error.message); }
-    finally { button.disabled=false; button.textContent='保存用户配置'; }
-  });
   $('proxyForm').addEventListener('submit',async event=>{
     event.preventDefault(); show('proxyFormError',''); show('proxyFormNotice','');
     const editing=$('proxyId').value,button=$('saveProxy');

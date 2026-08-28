@@ -31,7 +31,7 @@ export const Header: React.FC<HeaderProps> = ({
             <h1 className="text-sm font-bold text-foreground tracking-tight">{productName}</h1>
           </div>
           <p className="text-[11px] text-muted-foreground hidden sm:block">
-            专属代理浏览器
+            全局代理浏览器
           </p>
         </div>
       </div>

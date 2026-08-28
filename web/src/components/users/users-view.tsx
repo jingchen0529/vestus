@@ -30,7 +30,6 @@ interface UsersViewProps {
   onUpdateUser: (id: number, payload: UpdateUserPayload) => Promise<void>;
   onToggleUserStatus: (user: DesktopUser) => Promise<void>;
   onResetPassword: (id: number, pwd: string) => Promise<void>;
-  onConfigureDesktop: (user: DesktopUser) => void;
   onDeleteUser: (user: DesktopUser) => Promise<void>;
 }
 
@@ -47,7 +46,6 @@ export function UsersView({
   onUpdateUser,
   onToggleUserStatus,
   onResetPassword,
-  onConfigureDesktop,
   onDeleteUser,
 }: UsersViewProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -184,7 +182,6 @@ export function UsersView({
         onEditUser={handleOpenEdit}
         onToggleStatus={onToggleUserStatus}
         onResetPassword={handleOpenReset}
-        onConfigureDesktop={onConfigureDesktop}
         onDeleteUser={handleOpenDelete}
         isLoading={isRefreshing}
       />

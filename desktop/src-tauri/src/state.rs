@@ -226,6 +226,7 @@ impl AppState {
         if let Some(old) = guard.session.take() {
             old.adapter.stop();
         }
+        guard.direct_browser_ids.clear();
         guard.desktop = None;
         guard.phase = Phase::Unconfigured;
         guard.message = "登录已失效，代理和浏览器已关闭".into();
@@ -254,9 +255,10 @@ impl AppState {
         if let Some(old) = guard.session.take() {
             old.adapter.stop();
         }
+        guard.direct_browser_ids.clear();
         guard.desktop = None;
         guard.phase = Phase::Unconfigured;
-        guard.message = "管理员已更新桌面配置，代理和浏览器已关闭，请重新同步".into();
+        guard.message = "管理员已更新全局桌面配置，代理和浏览器已关闭，请重新同步".into();
         guard.error_code = Some("desktop_config_changed".into());
         true
     }
@@ -508,6 +510,36 @@ mod tests {
 
         state.mark_browser_closed_for(browser_id);
         assert!(!state.snapshot().browser_open);
+    }
+
+    #[test]
+    fn platform_only_lease_invalidation_closes_direct_browser_and_allowlist() {
+        let state = AppState::default();
+        let revision = state.set_desktop_assignment(
+            7,
+            1,
+            "profile-7".into(),
+            vec![DesktopPlatform {
+                id: 1,
+                name: "平台".into(),
+                url: "https://platform.example.test/".into(),
+                icon_url: None,
+                sort_order: 0,
+            }],
+        );
+        assert!(state
+            .resolve_browser_launch(7, 1, Some("profile-7"), 1, true)
+            .is_some());
+        assert!(state.mark_browser_opened(true).is_some());
+        assert!(state.snapshot().browser_open);
+
+        // A lease change must invalidate a platform-only desktop assignment,
+        // including any direct browser that was launched from its allowlist.
+        assert!(state.invalidate_desktop_configuration(7, 1, revision));
+        assert!(!state.snapshot().browser_open);
+        assert!(state
+            .resolve_browser_launch(7, 1, Some("profile-7"), 1, true)
+            .is_none());
     }
 
     #[test]

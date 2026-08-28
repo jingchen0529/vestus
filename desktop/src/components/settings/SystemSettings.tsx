@@ -132,7 +132,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Radio className="w-4 h-4 text-primary" />
-              <CardTitle className="text-sm">专属代理环境</CardTitle>
+              <CardTitle className="text-sm">全局代理环境</CardTitle>
             </div>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
@@ -175,7 +175,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
               <div className="mt-1 flex items-center">
                 {proxyEnabled ? (
                   <Badge variant="success" dot pulse className="text-[11px] px-2 py-0.5 shadow-xs">
-                    系统专属代理
+                    系统全局代理
                   </Badge>
                 ) : (
                   <Badge variant="secondary" dot className="text-[11px] px-2 py-0.5">

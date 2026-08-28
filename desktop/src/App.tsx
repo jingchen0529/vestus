@@ -123,7 +123,7 @@ function MainLayout() {
             });
         } else if (newStatus.error_code === "desktop_config_changed") {
           setDesktopConfig(null);
-          setDesktopConfigError("管理员已更新桌面配置，请重新同步后继续使用");
+          setDesktopConfigError("管理员已更新全局桌面配置，请重新同步后继续使用");
         }
       })
       .then((unlisten) => {
@@ -158,9 +158,9 @@ function MainLayout() {
         // The status event normally updates this view; a failed refresh is non-fatal.
       }
       if (!config.proxy_assigned) {
-        setDesktopConfigError("管理员尚未为该账号分配专属代理");
+        setDesktopConfigError("系统当前没有启用的全局代理；如需继续访问，请切换为直连模式");
       } else if (config.platforms.length === 0) {
-        setDesktopConfigError("代理已就绪，但管理员尚未分配平台入口");
+        setDesktopConfigError("代理已就绪，但系统当前没有已启用的平台入口");
       } else if (announce) {
         success(
           "桌面配置已同步",
@@ -168,7 +168,7 @@ function MainLayout() {
         );
       }
     } catch (err: any) {
-      const message = err?.message || "无法获取管理员分配的桌面配置";
+      const message = err?.message || "无法获取全局桌面配置";
       setDesktopConfig(null);
       setDesktopConfigError(message);
       if (err?.code === "unauthenticated") {
@@ -230,7 +230,7 @@ function MainLayout() {
       localStorage.setItem("vestus-desktop-proxy-enabled", String(enabled));
     } catch {}
     if (enabled) {
-      info("已切换为代理模式", "平台访问将通过专属代理网络转发");
+      info("已切换为代理模式", "平台访问将通过系统当前启用的全局代理转发");
     } else {
       info("已切换为直连模式", "平台访问将直接使用本机网络访问");
     }
@@ -243,7 +243,7 @@ function MainLayout() {
       if (directMode) {
         success("直连浏览器已启动", "已在新的临时浏览器环境中直接打开平台（本机直连）");
       } else {
-        success("代理浏览器已启动", "已在新的临时浏览器环境中打开平台（专属代理）");
+        success("代理浏览器已启动", "已在新的临时浏览器环境中打开平台（全局代理）");
       }
     } catch (err: any) {
       error("打开浏览器失败", err.message || "请稍后重试或联系管理员");

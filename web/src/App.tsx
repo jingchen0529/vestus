@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { LoginCard } from "@/components/auth/login-card";
 import { AdminLayout } from "@/components/layout/admin-layout";
@@ -14,7 +14,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { api } from "@/lib/api-client";
 import { DesktopUser, UserStats, CreateUserPayload, UpdateUserPayload } from "@/types/user";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
-import { DesktopConfigResponse, PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
+import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
 import { AdminUser, CreateAdminPayload, UpdateAdminPayload } from "@/types/admin";
 import { UserLogItem } from "@/types/log";
 import { Loader2, Layers } from "lucide-react";
@@ -29,15 +29,6 @@ const VALID_TABS: NavTab[] = [
   "logs",
   "settings",
 ];
-
-export function getDesktopConfigNavigation(
-  targetUser: Pick<DesktopUser, "id">,
-): { tab: "desktop"; selectedUserId: number } {
-  return {
-    tab: "desktop",
-    selectedUserId: targetUser.id,
-  };
-}
 
 function getInitialTab(): NavTab {
   if (typeof window !== "undefined") {
@@ -106,19 +97,6 @@ export function App() {
 
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [platforms, setPlatforms] = useState<PlatformItem[]>([]);
-  const [selectedDesktopUserId, setSelectedDesktopUserId] = useState<number | null>(null);
-  const [desktopUserConfig, setDesktopUserConfig] = useState<DesktopConfigResponse | null>(null);
-  const [isLoadingDesktopUserConfig, setIsLoadingDesktopUserConfig] = useState(false);
-  const desktopConfigRequestId = useRef(0);
-  const selectedDesktopUserIdRef = useRef<number | null>(null);
-
-  const handleSelectDesktopUser = useCallback((targetUserId: number | null) => {
-    desktopConfigRequestId.current += 1;
-    selectedDesktopUserIdRef.current = targetUserId;
-    setSelectedDesktopUserId(targetUserId);
-    setDesktopUserConfig(null);
-    setIsLoadingDesktopUserConfig(targetUserId !== null);
-  }, []);
 
   // Admins state
   const [admins, setAdmins] = useState<AdminUser[]>([]);
@@ -168,32 +146,6 @@ export function App() {
     }
   }, []);
 
-  const loadDesktopUserConfig = useCallback(async (targetUserId: number | null) => {
-    const requestId = ++desktopConfigRequestId.current;
-    if (targetUserId === null) {
-      setDesktopUserConfig(null);
-      setIsLoadingDesktopUserConfig(false);
-      return;
-    }
-
-    setIsLoadingDesktopUserConfig(true);
-    try {
-      const config = await api.getUserDesktopConfig(targetUserId);
-      if (desktopConfigRequestId.current === requestId) {
-        setDesktopUserConfig(config);
-      }
-    } catch (err: any) {
-      if (desktopConfigRequestId.current === requestId) {
-        setDesktopUserConfig(null);
-        toast.error("加载用户桌面配置失败", { description: err.message });
-      }
-    } finally {
-      if (desktopConfigRequestId.current === requestId) {
-        setIsLoadingDesktopUserConfig(false);
-      }
-    }
-  }, []);
-
   const loadAdmins = useCallback(async (searchQuery = adminSearch, statusQuery = adminStatusFilter) => {
     if (!isSuperAdmin) return;
     try {
@@ -229,14 +181,13 @@ export function App() {
         loadUserStats(),
         loadProxies(),
         loadPlatforms(),
-        loadDesktopUserConfig(selectedDesktopUserId),
         loadAdmins(),
         loadLogs(),
       ]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadDesktopUserConfig, selectedDesktopUserId, loadAdmins, loadLogs]);
+  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadAdmins, loadLogs]);
 
   // Initial Load on login
   useEffect(() => {
@@ -262,11 +213,6 @@ export function App() {
     }, 250);
     return () => clearTimeout(timer);
   }, [adminSearch, adminStatusFilter, user, isSuperAdmin]);
-
-  useEffect(() => {
-    if (!user) return;
-    void loadDesktopUserConfig(selectedDesktopUserId);
-  }, [user, selectedDesktopUserId, loadDesktopUserConfig]);
 
   // Logs filter or page change
   useEffect(() => {
@@ -306,28 +252,8 @@ export function App() {
 
   const handleDeleteUser = async (targetUser: DesktopUser) => {
     await api.deleteUser(targetUser.id);
-    if (selectedDesktopUserId === targetUser.id) {
-      handleSelectDesktopUser(null);
-    }
     toast.success(`用户 ${targetUser.username} 已成功删除`);
     await Promise.all([loadUsers(), loadUserStats()]);
-  };
-
-  const handleConfigureDesktopShortcut = (targetUser: DesktopUser) => {
-    const navigation = getDesktopConfigNavigation(targetUser);
-    handleSelectDesktopUser(navigation.selectedUserId);
-    handleTabChange(navigation.tab);
-  };
-
-  const handleSaveDesktopUserConfig = async (
-    userId: number,
-    proxyId: number | null,
-    platformIds: number[],
-  ) => {
-    const config = await api.saveUserDesktopConfig(userId, { proxyId, platformIds });
-    if (selectedDesktopUserIdRef.current === userId) {
-      setDesktopUserConfig(config);
-    }
   };
 
   // Proxy Mutators
@@ -478,7 +404,6 @@ export function App() {
             onUpdateUser={handleUpdateUser}
             onToggleUserStatus={handleToggleUserStatus}
             onResetPassword={handleResetUserPassword}
-            onConfigureDesktop={handleConfigureDesktopShortcut}
             onDeleteUser={handleDeleteUser}
           />
         )}
@@ -486,15 +411,7 @@ export function App() {
         {/* Tab 3: Unified Proxy Management */}
         {currentTab === "desktop" && (
           <DesktopConfigView
-            users={users}
             proxies={proxies}
-            platforms={platforms}
-            selectedUserId={selectedDesktopUserId}
-            onSelectUser={handleSelectDesktopUser}
-            userConfig={desktopUserConfig}
-            isLoadingUserConfig={isLoadingDesktopUserConfig}
-            onSaveUserConfig={handleSaveDesktopUserConfig}
-            onRefreshAll={handleRefreshAll}
             onRefresh={loadProxies}
             isRefreshing={isRefreshing}
             onCreateProxy={handleCreateProxy}
