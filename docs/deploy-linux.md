@@ -96,7 +96,6 @@ VESTUS_SECRET_KEY=replace-with-a-stable-random-secret
 VESTUS_PROXY_SECRET_KEY=replace-with-another-stable-random-secret
 VESTUS_ACCESS_TOKEN_TTL_SECONDS=900
 VESTUS_COOKIE_SECURE=1
-VESTUS_TRUST_PROXY=1
 VESTUS_CORS_ORIGINS=https://admin.example.com
 VESTUS_PRODUCT_NAME=Vestus
 VESTUS_UPLOAD_DIR=/var/lib/vestus/uploads

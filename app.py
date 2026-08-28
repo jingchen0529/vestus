@@ -486,11 +486,8 @@ class PlatformUpdate(BaseModel):
 
 
 def _client_ip(request: Request) -> str:
-    # Only trust forwarding headers when explicitly enabled by deployment.
-    if os.getenv("VESTUS_TRUST_PROXY", "0") == "1":
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",", 1)[0].strip()[:64]
+    # Uvicorn validates trusted proxy peers and rewrites ASGI ``scope.client``.
+    # Reading the raw forwarding header here would bypass that trust boundary.
     return request.client.host[:64] if request.client else "unknown"
 
 
@@ -674,7 +671,11 @@ async def network_ip(request: Request, response: Response) -> Dict[str, str]:
     try:
         address = str(ipaddress.ip_address(observed))
     except ValueError as exc:
-        raise HTTPException(status_code=503, detail="无法识别请求来源 IP") from exc
+        raise HTTPException(
+            status_code=503,
+            detail="无法识别请求来源 IP",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
     response.headers["Cache-Control"] = "no-store"
     return {"ip": address}
 

@@ -64,6 +64,7 @@ VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app:app
 - 全局桌面配置：桌面端 `/api/user/desktop-config`；已废弃的管理员 `/api/admin/users/{id}/desktop-config` 按用户接口统一返回 HTTP 410
 - 配置存续校验：桌面端 `GET /api/user/desktop-config/lease`
 - 产品名称：登录前公开读取 `GET /api/product`
+- 网络出口探测：登录前公开读取 `GET /api/network/ip`
 - 日志分页：`GET /api/admin/user-logs`
 - 通用文件上传：管理员 `POST /api/admin/uploads`（multipart 字段 `file`），公开读取
   `GET /uploads/{file_path}`
@@ -73,6 +74,11 @@ VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app:app
 Cookie 支持刷新后的会话恢复；Cookie 认证的写请求还必须通过同源 `Origin` 校验。令牌有效期和
 账号表中的 `token_version` 会在每次请求校验；停用、重置密码、退出登录后旧令牌立即失效。桌面端还会
 定期校验配置 lease；管理员变更、停用或替换全局代理/平台后，所有受影响桌面端的旧代理和浏览器会被关闭。
+
+`GET /api/network/ip` 只返回 Vestus API 观察到的当前请求来源 IP，并设置
+`Cache-Control: no-store`。桌面端直连请求时得到本机公网出口 IP，通过已配置上游代理请求时得到
+代理出口 IP；客户端也据此验证所选路径能否到达自己的 Vestus 服务，不依赖第三方 IP 服务。反向代理
+必须覆盖传入的 `X-Forwarded-For`；应用只读取 ASGI 已验证的 `request.client`，不直接信任该请求头。
 
 ## 全局桌面配置
 
@@ -127,8 +133,7 @@ PNG、JPEG、GIF、WebP、ICO，且配置表仍只保存 `path` 半路径。SVG�
 
 通过反向代理部署时，代理必须传递真实的 `Host` 和 `X-Forwarded-Proto`，并在 Uvicorn/ASGI
 服务器上只对明确的代理地址启用可信代理头（例如 `--proxy-headers --forwarded-allow-ips=<proxy-ip>`）。
-这样生成的 `url` 才会使用外部 HTTPS 域名；不要对不受信任的客户端开放这些转发头。`VESTUS_TRUST_PROXY=1`
-仅用于信任 `X-Forwarded-For` 记录客户端 IP，也必须只在请求确实来自受信任反向代理时启用。
+这样生成的 `url` 和请求来源 IP 才会反映外部连接；不要对不受信任的客户端开放这些转发头。
 
 ## 直连域名（bypassHosts）
 

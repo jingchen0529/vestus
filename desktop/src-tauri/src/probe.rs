@@ -76,6 +76,9 @@ pub async fn probe_via_upstream(
         .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
 
     let status = resp.status();
+    if status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+        return Err(ProbeError::Tunnel(TunnelError::AuthFailed));
+    }
     if !status.is_success() {
         return Err(ProbeError::Status(status.as_u16()));
     }
@@ -225,6 +228,42 @@ mod tests {
         assert_eq!(ip, "203.0.113.7");
         proxy_task.await.unwrap();
         origin_task.abort();
+    }
+
+    #[tokio::test]
+    async fn second_stage_proxy_407_is_classified_as_auth_failure() {
+        let proxy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_addr = proxy.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (mut preflight, _) = proxy.accept().await.unwrap();
+            let _ = crate::httpio::read_head(&mut preflight).await.unwrap();
+            preflight
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+
+            let (mut request, _) = proxy.accept().await.unwrap();
+            let _ = crate::httpio::read_head(&mut request).await.unwrap();
+            request
+                .write_all(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let upstream = UpstreamProxy::new(
+            proxy_addr.ip().to_string(),
+            proxy_addr.port(),
+            "proxy-user",
+            "proxy-password",
+        );
+
+        let error = probe_via_upstream(&upstream, "http://probe.example.test/")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "auth_failed");
+        proxy_task.await.unwrap();
     }
 
     #[test]

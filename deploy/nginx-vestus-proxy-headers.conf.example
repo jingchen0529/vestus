@@ -1,8 +1,8 @@
 # 三个反代 location 共用的头设置。安装到 /etc/nginx/vestus-proxy-headers.conf。
 #
 # X-Forwarded-For 故意用 $remote_addr 覆盖，不用 $proxy_add_x_forwarded_for：
-# 应用在 VESTUS_TRUST_PROXY=1 时取该头的第一段作为审计日志里的客户端 IP，
-# 追加模式会把客户端自带的伪造值排在前面，等于让任何人都能伪造审计 IP。
+# Uvicorn 只接受受信任 Nginx 的该头，并把结果写入 ASGI request.client；追加模式会把
+# 客户端自带的伪造值排在前面，等于让任何人都能伪造审计 IP。
 
 proxy_pass_request_headers on;
 proxy_http_version 1.1;

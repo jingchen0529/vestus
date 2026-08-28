@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
 
 
@@ -17,7 +18,7 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_public_network_ip_reports_the_request_egress_without_caching(
+def test_public_network_ip_uses_the_asgi_validated_peer_and_ignores_raw_forwarding_headers(
     api: Any,
     monkeypatch: Any,
 ) -> None:
@@ -26,11 +27,21 @@ def test_public_network_ip_reports_the_request_egress_without_caching(
 
     response = client.get(
         "/api/network/ip",
-        headers={"X-Forwarded-For": "198.51.100.27, 10.0.0.8"},
+        headers={"X-Forwarded-For": "203.0.113.99, 10.0.0.8"},
     )
 
     assert response.status_code == 200
     assert response.json() == {"ip": "198.51.100.27"}
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_public_network_ip_errors_are_not_cached(api: Any) -> None:
+    _client, module = api
+
+    with TestClient(module.app, client=("not-an-ip", 50000)) as invalid_client:
+        response = invalid_client.get("/api/network/ip")
+
+    assert response.status_code == 503
     assert response.headers["cache-control"] == "no-store"
 
 

@@ -28,5 +28,5 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestC
     import app as app_module
 
     app_module = importlib.reload(app_module)
-    with TestClient(app_module.app) as client:
+    with TestClient(app_module.app, client=("198.51.100.27", 50000)) as client:
         yield client, app_module
