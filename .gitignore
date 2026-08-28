@@ -76,6 +76,7 @@ docs/superpowers/
 # - ad_browser: separate project with its own gitee repo
 oa/
 ad_browser/
+dosc/
 
 # Removed browser-automation prototypes kept only as local references.
 desktop/src-tauri/src/cdp.rs

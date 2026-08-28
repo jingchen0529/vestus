@@ -251,18 +251,17 @@ const chromeExec = join(
 const outputPng = join(iconsDir, "dmg-background.png");
 const previewArtifact = join(artifactDir, "dmg_installer_preview.png");
 
-// 1. Generate DMG background image at ultra-sharp 2x Retina resolution
+// 1. Generate DMG background image at exact 660x440 dimensions for 1:1 Finder window alignment
 execFileSync(chromeExec, [
   "--headless=new",
   "--disable-gpu",
   "--hide-scrollbars",
-  "--force-device-scale-factor=2",
   "--window-size=660,440",
   `--screenshot=${outputPng}`,
   tempHtml,
 ]);
 
-console.log(`Generated 2x Retina DMG background: ${outputPng}`);
+console.log(`Generated DMG background (660x440): ${outputPng}`);
 
 // 2. Also generate a complete preview with mockup app icon and Applications folder
 const previewHtmlContent = `<!DOCTYPE html>
