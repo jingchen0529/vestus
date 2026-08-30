@@ -1,0 +1,49 @@
+# Import-linter contracts: the layering the refactor introduced, enforced.
+#
+#   python3 -m pip install import-linter
+#   lint-imports
+#
+# Read the layer list top-down as "may import anything below it".  A violation
+# means a module reached upwards -- for example a repository importing a service.
+
+[importlinter]
+root_package = app
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Vestus backend layers
+type = layers
+layers =
+    app.main
+    app.api
+    app.services
+    app.schemas
+    app.repositories
+    app.db
+    app.core
+
+[importlinter:contract:routers-use-services]
+name = Routers reach the database through services only
+type = forbidden
+# Direct imports only: a router calling a service that in turn calls a repository
+# is the intended chain, and without this every router would be reported.
+allow_indirect_imports = True
+source_modules =
+    app.api
+forbidden_modules =
+    app.repositories
+
+[importlinter:contract:services-are-transport-agnostic]
+name = Services and below never import a web framework
+type = forbidden
+# Direct imports only, for the same reason: ``app.core.middleware`` and
+# ``app.core.uploads`` are deliberately built on Starlette types, and the layers
+# below reach them for configuration and storage helpers, not for HTTP handling.
+allow_indirect_imports = True
+source_modules =
+    app.services
+    app.repositories
+    app.schemas
+forbidden_modules =
+    fastapi
+    starlette

@@ -11,7 +11,7 @@ def test_storage_path_is_relative_and_cannot_escape_upload_root(
 ) -> None:
     _client, _module = api
     monkeypatch.setenv("VESTUS_UPLOAD_DIR", str(tmp_path / "uploads"))
-    from file_storage import resolve_upload_path
+    from app.core.uploads import resolve_upload_path
 
     resolved = resolve_upload_path("/uploads/2026/08/example.bin")
     assert resolved == tmp_path / "uploads" / "2026" / "08" / "example.bin"
@@ -21,7 +21,7 @@ def test_storage_path_is_relative_and_cannot_escape_upload_root(
 
 def test_uploaded_file_repository_stores_only_relative_path(api) -> None:
     _client, module = api
-    from db import UploadedFile
+    from app.db.models import UploadedFile
 
     item = module.db.create_uploaded_file(
         original_name="report.pdf",
@@ -118,7 +118,7 @@ def test_legacy_invalid_image_references_are_serialized_as_empty(api) -> None:
 
 def test_repository_accepts_standard_ico_mime_alias(api) -> None:
     _client, module = api
-    from file_storage import is_inline_safe
+    from app.core.uploads import is_inline_safe
 
     icon_path = f"/uploads/2026/08/{'e' * 32}.ico"
     assert is_inline_safe(icon_path, "image/vnd.microsoft.icon") is True
@@ -312,7 +312,7 @@ def test_chunked_upload_body_without_content_length_is_limited_before_parsing(
 def test_upload_body_limit_honors_root_path(
     monkeypatch: pytest.MonkeyPatch, scope_path: str
 ) -> None:
-    from upload_middleware import UploadBodyLimitMiddleware
+    from app.core.middleware import UploadBodyLimitMiddleware
 
     monkeypatch.setenv("VESTUS_UPLOAD_MAX_BYTES", "4")
     body = b"x" * 70_000
@@ -468,10 +468,10 @@ def test_database_failure_removes_stored_file(
     client, module = api
     token = _login_admin(client)
 
-    def fail_create(**_values):
+    def fail_create(*_args, **_values):
         raise module.SQLAlchemyError("database unavailable")
 
-    monkeypatch.setattr(module.db, "create_uploaded_file", fail_create)
+    monkeypatch.setattr(module.services.uploads, "create_uploaded_file", fail_create)
     response = client.post(
         "/api/admin/uploads",
         headers={"Authorization": f"Bearer {token}"},

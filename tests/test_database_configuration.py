@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import init_db
-from db import Database
+from app.db.session import Database
+from scripts import init_db
 
 
 @pytest.mark.parametrize("configured_url", [None, "", "   "])
@@ -28,8 +28,8 @@ def test_init_db_redacts_the_database_password(
         "mysql+pymysql://vestus:server-only-secret@127.0.0.1:3306/vestus?charset=utf8mb4",
         initialize=False,
     )
-    monkeypatch.setattr(init_db, "Database", lambda: database)
-    monkeypatch.setattr(init_db.Base.metadata, "create_all", lambda _engine: None)
+    monkeypatch.setattr(init_db, "Database", lambda *_args, **_kwargs: database)
+    monkeypatch.setattr(init_db, "bring_up_to_date", lambda _database: None)
 
     init_db.main()
 

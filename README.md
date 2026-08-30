@@ -20,12 +20,18 @@ Vestus 现在分成两个明确入口：
 
 ```
 .                       Python 后端（FastAPI），直接放在仓库根目录
-├── app.py              API 入口，uvicorn app:app
-├── db.py               SQLAlchemy 模型与数据访问
-├── security.py         口令散列、令牌、代理口令加解密
-├── init_db.py          建表与首个管理员引导
+├── app/                后端应用包，入口 uvicorn app.main:app
+│   ├── main.py         create_app()：中间件、路由注册、异常处理
+│   ├── api/            HTTP 层：路由、依赖注入、响应封装
+│   ├── services/       业务用例与事务边界（只有这一层提交事务）
+│   ├── schemas/        Pydantic 请求/响应模型与序列化
+│   ├── repositories/   纯查询层，不提交事务
+│   ├── db/             SQLAlchemy 模型、引擎与会话
+│   └── core/           配置、口令散列与令牌、上传存储、中间件
+├── migrations/         Alembic 迁移（0001_baseline 对应现网表结构）
+├── alembic.ini         Alembic 配置，数据库地址来自 VESTUS_DATABASE_URL
+├── scripts/init_db.py  建表/迁移与首个管理员引导
 ├── requirements.txt    运行依赖（requirements-dev.txt 为测试依赖）
-├── schema.sql          空库初始化参考（生产部署推荐运行 init_db.py）
 ├── tests/              后端测试（临时 SQLite，不连生产 MySQL）
 ├── web/                后台管理前端（React + TypeScript + Tailwind + shadcn-ui）
 │   ├── src/            前端源码（组件、数据模型、API 客户端、状态管理）
@@ -41,6 +47,9 @@ Vestus 现在分成两个明确入口：
 └── docs/               后端、Linux 部署与历史设计文档
 ```
 
+后端按 `api → services → repositories → db` 单向分层，规则写在 [.importlinter](.importlinter) 里，
+用 `lint-imports` 可以直接校验。
+
 本地如需保留 `oa/`、`ad_browser/` 参考项目，可放在仓库根目录；两者均被 Git 忽略，
 不属于 GitHub 仓库内容，也不参与构建或发布。
 
@@ -51,7 +60,9 @@ Vestus 现在分成两个明确入口：
 ```bash
 python3 -m pip install -r requirements.txt
 cp .env.example .env
-uvicorn app:app --reload --host 127.0.0.1 --port 8000
+# .env 里必须填一个真实的 VESTUS_SECRET_KEY（≥32 字符），否则服务拒绝启动
+python3 scripts/init_db.py
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 再构建并运行桌面端。开发模式会使用 `VESTUS_CHROMIUM_PATH` 指定的 Chromium；macOS
@@ -143,7 +154,11 @@ VESTUS_API_BASE_URL='https://api.example.com' npm run desktop:build
 ## 验证
 
 ```bash
+python3 -m pip install -r requirements-dev.txt
 python3 -m pytest -q tests
+python3 -m ruff check .
+python3 -m mypy
+lint-imports                          # 校验后端分层
 cd web
 npm run build
 cd ../desktop

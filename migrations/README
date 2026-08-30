@@ -1,0 +1,14 @@
+Alembic migrations for the Vestus backend.
+
+`versions/0001_baseline.py` is the schema as it stood when Alembic took over.
+Databases that predate it were created by `Base.metadata.create_all()`;
+`scripts/init_db.py` recognises them and stamps `0001` instead of replaying it,
+so adopting an existing deployment never touches a table.
+
+    python3 scripts/init_db.py                            # create or adopt, then upgrade
+    python3 -m alembic upgrade head                        # apply pending migrations
+    python3 -m alembic revision --autogenerate -m "..."    # draft a new migration
+    python3 -m alembic downgrade -1                        # step back one revision
+
+The connection URL comes from `VESTUS_DATABASE_URL` (see `env.py`); `alembic.ini`
+holds no credentials.

@@ -20,10 +20,13 @@
 - `system_setting`：产品名称、Logo 与界面颜色配置
 - `uploaded_file`：上传文件元数据（只保存相对路径）
 
-代码使用 FastAPI + SQLAlchemy + PyMySQL，全部放在仓库根目录。MySQL 是默认数据库；不会创建旧版
-`users`、`sessions` 或 `audit_logs` 表。全新空库使用 `python3 init_db.py` 按当前 ORM 建表；
-生产部署不要直接依赖旧版本的 `schema.sql`。已有数据库必须执行明确的迁移 SQL，因为
-SQLAlchemy `create_all()` 不会给旧表自动增加列。
+代码使用 FastAPI + SQLAlchemy + PyMySQL，全部放在仓库根目录的 `app/` 包里，按
+`api → services → repositories → db` 单向分层：路由只做 HTTP 解析与鉴权，事务边界（`commit`）
+只属于 `app/services/`，`app/repositories/` 只查询。分层规则写在 [.importlinter](../.importlinter)，
+`lint-imports` 可直接校验。MySQL 是默认数据库；不会创建旧版 `users`、`sessions` 或 `audit_logs` 表。
+
+表结构由 Alembic 管理（见下文「数据库迁移」），`python3 scripts/init_db.py` 会自动判断该建表、
+接管还是升级，并引导首个管理员。
 
 ## 启动
 
@@ -32,8 +35,12 @@ SQLAlchemy `create_all()` 不会给旧表自动增加列。
 ```bash
 python3 -m pip install -r requirements.txt
 cp .env.example .env
-uvicorn app:app --reload --host 127.0.0.1 --port 8000
+python3 scripts/init_db.py
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+`VESTUS_SECRET_KEY` 不再有进程内随机兜底：没设置、仍是 `.env.example` 里的占位值、长度不足 32
+字符或字符种类过少时，进程在启动阶段就直接退出并说明原因。
 
 推荐设置：
 
@@ -51,7 +58,7 @@ export VESTUS_UPLOAD_MAX_BYTES='10485760'
 没有可用 MySQL 时，测试可以显式指定 SQLite（不会改变生产默认）：
 
 ```bash
-VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app:app
+VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app.main:app
 ```
 
 ## 接口概览
@@ -142,7 +149,7 @@ PNG、JPEG、GIF、WebP、ICO，且配置表仍只保存 `path` 半路径。SVG�
 `GET /api/admin/proxies` 与 `GET /api/user/desktop-config` 都会返回归一化后的列表，并且它已
 计入配置 lease——只改直连域名同样会让桌面端重建路由。
 
-写法与校验规则（`app.py` 的 `_validate_bypass_hosts` 与
+写法与校验规则（`app/schemas/proxies.py` 的 `validate_bypass_hosts` 与
 `desktop/src-tauri/src/bypass.rs` 完全一致，两侧都会校验，任何一条不合法就整份配置拒绝）：
 
 - `host.example.com` 精确匹配该主机；`*.example.com`（或等价的 `.example.com`）只匹配子域，
@@ -156,8 +163,34 @@ PNG、JPEG、GIF、WebP、ICO，且配置表仍只保存 `path` 半路径。SVG�
 失败固定返回 502（响应头 `X-Vestus-Direct-Error` 给出短代码），不会退回代理；反向同理，
 代理失败也不会改成直连。
 
-升级已有数据库（本项目不使用 Alembic）时，不要只执行单条 `ALTER`。先备份，再运行本版本
-可重复执行的完整迁移，它会同时补齐平台图标列、直连域名列、系统设置表和上传记录表：
+升级已有数据库时不要只执行单条 `ALTER`，按下面的「数据库迁移」执行。
+
+## 数据库迁移
+
+表结构由 Alembic 管理：配置在 [alembic.ini](../alembic.ini)，脚本在 [migrations/](../migrations/)。
+数据库地址不写在 ini 里，而是按 `-x url=...` → `VESTUS_DATABASE_URL` 的顺序解析，所以迁移和服务
+永远读同一个地址。
+
+日常只需要一条命令，它对三种库都安全：
+
+```bash
+python3 scripts/init_db.py
+```
+
+- 空库：按迁移建表，再引导首个管理员。
+- 已被 Alembic 管理的库（存在 `alembic_version` 表）：升级到 head。
+- Alembic 之前就存在的库（有 `admin` 表但没有 `alembic_version`）：先 `stamp 0001` 接管，不重放
+  建表语句，再继续升级。基线 `0001` 与当前 ORM `create_all()` 的结果逐表逐列一致。
+
+后续新增变更：
+
+```bash
+alembic revision --autogenerate -m "add xxx"
+alembic upgrade head
+```
+
+`0001` 之前的历史 MySQL 库如果还缺平台图标列、直连域名列、系统设置表或上传记录表，先备份，再运行
+本版本可重复执行的完整迁移，然后交给 `scripts/init_db.py` 接管：
 
 ```bash
 mysql vestus < deploy/migrations/2026-08-27-settings-and-uploads.sql
@@ -170,6 +203,14 @@ mysql vestus < deploy/migrations/2026-08-27-settings-and-uploads.sql
 ```bash
 python3 -m pip install -r requirements.txt -r requirements-dev.txt
 python3 -m pytest -q tests
+```
+
+同一套依赖还提供三项静态检查，改动后端后建议一起跑：
+
+```bash
+python3 -m ruff check .
+python3 -m mypy
+lint-imports
 ```
 
 完整 Linux 生产部署步骤见 [deploy-linux.md](deploy-linux.md)。

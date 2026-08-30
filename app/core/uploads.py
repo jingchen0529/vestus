@@ -1,3 +1,12 @@
+"""Managed upload storage: path safety, streaming writes, inline-safety rules.
+
+The upload root and the per-file size limit come from :mod:`app.core.config`
+and are re-read on every call, so an operator can change
+``VESTUS_UPLOAD_DIR`` / ``VESTUS_UPLOAD_MAX_BYTES`` without a restart.
+"""
+
+from __future__ import annotations
+
 import os
 import re
 import stat
@@ -7,11 +16,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import UploadFile
+# The Starlette base class, not FastAPI's subclass: the form parser hands us the
+# base class, and only ``.filename`` / ``.file`` are needed here.
+from starlette.datastructures import UploadFile
 
+from app.core.config import DEFAULT_MAX_UPLOAD_BYTES, get_settings
 
 UPLOAD_URL_PREFIX = "/uploads/"
-DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024
 UPLOAD_REFERENCE_PATTERN = re.compile(
     r"^/uploads/[0-9]{4}/(?:0[1-9]|1[0-2])/[0-9a-f]{32}(?:\.[a-z0-9]{1,16})?$"
@@ -41,19 +52,12 @@ def normalize_upload_reference(value: str) -> str:
         raise ValueError("invalid managed upload reference")
     return normalized
 
-
 def upload_root() -> Path:
-    configured = os.getenv("VESTUS_UPLOAD_DIR", "").strip()
-    root = Path(configured).expanduser() if configured else Path(__file__).resolve().with_name("uploads")
-    return root.resolve()
+    return get_settings().upload_root
 
 
 def upload_max_bytes() -> int:
-    try:
-        value = int(os.getenv("VESTUS_UPLOAD_MAX_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES)))
-        return value if value > 0 else DEFAULT_MAX_UPLOAD_BYTES
-    except (TypeError, ValueError):
-        return DEFAULT_MAX_UPLOAD_BYTES
+    return get_settings().upload_max_bytes
 
 
 def resolve_upload_path(relative_path: str) -> Path:
@@ -121,3 +125,21 @@ def is_inline_safe(relative_path: str, content_type: str) -> bool:
         ".ico": {"image/x-icon", "image/vnd.microsoft.icon"},
     }
     return content_type.lower() in allowed.get(Path(relative_path).suffix.lower(), set())
+
+
+__all__ = [
+    "CHUNK_SIZE",
+    "DEFAULT_MAX_UPLOAD_BYTES",
+    "EmptyUploadError",
+    "StoredFile",
+    "UPLOAD_REFERENCE_PATTERN",
+    "UPLOAD_URL_PREFIX",
+    "UploadTooLargeError",
+    "is_inline_safe",
+    "normalize_upload_reference",
+    "remove_stored_file",
+    "resolve_upload_path",
+    "store_upload",
+    "upload_max_bytes",
+    "upload_root",
+]

@@ -58,9 +58,9 @@ FLUSH PRIVILEGES;
 验证 3306 没有监听公网地址。防火墙只开放管理所需的 SSH 以及 Nginx 的 80/443；启用
 防火墙前务必先放行当前 SSH 端口，避免把自己锁在服务器外。
 
-只创建空数据库，不要为全新安装导入旧版本的 `schema.sql`。后面的
-`init_db.py` 会按当前 ORM 创建表。已有数据库升级时，`create_all()` 不会修改旧表，
-必须先备份并执行仓库内的版本迁移，再重启服务。本版本迁移可重复执行：
+只创建空数据库，表结构交给 Alembic：服务启动前的 `scripts/init_db.py` 会自动判断该按迁移建表、
+接管既有表还是升级到最新版本（细节见 [backend.md](backend.md#数据库迁移)）。从 Alembic 之前的
+版本升级时，先备份并执行仓库内的版本迁移，再重启服务。本版本迁移可重复执行：
 
 ```bash
 cd /opt/vestus/current
@@ -110,6 +110,9 @@ MySQL 密码中的 `@`、`:`、`/`、`#` 等保留字符必须进行 URL 编码�
 服务重启时变化：改变 `VESTUS_SECRET_KEY` 会使现有登录失效；未经迁移直接改变
 `VESTUS_PROXY_SECRET_KEY` 会导致数据库中已有代理密码无法解密。
 
+`VESTUS_SECRET_KEY` 是启动硬条件：没设置、还是示例占位值、长度不足 32 字符或字符种类过少时，
+进程会直接退出并在 journal 里说明原因，不会用随机密钥凑合启动。
+
 保护配置文件：
 
 ```bash
@@ -131,9 +134,9 @@ sudo systemctl status vestus --no-pager
 sudo journalctl -u vestus -n 100 --no-pager
 ```
 
-服务启动前会运行 `init_db.py`，数据库不可用时直接失败；Uvicorn 只启用一个 worker，
-避免多进程同时执行建表和首个管理员引导。首次创建管理员后，从环境文件删除
-`VESTUS_BOOTSTRAP_ADMIN_PASSWORD`，再执行 `sudo systemctl restart vestus`。
+服务启动前会运行 `scripts/init_db.py`（建表/迁移 + 首个管理员引导），数据库不可用时直接失败；
+Uvicorn 只启用一个 worker，避免多进程同时执行迁移和首个管理员引导。首次创建管理员后，从环境文件
+删除 `VESTUS_BOOTSTRAP_ADMIN_PASSWORD`，再执行 `sudo systemctl restart vestus`。
 
 检查数据库健康状态。`/healthz` 即使降级也返回 HTTP 200，因此必须校验 JSON 内容：
 
@@ -222,13 +225,20 @@ exit
 sudo systemctl stop vestus
 cd /opt/vestus/current
 sudo -H -u vestus git pull --ff-only origin main
-sudo mysql vestus < deploy/migrations/2026-08-27-settings-and-uploads.sql
 sudo -H -u vestus .venv/bin/python -m pip install -r requirements.txt
 sudo -H -u vestus npm --prefix web ci
 sudo -H -u vestus npm --prefix web run build
 sudo systemctl start vestus
 curl -fsS http://127.0.0.1:8000/healthz \
   | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
+```
+
+数据库升级不需要单独一步：服务的 `ExecStartPre` 会执行 `scripts/init_db.py`，把库升到最新迁移。
+唯一的例外是**从 Alembic 之前的版本第一次升级**——那种库会被直接 `stamp` 接管，缺列不会自动补齐，
+所以要在 `systemctl start` 之前先跑一次本版本的完整迁移：
+
+```bash
+sudo mysql vestus < deploy/migrations/2026-08-27-settings-and-uploads.sql
 ```
 
 恢复时先停止 `vestus`，恢复同一次备份中的 MySQL 数据、`/var/lib/vestus/uploads` 和

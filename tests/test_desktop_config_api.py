@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import timedelta
 from threading import Barrier, BrokenBarrierError
 from typing import Any
 
 from sqlalchemy import event, inspect, select
 
-from security import decrypt_proxy_password
+from app.core.security import decrypt_proxy_password
 
 
 def _login(client: Any, path: str, username: str, password: str) -> str:
@@ -270,12 +271,10 @@ def test_concurrent_active_proxy_creation_keeps_one_active_proxy(api: Any) -> No
     ) -> None:
         normalized = " ".join(statement.lower().split())
         if normalized.startswith("select") and "from proxy" in normalized and "proxy.status" in normalized:
-            try:
+            # Once a stable DB lock serializes the transactions, the first
+            # transaction times out here before the second can run SELECT.
+            with suppress(BrokenBarrierError):
                 select_barrier.wait(timeout=1)
-            except BrokenBarrierError:
-                # Once a stable DB lock serializes the transactions, the first
-                # transaction times out here before the second can run SELECT.
-                pass
 
     event.listen(module.db.engine, "after_cursor_execute", synchronize_empty_active_reads)
     try:
@@ -733,7 +732,7 @@ def test_desktop_config_validation_and_disabled_reference_filtering(api: Any) ->
 def test_platform_management_and_deletion(api: Any) -> None:
     client, _module = api
     admin_token = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
-    user = _create_user(client, admin_token)
+    _create_user(client, admin_token)
     user_token = _login(client, "/api/user/auth/login", "configured-user", "configured-password")
     admin_headers = _bearer(admin_token)
     icon_path = client.post(

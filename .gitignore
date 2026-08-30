@@ -30,7 +30,6 @@ __pycache__/
 *.dump
 *.dump.*
 *.sql
-!schema.sql
 !deploy/migrations/*.sql
 *.sql.*
 *.sql.gz

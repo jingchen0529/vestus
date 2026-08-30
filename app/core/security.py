@@ -1,23 +1,34 @@
-"""Password hashing and signed access-token helpers."""
+"""Password hashing, signed access tokens and proxy-credential encryption.
+
+The signing key and the proxy encryption key both come from
+:mod:`app.core.config`.  There is no in-process random fallback: a deployment
+without ``VESTUS_SECRET_KEY`` is refused at startup by
+``validate_startup_settings()`` rather than silently signing tokens with a key
+that dies with the worker.
+"""
 
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import time
 from typing import Any, Dict, Optional, Tuple
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from app.core.config import ConfigurationError, get_settings
+
 try:  # Argon2id is the production implementation.
     from argon2 import PasswordHasher
     from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
-    _ARGON2 = PasswordHasher()
+    # ``Any`` because the fallback below rebinds this to ``None`` when argon2-cffi
+    # is missing, and the fallback branch has no ``PasswordHasher`` to name.
+    _ARGON2: Any = PasswordHasher()
 except ImportError:  # pragma: no cover - local dependency-free test fallback
     _ARGON2 = None
     InvalidHashError = VerificationError = VerifyMismatchError = Exception  # type: ignore[misc,assignment]
@@ -26,7 +37,6 @@ except ImportError:  # pragma: no cover - local dependency-free test fallback
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 310_000
 TOKEN_VERSION = 1
-_EPHEMERAL_SECRET = secrets.token_bytes(32)
 
 
 def _encode(value: bytes) -> str:
@@ -35,7 +45,6 @@ def _encode(value: bytes) -> str:
 
 def _decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
 
 def hash_password(password: str) -> str:
     """Hash a password with Argon2id; PBKDF2 is only a test fallback."""
@@ -62,7 +71,7 @@ def verify_password(password: str, encoded: str) -> bool:
             return False
         actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), _decode(salt), int(iterations))
         return hmac.compare_digest(actual, _decode(expected))
-    except (TypeError, ValueError, base64.binascii.Error):
+    except (TypeError, ValueError, binascii.Error):
         return False
 
 
@@ -71,10 +80,13 @@ def password_needs_rehash(encoded: str) -> bool:
         return _ARGON2 is not None and _ARGON2.check_needs_rehash(encoded)
     return True
 
-
 def _secret() -> bytes:
-    value = os.getenv("VESTUS_SECRET_KEY") or os.getenv("VESTUS_JWT_SECRET")
-    return value.encode("utf-8") if value else _EPHEMERAL_SECRET
+    value = get_settings().token_signing_secret
+    if not value:
+        raise ConfigurationError(
+            "VESTUS_SECRET_KEY 未配置，无法签发或校验访问令牌；请在 .env 中设置稳定密钥"
+        )
+    return value.encode("utf-8")
 
 
 def _proxy_fernet() -> Fernet:
@@ -86,9 +98,12 @@ def _proxy_fernet() -> Fernet:
     deployment rotate/isolate proxy encryption independently; otherwise the
     existing application secret is used.
     """
-    value = os.getenv("VESTUS_PROXY_SECRET_KEY") or os.getenv("VESTUS_SECRET_KEY") or os.getenv("VESTUS_JWT_SECRET")
-    material = value.encode("utf-8") if value else _EPHEMERAL_SECRET
-    key = base64.urlsafe_b64encode(hashlib.sha256(material).digest())
+    value = get_settings().proxy_encryption_secret
+    if not value:
+        raise ConfigurationError(
+            "VESTUS_PROXY_SECRET_KEY / VESTUS_SECRET_KEY 均未配置，无法加解密代理密码"
+        )
+    key = base64.urlsafe_b64encode(hashlib.sha256(value.encode("utf-8")).digest())
     return Fernet(key)
 
 
@@ -106,7 +121,6 @@ def decrypt_proxy_password(ciphertext: bytes | str) -> str:
         return _proxy_fernet().decrypt(raw).decode("utf-8")
     except (InvalidToken, UnicodeDecodeError, ValueError, TypeError) as exc:
         raise ValueError("proxy password cannot be decrypted") from exc
-
 
 def create_access_token(
     account_type: str,
@@ -134,18 +148,18 @@ def create_access_token(
     signature = _encode(hmac.new(_secret(), body.encode("ascii"), hashlib.sha256).digest())
     return f"{body}.{signature}", expires
 
-
 def decode_access_token(token: str, *, now: Optional[int] = None) -> Dict[str, Any]:
     """Validate a token and return claims, raising ``ValueError`` if invalid."""
     if not isinstance(token, str):
         raise ValueError("invalid token")
+    secret = _secret()
     try:
         body, encoded_signature = token.split(".", 1)
-        expected = hmac.new(_secret(), body.encode("ascii"), hashlib.sha256).digest()
+        expected = hmac.new(secret, body.encode("ascii"), hashlib.sha256).digest()
         if not hmac.compare_digest(expected, _decode(encoded_signature)):
             raise ValueError("invalid token signature")
         payload = json.loads(_decode(body).decode("utf-8"))
-    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error) as exc:
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as exc:
         raise ValueError("invalid token") from exc
     if not isinstance(payload, dict) or payload.get("v") != TOKEN_VERSION:
         raise ValueError("invalid token version")
