@@ -14,7 +14,8 @@ export interface AdminProfile {
 }
 
 export interface LoginResponse {
-  token?: string;
+  /** 桌面端存这个；控制台同时拿到会话 Cookie，所以两条路都能鉴权。 */
+  accessToken?: string;
   admin?: AdminProfile;
-  expiresIn?: number;
+  expiresAt?: string;
 }

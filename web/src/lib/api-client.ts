@@ -24,31 +24,25 @@ import {
   UpdateAdminPayload,
 } from "@/types/admin";
 import { UserLogResponse, UserLogItem } from "@/types/log";
-import { SystemHealth } from "@/types/api";
+import { API_CODE_OK, ApiCollection, ApiEnvelope, SystemHealth } from "@/types/api";
 
-class ApiError extends Error {
+const REQUEST_FAILED_MESSAGE = "请求失败，请稍后重试";
+
+export class ApiError extends Error {
   status: number;
-  data: any;
-  constructor(message: string, status: number, data?: any) {
+  /** 后端的业务码；用它区分同一状态码下的不同失败原因。 */
+  code: number;
+  requestId: string;
+  data: unknown;
+
+  constructor(message: string, status: number, code: number, requestId: string, data?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
+    this.requestId = requestId;
     this.data = data;
   }
-}
-
-function parseErrorMessage(data: any): string {
-  if (!data) return "请求失败，请稍后重试";
-  const detail = data.detail;
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail.map((d: any) => d?.msg || String(d)).join("；");
-  }
-  if (detail && typeof detail === "object") {
-    return detail.message || JSON.stringify(detail);
-  }
-  if (data.message) return data.message;
-  return "请求异常";
 }
 
 let inMemoryToken: string | null = null;
@@ -57,7 +51,10 @@ export const setAuthToken = (token: string | null) => {
   inMemoryToken = token;
 };
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function send(
+  path: string,
+  options: RequestInit,
+): Promise<{ response: Response; body: unknown }> {
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...(options.headers as Record<string, string>),
@@ -71,40 +68,70 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(path, {
+  const response = await fetch(path, {
     ...options,
     headers,
     credentials: "include",
   });
 
-  let data: any = {};
-  const contentType = res.headers.get("content-type");
+  let body: unknown = null;
+  const contentType = response.headers.get("content-type");
   if (contentType && contentType.includes("application/json")) {
     try {
-      data = await res.json();
+      body = await response.json();
     } catch {
-      data = {};
+      body = null;
     }
   }
 
-  if (!res.ok) {
-    throw new ApiError(parseErrorMessage(data), res.status, data);
-  }
+  return { response, body };
+}
 
-  return data as T;
+function toApiError(response: Response, body: unknown): ApiError {
+  // 反向代理返回的 502 HTML、或走不到应用的 404，都没有信封可读。
+  const envelope = (body ?? {}) as Partial<ApiEnvelope>;
+  const message =
+    typeof envelope.msg === "string" && envelope.msg ? envelope.msg : REQUEST_FAILED_MESSAGE;
+  // 与后端 `ApiCode.for_status` 同一条规则：状态码 × 100。
+  const code = typeof envelope.code === "number" ? envelope.code : response.status * 100;
+  return new ApiError(message, response.status, code, envelope.requestId ?? "", envelope.data);
+}
+
+/**
+ * 调用一个走信封的端点，只把 `data` 交给调用方。
+ *
+ * 缺少信封或 `code !== 0` 都算失败，即使 HTTP 状态是 200——中间层塞回来的
+ * 错误页正是这个形状，放过去只会让错误在更远处以更难懂的方式炸开。
+ */
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const { response, body } = await send(path, options);
+  const envelope = (body ?? {}) as Partial<ApiEnvelope<T>>;
+  if (!response.ok || envelope.code !== API_CODE_OK) {
+    throw toApiError(response, body);
+  }
+  return envelope.data as T;
+}
+
+/** 调用不走信封的探针端点，目前只有 `/healthz`。 */
+async function requestUnenveloped<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const { response, body } = await send(path, options);
+  if (!response.ok) {
+    throw toApiError(response, body);
+  }
+  return body as T;
 }
 
 export const api = {
   // Auth
   async login(payload: { username: string; password: string }): Promise<LoginResponse> {
-    const res = await request<LoginResponse>("/api/admin/auth/login", {
+    const grant = await request<LoginResponse>("/api/admin/auth/login", {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    if (res.token) {
-      setAuthToken(res.token);
+    if (grant.accessToken) {
+      setAuthToken(grant.accessToken);
     }
-    return res;
+    return grant;
   },
 
   async getMe(): Promise<AdminProfile> {
@@ -125,8 +152,8 @@ export const api = {
     if (search) params.append("search", search);
     if (status) params.append("status", status);
     const query = params.toString() ? `?${params.toString()}` : "";
-    const res = await request<DesktopUser[] | { items: DesktopUser[] }>(`/api/admin/users${query}`);
-    return Array.isArray(res) ? res : res.items || [];
+    const { items } = await request<ApiCollection<DesktopUser>>(`/api/admin/users${query}`);
+    return items;
   },
 
   async getUser(id: number): Promise<DesktopUser> {
@@ -147,27 +174,28 @@ export const api = {
     });
   },
 
-  async enableUser(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/users/${id}/enable`, {
+  async enableUser(id: number): Promise<DesktopUser> {
+    return request<DesktopUser>(`/api/admin/users/${id}/enable`, {
       method: "POST",
     });
   },
 
-  async disableUser(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/users/${id}/disable`, {
+  async disableUser(id: number): Promise<DesktopUser> {
+    return request<DesktopUser>(`/api/admin/users/${id}/disable`, {
       method: "POST",
     });
   },
 
-  async resetUserPassword(id: number, password: string): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/users/${id}/reset-password`, {
+  // 这些写操作没有可回报的内容：`code === 0` 就是全部答案。
+  async resetUserPassword(id: number, password: string): Promise<void> {
+    await request<null>(`/api/admin/users/${id}/reset-password`, {
       method: "POST",
       body: JSON.stringify({ password }),
     });
   },
 
-  async deleteUser(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/users/${id}`, {
+  async deleteUser(id: number): Promise<void> {
+    await request<null>(`/api/admin/users/${id}`, {
       method: "DELETE",
     });
   },
@@ -178,8 +206,8 @@ export const api = {
 
   // Proxies
   async listProxies(): Promise<ProxyItem[]> {
-    const res = await request<ProxyItem[] | { items: ProxyItem[] }>("/api/admin/proxies");
-    return Array.isArray(res) ? res : res.items || [];
+    const { items } = await request<ApiCollection<ProxyItem>>("/api/admin/proxies");
+    return items;
   },
 
   async createProxy(payload: CreateProxyPayload): Promise<ProxyItem> {
@@ -196,16 +224,16 @@ export const api = {
     });
   },
 
-  async deleteProxy(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/proxies/${id}`, {
+  async deleteProxy(id: number): Promise<void> {
+    await request<null>(`/api/admin/proxies/${id}`, {
       method: "DELETE",
     });
   },
 
   // Platforms
   async listPlatforms(): Promise<PlatformItem[]> {
-    const res = await request<PlatformItem[] | { items: PlatformItem[] }>("/api/admin/platforms");
-    return Array.isArray(res) ? res : res.items || [];
+    const { items } = await request<ApiCollection<PlatformItem>>("/api/admin/platforms");
+    return items;
   },
 
   async createPlatform(payload: CreatePlatformPayload): Promise<PlatformItem> {
@@ -222,8 +250,8 @@ export const api = {
     });
   },
 
-  async deletePlatform(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/platforms/${id}`, {
+  async deletePlatform(id: number): Promise<void> {
+    await request<null>(`/api/admin/platforms/${id}`, {
       method: "DELETE",
     });
   },
@@ -234,8 +262,8 @@ export const api = {
     if (search) params.append("search", search);
     if (status) params.append("status", status);
     const query = params.toString() ? `?${params.toString()}` : "";
-    const res = await request<AdminUser[] | { items: AdminUser[] }>(`/api/admin/admins${query}`);
-    return Array.isArray(res) ? res : res.items || [];
+    const { items } = await request<ApiCollection<AdminUser>>(`/api/admin/admins${query}`);
+    return items;
   },
 
   async getAdmin(id: number): Promise<AdminUser> {
@@ -256,27 +284,27 @@ export const api = {
     });
   },
 
-  async enableAdmin(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/admins/${id}/enable`, {
+  async enableAdmin(id: number): Promise<AdminUser> {
+    return request<AdminUser>(`/api/admin/admins/${id}/enable`, {
       method: "POST",
     });
   },
 
-  async disableAdmin(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/admins/${id}/disable`, {
+  async disableAdmin(id: number): Promise<AdminUser> {
+    return request<AdminUser>(`/api/admin/admins/${id}/disable`, {
       method: "POST",
     });
   },
 
-  async resetAdminPassword(id: number, password: string): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/admins/${id}/reset-password`, {
+  async resetAdminPassword(id: number, password: string): Promise<void> {
+    await request<null>(`/api/admin/admins/${id}/reset-password`, {
       method: "POST",
       body: JSON.stringify({ password }),
     });
   },
 
-  async deleteAdmin(id: number): Promise<{ success: boolean }> {
-    return request<{ success: boolean }>(`/api/admin/admins/${id}`, {
+  async deleteAdmin(id: number): Promise<void> {
+    await request<null>(`/api/admin/admins/${id}`, {
       method: "DELETE",
     });
   },
@@ -303,7 +331,7 @@ export const api = {
 
   // System Health
   async getHealth(): Promise<SystemHealth> {
-    return request<SystemHealth>("/healthz");
+    return requestUnenveloped<SystemHealth>("/healthz");
   },
 
   async getProduct(): Promise<Record<string, any>> {

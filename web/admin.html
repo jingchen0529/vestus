@@ -70,8 +70,8 @@
   const state = {user: null, logs: [], proxies: [], platforms: []};
   const show = (id, value) => { const el=$(id); el.textContent=value||''; el.classList.toggle('hidden', !value); };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const errorText = data => { const detail=data&&data.detail; if(typeof detail==='string') return detail; if(Array.isArray(detail)) return detail.map(item=>item&&item.msg||String(item)).join('；'); if(detail&&typeof detail==='object') return detail.message||JSON.stringify(detail); return '请求失败'; };
-  const api = async (path, options={}) => { const headers=Object.assign({'Accept':'application/json'},options.headers||{}); if(options.body!==undefined) headers['Content-Type']='application/json'; const response=await fetch(path,Object.assign({},options,{headers,credentials:'include'})); let data={}; try{data=await response.json()}catch(_e){} if(!response.ok) throw new Error(errorText(data)); return data; };
+  const errorText = body => { const msg=body&&body.msg; return typeof msg==='string'&&msg ? msg : '请求失败'; };
+  const api = async (path, options={}) => { const headers=Object.assign({'Accept':'application/json'},options.headers||{}); if(options.body!==undefined) headers['Content-Type']='application/json'; const response=await fetch(path,Object.assign({},options,{headers,credentials:'include'})); let body=null; try{body=await response.json()}catch(_e){} /* 每个 JSON 端点都回 {code,msg,data,requestId}；只有 code===0 才算成功，业务数据在 data 里。 */ if(!response.ok||!body||body.code!==0) throw new Error(errorText(body)); return body.data; };
   const items = value => Array.isArray(value)?value:(value&&Array.isArray(value.items)?value.items:[]);
   const sameId = (a,b) => String(a??'')===String(b??'');
   const statusLabel = status => status==='active'?'启用':'停用';
