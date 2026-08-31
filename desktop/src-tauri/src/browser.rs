@@ -526,9 +526,10 @@ fn chromium_arguments(
     target_url: &str,
     window: Option<WindowGeometry>,
 ) -> Vec<OsString> {
-    let mut args = vec![
-        OsString::from(format!("--user-data-dir={}", profile_dir.display())),
-    ];
+    let mut args = vec![OsString::from(format!(
+        "--user-data-dir={}",
+        profile_dir.display()
+    ))];
     if let Some(proxy) = local_proxy {
         args.push(OsString::from(format!("--proxy-server={proxy}")));
         args.push(OsString::from("--proxy-bypass-list=<-loopback>"));
@@ -702,7 +703,9 @@ mod tests {
             .collect();
 
         assert!(rendered.contains(&"--no-proxy-server".into()));
-        assert!(!rendered.iter().any(|arg| arg.starts_with("--proxy-server=")));
+        assert!(!rendered
+            .iter()
+            .any(|arg| arg.starts_with("--proxy-server=")));
     }
 
     #[test]
