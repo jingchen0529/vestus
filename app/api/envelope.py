@@ -36,6 +36,7 @@ from app.core.api_contract import (
     ApiCode,
     envelope_body,
 )
+from app.core.middleware import REQUEST_ID_HEADER
 
 #: Rebuilding the body invalidates these; the new response computes its own.
 _RECOMPUTED_HEADERS = frozenset({b"content-length", b"content-type"})
@@ -84,12 +85,27 @@ def envelope_response(
     data: Any = None,
     headers: Optional[Mapping[str, str]] = None,
 ) -> JSONResponse:
-    """Build a fully-formed envelope response.  Used by the error handlers."""
+    """Build a fully-formed envelope response.  Used by the error handlers.
 
+    ``X-Request-Id`` is set here rather than left to
+    :class:`app.core.middleware.RequestIdMiddleware`.  An exception escaping a
+    route propagates *past* that middleware's ``call_next``, so its header pass
+    never runs and Starlette's ``ServerErrorMiddleware`` -- which sits outside
+    every user middleware -- answers instead.  Without this, the 500 that most
+    needs a correlation id would be the one response missing the header.
+    """
+
+    trace_id = request_trace_id(request)
+    merged: Dict[str, str] = {}
+    if trace_id:
+        merged[REQUEST_ID_HEADER] = trace_id
+    # Whatever the raiser set wins: ``exc.headers`` is deliberate.
+    if headers:
+        merged.update(headers)
     return JSONResponse(
-        envelope_body(code=code, msg=msg, data=data, request_id=request_trace_id(request)),
+        envelope_body(code=code, msg=msg, data=data, request_id=trace_id),
         status_code=status_code,
-        headers=headers,
+        headers=merged or None,
     )
 
 
@@ -141,7 +157,12 @@ class EnvelopeRoute(APIRoute):
 
 
 def enveloped_schema(inner: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """The OpenAPI schema for an envelope carrying ``inner`` as its ``data``."""
+    """The OpenAPI schema for an envelope carrying ``inner`` as its ``data``.
+
+    ``inner`` is ``None`` only for an operation FastAPI described without a JSON
+    schema; ``{}`` -- any JSON value -- is the honest description of that, and it
+    is valid in OpenAPI 3.1, which is what FastAPI emits.
+    """
 
     return {
         "type": "object",
@@ -153,7 +174,7 @@ def enveloped_schema(inner: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 "example": int(ApiCode.OK),
             },
             "msg": {"type": "string", "example": SUCCESS_MESSAGE},
-            "data": inner if inner is not None else {"nullable": True},
+            "data": inner if inner is not None else {},
             "requestId": {"type": "string", "description": "同 X-Request-Id 响应头"},
         },
     }

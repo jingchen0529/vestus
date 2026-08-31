@@ -10,13 +10,15 @@ each one gets an isolated :class:`~app.db.session.Database`.
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
 from app.api.envelope import envelope_response, install_openapi_envelope
@@ -42,6 +44,35 @@ VALIDATION_FAILED_DETAIL = "请求参数校验失败"
 #: machine-readable form travels in ``data.errors``.
 VALIDATION_MESSAGE_MAX_ERRORS = 3
 VALIDATION_MESSAGE_MAX_LENGTH = 200
+
+#: Starlette raises the router-layer 404 and 405 with the standard English phrase
+#: as their detail.  Those two now reach a user's toast, and every other message
+#: this API produces is Chinese.
+ROUTER_ERROR_MESSAGES = {
+    404: "请求的接口不存在",
+    405: "该接口不支持此请求方法",
+}
+
+
+def http_error_message(exc: HTTPException) -> str:
+    """``exc.detail``, unless it is only the phrase Starlette filled in itself.
+
+    ``HTTPException`` defaults ``detail`` to ``HTTPStatus(status).phrase`` when
+    the raiser passes none, so a detail equal to that phrase is how a default is
+    told apart from the deliberate Chinese message a router wrote -- the routers
+    that raise 404 by hand all pass their own, and keep it.
+    """
+
+    detail = str(exc.detail).strip() if exc.detail is not None else ""
+    if exc.status_code not in ROUTER_ERROR_MESSAGES:
+        return detail
+    try:
+        standard_phrase = HTTPStatus(exc.status_code).phrase
+    except ValueError:  # pragma: no cover - a non-standard status has no phrase
+        standard_phrase = ""
+    if not detail or detail == standard_phrase:
+        return ROUTER_ERROR_MESSAGES[exc.status_code]
+    return detail
 
 
 def create_app(database: Database | None = None) -> FastAPI:
@@ -124,13 +155,20 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        # Registered against *Starlette's* HTTPException, not FastAPI's subclass.
+        # Handler lookup walks ``type(exc).__mro__``, so registering the subclass
+        # would catch only the ones routers raise themselves and miss the ones
+        # the router layer raises -- the 404 for an unmatched path and the 405 for
+        # a known path with the wrong method both come from Starlette and would
+        # have kept answering with its bare ``{"detail": ...}``.
+        #
         # ``exc.headers`` is not decoration: it carries ``WWW-Authenticate`` from
         # the auth dependencies and ``Cache-Control: no-store`` from /api/network/ip.
         return envelope_response(
             request,
             status_code=exc.status_code,
             code=ApiCode.for_status(exc.status_code),
-            msg=str(exc.detail),
+            msg=http_error_message(exc),
             headers=exc.headers,
         )
 
@@ -175,4 +213,10 @@ if __name__ == "__main__":  # pragma: no cover
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
 
 
-__all__ = ["app", "create_app", "register_exception_handlers", "validation_message"]
+__all__ = [
+    "app",
+    "create_app",
+    "http_error_message",
+    "register_exception_handlers",
+    "validation_message",
+]

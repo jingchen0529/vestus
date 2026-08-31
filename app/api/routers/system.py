@@ -52,10 +52,19 @@ async def network_ip(request: Request, response: Response) -> Dict[str, str]:
 
 
 @probe_router.get("/healthz", tags=["system"])
-def healthz(db: Database = Depends(get_db)) -> Dict[str, Any]:
+def healthz(response: Response, db: Database = Depends(get_db)) -> Dict[str, Any]:
     # 反向代理会把这个端点暴露在公网且不带鉴权，所以只回存活状态。
     # 数据库地址、库名一律不外泄；本机排障请看 journalctl。
-    ok = db.ping()
+    #
+    # ``ping`` 自己吞掉 SQLAlchemyError 回 False，但引擎层面的故障（未初始化、
+    # 驱动缺失）会抛别的异常。那些异常若冒到全局 handler，这个端点就会回信封，
+    # 而部署文档里的 `curl | jq '.status'` 读的是裸字段。所以在这里就地兜住：
+    # 形状始终是裸 JSON，状态码仍然显式失败，不假装健康。
+    try:
+        ok = db.ping()
+    except Exception:  # noqa: BLE001 - 探针不关心是哪种故障，只关心不健康
+        response.status_code = 503
+        ok = False
     return {"status": "ok" if ok else "degraded", "database": "ok" if ok else "unavailable"}
 
 

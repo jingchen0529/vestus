@@ -42,30 +42,35 @@ class ApiCode(IntEnum):
     UNAUTHENTICATED = 40100
     ACCOUNT_UNAVAILABLE = 40300
     NOT_FOUND = 40400
+    METHOD_NOT_ALLOWED = 40500
     CONFLICT = 40900
     GONE = 41000
     PAYLOAD_TOO_LARGE = 41300
+    UNSUPPORTED_MEDIA_TYPE = 41500
     UNPROCESSABLE = 42200
+    TOO_MANY_REQUESTS = 42900
 
     INTERNAL = 50000
     DATABASE_UNAVAILABLE = 50300
     STORAGE_UNAVAILABLE = 50700
 
     @classmethod
-    def for_status(cls, status_code: int) -> "ApiCode":
+    def for_status(cls, status_code: int) -> int:
         """The code for a bare ``HTTPException`` that named no code itself.
 
-        Routers still raise ``HTTPException(status_code=403, ...)`` directly, and
-        the deps layer raises 401/403 during authentication.  Those get the ``00``
-        member for their status; anything unmapped degrades to a generic code
-        rather than inventing one, so the invariant ``code // 100 == http_status``
-        can never quietly break.
+        Routers still raise ``HTTPException(status_code=403, ...)`` directly, the
+        deps layer raises 401/403 during authentication, and Starlette's router
+        raises the 404 and 405 nobody wrote by hand.  Those get the ``00`` member
+        for their status.
+
+        A status with no member still yields ``status_code * 100`` rather than
+        degrading to a generic code, because ``code // 100 == http_status`` is the
+        one promise a client may rely on -- and a client that cannot read the
+        envelope has no choice but to compute the code that way itself, so any
+        other answer would disagree with what the client already assumed.
         """
 
-        try:
-            return cls(status_code * 100)
-        except ValueError:
-            return cls.INTERNAL if status_code >= 500 else cls.BAD_REQUEST
+        return status_code * 100
 
 
 def envelope_body(
