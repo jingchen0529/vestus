@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user";
@@ -279,12 +280,11 @@ export function UserDialog({
             {/* Expires At */}
             <div className="space-y-1.5">
               <Label htmlFor="u-expires">授权到期日</Label>
-              <Input
-                id="u-expires"
-                type="date"
+              <DatePicker
                 value={expiresAt}
-                onChange={(e) => setExpiresAt(e.target.value)}
+                onChange={(val) => setExpiresAt(val)}
                 disabled={loading}
+                placeholder="永久有效"
               />
               <span className="text-[11px] text-muted-foreground">留空表示永久有效</span>
             </div>

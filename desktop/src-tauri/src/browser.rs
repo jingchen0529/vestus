@@ -3,8 +3,22 @@
 //! OA 的浏览器语义是「每次点击都创建一个新的、临时的 Chromium 环境」。
 //! 这里保留 Tauri 作为登录壳，只把业务网站交给随应用发布的 Chromium。
 //!
-//! 起始网址作为命令行最后一个参数交给 Chromium 直接打开；本模块不与浏览器
-//! 建立任何控制通道，也不开调试端点。
+//! 起始网址作为命令行最后一个参数交给 Chromium 直接打开。
+//!
+//! # 调试端点
+//!
+//! 本模块**会**开 DevTools 端点（`--remote-debugging-port=0`），因为管理台要求
+//! 记录客户在浏览器里访问了哪些页面、做了多少次操作，而这是唯一能同时拿到
+//! 完整 URL 和页面内事件的通道。收敛措施：
+//!
+//! * 端口传 `0` 让内核分配，实际端口只出现在 profile 目录里的
+//!   `DevToolsActivePort`，profile 名字本身带纳秒时间戳，外部无法预测；
+//! * 不传 `--remote-debugging-address`，沿用 Chromium 只绑 127.0.0.1 的默认；
+//! * 不传 `--remote-allow-origins`，所以带 `Origin` 头的请求（也就是被打开的
+//!   网页自己发起的那些）会被 Chromium 直接拒绝，网页拿不到这个通道。
+//!
+//! 无法消除的残余风险：**本机同用户的其他进程**只要能读到 profile 目录就能连上
+//! 这个端点。这是开调试端口的固有代价，接受它是记录页面级操作日志的前提。
 //!
 //! 「临时环境」由每次新建的 `--user-data-dir` 加退出时的 [`cleanup_profile`]
 //! 保证，不依赖 `--incognito`：profile 本来就用完即焚，隐身模式换不来额外的
@@ -12,9 +26,11 @@
 //! 隐身特征。同理也不传 `--new-window`——每个会话都是独立 user-data-dir 上
 //! 的全新进程，本来就只会开出一个新窗口。
 //!
-//! 窗口几何显式下发而不用 `--start-maximized`：后者要等窗口建好再最大化，
-//! 这次 resize 和渲染器首帧存在竞态，在远程桌面/无独显的机器上会停在空白
-//! 帧上（表现为内容区灰屏、刷新才恢复）。
+//! 窗口几何**总是**显式下发，从不使用 `--start-maximized`：后者要等窗口建好再
+//! 最大化，这次 resize 和渲染器首帧存在竞态，在远程桌面/无独显的机器上会停在空白
+//! 帧上（表现为内容区灰屏、刷新才恢复）。读不到显示器几何时用 [`FALLBACK_WINDOW`]
+//! 兜底，而不是把这个开关加回来——恰恰是读不到显示器的那批机器（远程桌面、虚拟
+//! 显卡）最容易踩上面那个竞态。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -30,10 +46,31 @@ use tauri::{AppHandle, Manager, Runtime};
 #[cfg(any(debug_assertions, test))]
 const CHROMIUM_PATH_ENV: &str = "VESTUS_CHROMIUM_PATH";
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
-/// 低于这个边长的工作区当作读数异常，退回让 Chromium 自己决定窗口大小。
+/// Chromium 写 `DevToolsActivePort` 的等待上限。超时就放弃采集，浏览器照常用。
+const DEVTOOLS_PORT_TIMEOUT: Duration = Duration::from_secs(20);
+const DEVTOOLS_PORT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
+/// 低于这个边长的工作区当作读数异常，退回 [`FALLBACK_WINDOW`]。
 const MIN_WINDOW_EDGE: u32 = 320;
 type ProcessSlot = Arc<Mutex<Option<Child>>>;
 type BrowserCloseEntry = (ProcessSlot, PathBuf);
+
+/// 一个 Chromium 进程的 browser 级 DevTools 入口。
+///
+/// 用 browser 级而不是 page 级：只有它能 `Target.setAutoAttach`，从而覆盖用户
+/// 后开的标签页和弹窗；page 级连接只看得到建立连接时那一个页面。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevToolsEndpoint {
+    pub port: u16,
+    /// `DevToolsActivePort` 第二行，形如 `/devtools/browser/<uuid>`。
+    pub browser_path: String,
+}
+
+impl DevToolsEndpoint {
+    pub fn websocket_url(&self) -> String {
+        format!("ws://127.0.0.1:{}{}", self.port, self.browser_path)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BrowserError {
@@ -79,6 +116,20 @@ struct WindowGeometry {
     height: u32,
 }
 
+/// 读不到可信的显示器几何时下发的窗口。
+///
+/// 取一个在任何还能跑这套系统的屏幕上都画得出来的尺寸。它在大屏上偏小，但用户点
+/// 一下最大化就好了；`--start-maximized` 换来的灰屏用户没法自己解决。
+const FALLBACK_WINDOW: WindowGeometry = WindowGeometry {
+    x: 0,
+    y: 0,
+    width: 1280,
+    height: 800,
+};
+
+/// 兜底窗口不能大到超出老机器的屏幕——那是另一种「用户自己解决不了」。编译期钉住。
+const _: () = assert!(FALLBACK_WINDOW.width <= 1280 && FALLBACK_WINDOW.height <= 800);
+
 struct LaunchProcessRequest<'a> {
     session_id: u64,
     executable: &'a Path,
@@ -102,17 +153,23 @@ impl Default for BrowserSessionManager {
 impl BrowserSessionManager {
     /// Start one independent Chromium process with a fresh profile.
     ///
-    pub fn launch<R, F>(
+    /// `on_ready` fires once the DevTools endpoint is readable, `on_exit` once
+    /// the process is gone. Both run on this session's monitor thread, so a slow
+    /// callback delays only that session's own bookkeeping.
+    #[allow(clippy::too_many_arguments)]
+    pub fn launch<R, F, G>(
         &self,
         app: &AppHandle<R>,
         session_id: u64,
         local_proxy: Option<&str>,
         target_url: &str,
+        on_ready: G,
         on_exit: F,
     ) -> Result<u64, BrowserError>
     where
         R: Runtime,
         F: FnOnce() + Send + 'static,
+        G: FnOnce(DevToolsEndpoint) + Send + 'static,
     {
         if !self.inner.accepting_launches.load(Ordering::Acquire) {
             return Err(BrowserError::ShuttingDown);
@@ -127,12 +184,13 @@ impl BrowserSessionManager {
             local_proxy,
             target_url,
             window,
+            on_ready,
             on_exit,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn launch_process<F>(
+    fn launch_process<F, G>(
         &self,
         session_id: u64,
         executable: &Path,
@@ -140,10 +198,12 @@ impl BrowserSessionManager {
         local_proxy: Option<&str>,
         target_url: &str,
         window: Option<WindowGeometry>,
+        on_ready: G,
         on_exit: F,
     ) -> Result<u64, BrowserError>
     where
         F: FnOnce() + Send + 'static,
+        G: FnOnce(DevToolsEndpoint) + Send + 'static,
     {
         self.launch_process_with_hook(
             LaunchProcessRequest {
@@ -154,19 +214,22 @@ impl BrowserSessionManager {
                 target_url,
                 window,
             },
+            on_ready,
             on_exit,
             || {},
         )
     }
 
-    fn launch_process_with_hook<F, H>(
+    fn launch_process_with_hook<F, G, H>(
         &self,
         request: LaunchProcessRequest<'_>,
+        on_ready: G,
         on_exit: F,
         on_launch_lock: H,
     ) -> Result<u64, BrowserError>
     where
         F: FnOnce() + Send + 'static,
+        G: FnOnce(DevToolsEndpoint) + Send + 'static,
         H: FnOnce(),
     {
         let LaunchProcessRequest {
@@ -221,11 +284,21 @@ impl BrowserSessionManager {
         let manager = self.clone();
         if let Err(error) = thread::Builder::new()
             .name(format!("vestus-browser-{session_id}"))
-            .spawn(move || {
-                wait_for_process_exit(&process);
-                manager.remove_finished(session_id);
-                cleanup_profile(&profile_dir);
-                on_exit();
+            .spawn({
+                let profile_dir = profile_dir.clone();
+                let process = Arc::clone(&process);
+                move || {
+                    // 端口先读：Chromium 启动几百毫秒内就会写出这个文件，而
+                    // `wait_for_process_exit` 本来也是轮询，晚一点开始无影响。
+                    // 读不到就只是没有采集，浏览器本身照常使用。
+                    if let Some(endpoint) = read_devtools_endpoint(&profile_dir, &process) {
+                        on_ready(endpoint);
+                    }
+                    wait_for_process_exit(&process);
+                    manager.remove_finished(session_id);
+                    cleanup_profile(&profile_dir);
+                    on_exit();
+                }
             })
         {
             let session = self
@@ -301,6 +374,65 @@ impl BrowserSessionManager {
             .expect("浏览器会话锁已中毒")
             .remove(&session_id);
     }
+}
+
+/// Poll the profile for Chromium's `DevToolsActivePort` until it parses.
+///
+/// Returns `None` when the process dies first or the wait times out. Both are
+/// non-fatal: the browser is fully usable without a telemetry channel, so a
+/// failure here must never surface to the user as a launch error.
+fn read_devtools_endpoint(profile_dir: &Path, process: &ProcessSlot) -> Option<DevToolsEndpoint> {
+    let deadline = SystemTime::now() + DEVTOOLS_PORT_TIMEOUT;
+    let port_file = profile_dir.join(DEVTOOLS_PORT_FILE);
+    loop {
+        if let Some(endpoint) = std::fs::read_to_string(&port_file)
+            .ok()
+            .and_then(|contents| parse_devtools_active_port(&contents))
+        {
+            return Some(endpoint);
+        }
+        if process_has_exited(process) || SystemTime::now() >= deadline {
+            return None;
+        }
+        thread::sleep(DEVTOOLS_PORT_POLL_INTERVAL);
+    }
+}
+
+/// Whether the child is already gone, without consuming the exit status.
+fn process_has_exited(process: &ProcessSlot) -> bool {
+    let mut guard = process.lock().expect("浏览器进程锁已中毒");
+    match guard.as_mut() {
+        Some(child) => !matches!(child.try_wait(), Ok(None)),
+        None => true,
+    }
+}
+
+/// `DevToolsActivePort` is two lines: the port, then the browser WebSocket path.
+///
+/// Chromium creates the file before finishing the write, so a torn read is
+/// normal rather than exceptional -- every field is validated and a partial file
+/// simply yields `None` so the caller polls again.
+fn parse_devtools_active_port(contents: &str) -> Option<DevToolsEndpoint> {
+    let mut lines = contents.lines();
+    let port: u16 = lines.next()?.trim().parse().ok()?;
+    if port == 0 {
+        return None;
+    }
+    let browser_path = lines.next()?.trim();
+    // Only the shape Chromium documents. Anything else means a torn or foreign
+    // file, and this string goes straight into a URL we then connect to.
+    if !browser_path.starts_with("/devtools/browser/")
+        || browser_path.len() > 200
+        || !browser_path
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(DevToolsEndpoint {
+        port,
+        browser_path: browser_path.to_string(),
+    })
 }
 
 fn wait_for_process_exit(process: &ProcessSlot) {
@@ -480,7 +612,7 @@ fn bundled_macos_executables(root: &Path) -> Vec<PathBuf> {
     executables
 }
 
-/// 主显示器的工作区几何，拿不到就返回 None 让 Chromium 自己决定。
+/// 主显示器的工作区几何，拿不到就返回 None，由调用方用 [`FALLBACK_WINDOW`] 兜底。
 fn primary_window_geometry<R: Runtime>(app: &AppHandle<R>) -> Option<WindowGeometry> {
     let monitor = app.primary_monitor().ok().flatten()?;
     let area = monitor.work_area();
@@ -496,7 +628,7 @@ fn primary_window_geometry<R: Runtime>(app: &AppHandle<R>) -> Option<WindowGeome
 /// 把物理像素的工作区换算成 Chromium 要的逻辑像素。
 ///
 /// 缩放比或尺寸读数不可信时返回 None——错的几何比没有几何更糟，宁可退回
-/// Chromium 的默认行为。
+/// [`FALLBACK_WINDOW`]。
 fn window_geometry(
     x: i32,
     y: i32,
@@ -537,25 +669,28 @@ fn chromium_arguments(
         args.push(OsString::from("--no-proxy-server"));
     }
     args.extend(vec![
+        // 端口 0 = 由内核分配。实际端口只写进这个 profile 的
+        // DevToolsActivePort，而 profile 名带纳秒时间戳，外部无法预测。
+        // 不传 --remote-debugging-address（默认只绑 127.0.0.1），也不传
+        // --remote-allow-origins（于是带 Origin 的网页请求会被 Chromium 拒绝）。
+        OsString::from("--remote-debugging-port=0"),
         OsString::from("--disable-quic"),
         OsString::from("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
         OsString::from("--disable-background-mode"),
         OsString::from("--no-first-run"),
         OsString::from("--no-default-browser-check"),
     ]);
-    match window {
-        Some(geometry) => {
-            args.push(OsString::from(format!(
-                "--window-position={},{}",
-                geometry.x, geometry.y
-            )));
-            args.push(OsString::from(format!(
-                "--window-size={},{}",
-                geometry.width, geometry.height
-            )));
-        }
-        None => args.push(OsString::from("--start-maximized")),
-    }
+    // 几何总是显式下发。读不到显示器就用兜底值，绝不回退到 --start-maximized：
+    // 那次 resize 和渲染器首帧的竞态就是灰屏的来源。
+    let geometry = window.unwrap_or(FALLBACK_WINDOW);
+    args.push(OsString::from(format!(
+        "--window-position={},{}",
+        geometry.x, geometry.y
+    )));
+    args.push(OsString::from(format!(
+        "--window-size={},{}",
+        geometry.width, geometry.height
+    )));
     args.push(OsString::from(target_url));
     args
 }
@@ -586,10 +721,16 @@ mod tests {
                 && argument.contains("vestus-profile-test")));
         assert!(rendered.contains(&"--proxy-server=http://127.0.0.1:51234".into()));
         assert!(rendered.contains(&"--proxy-bypass-list=<-loopback>".into()));
-        // 不再开调试端点：没有页面自动化，也就没有本地控制通道
+        // 调试端点必须请内核分配端口：写死端口会让任何本机进程直接猜到控制通道，
+        // 端口 0 则把它藏进带纳秒时间戳的 profile 里。
+        assert!(rendered.contains(&"--remote-debugging-port=0".into()));
+        // 这两个开关会把控制通道分别暴露给外部主机和被打开的网页自身。
         assert!(!rendered
             .iter()
-            .any(|argument| argument.starts_with("--remote-debugging-port")));
+            .any(|argument| argument.starts_with("--remote-debugging-address")));
+        assert!(!rendered
+            .iter()
+            .any(|argument| argument.starts_with("--remote-allow-origins")));
         assert!(rendered.contains(&"--disable-quic".into()));
         assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
         assert!(!rendered.join(" ").contains("proxy-password"));
@@ -640,9 +781,10 @@ mod tests {
         assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
     }
 
-    /// 读不到可信的显示器几何时退回 Chromium 自己最大化，不能两个都不给。
+    /// 读不到可信的显示器几何时仍然显式下发窗口，不能把 `--start-maximized` 加回
+    /// 来：读不到显示器的机器（远程桌面、虚拟显卡）正是最容易踩上那个首帧竞态的。
     #[test]
-    fn chromium_arguments_fall_back_to_start_maximized_without_geometry() {
+    fn chromium_arguments_fall_back_to_explicit_geometry_not_start_maximized() {
         let rendered: Vec<String> = chromium_arguments(
             Path::new("/tmp/vestus-profile-test"),
             None,
@@ -653,8 +795,15 @@ mod tests {
         .map(|value| value.to_string_lossy().into_owned())
         .collect();
 
-        assert!(rendered.contains(&"--start-maximized".into()));
-        assert!(!rendered.iter().any(|arg| arg.starts_with("--window-size")));
+        assert!(!rendered.contains(&"--start-maximized".into()));
+        assert!(rendered.contains(&format!(
+            "--window-position={},{}",
+            FALLBACK_WINDOW.x, FALLBACK_WINDOW.y
+        )));
+        assert!(rendered.contains(&format!(
+            "--window-size={},{}",
+            FALLBACK_WINDOW.width, FALLBACK_WINDOW.height
+        )));
     }
 
     /// Chromium 按逻辑像素解释窗口参数，高 DPI 下必须除掉缩放比，
@@ -680,6 +829,53 @@ mod tests {
                 height: 1400,
             })
         );
+    }
+
+    /// 完整的两行文件是唯一被接受的形状。
+    #[test]
+    fn devtools_active_port_parses_the_documented_two_lines() {
+        let endpoint = parse_devtools_active_port("51234\n/devtools/browser/2f9a-3b1c\n")
+            .expect("应当解析成功");
+        assert_eq!(endpoint.port, 51234);
+        assert_eq!(endpoint.browser_path, "/devtools/browser/2f9a-3b1c");
+        assert_eq!(
+            endpoint.websocket_url(),
+            "ws://127.0.0.1:51234/devtools/browser/2f9a-3b1c"
+        );
+    }
+
+    /// Chromium 先建文件再写内容，所以读到半截是常态而不是异常：只能回 `None`
+    /// 让调用方继续轮询，绝不能把半截路径拼进 URL 去连。
+    #[test]
+    fn devtools_active_port_rejects_a_torn_file() {
+        assert!(parse_devtools_active_port("").is_none());
+        assert!(parse_devtools_active_port("51234").is_none());
+        assert!(parse_devtools_active_port("51234\n").is_none());
+        assert!(parse_devtools_active_port("512").is_none());
+    }
+
+    /// 端口 0 是「还没分配」的写法，不是可连的端口。
+    #[test]
+    fn devtools_active_port_rejects_a_zero_port() {
+        assert!(parse_devtools_active_port("0\n/devtools/browser/2f9a\n").is_none());
+        assert!(parse_devtools_active_port("70000\n/devtools/browser/2f9a\n").is_none());
+        assert!(parse_devtools_active_port("abc\n/devtools/browser/2f9a\n").is_none());
+    }
+
+    /// 第二行会原样拼进 WebSocket URL，所以只认 Chromium 文档的那个形状：
+    /// 别的进程写进这个路径的内容不能变成一次跨主机或跨路径的连接。
+    #[test]
+    fn devtools_active_port_rejects_a_foreign_browser_path() {
+        assert!(parse_devtools_active_port("51234\n/devtools/page/2f9a\n").is_none());
+        assert!(parse_devtools_active_port("51234\n../devtools/browser/2f9a\n").is_none());
+        assert!(parse_devtools_active_port("51234\n/devtools/browser/a?b=c\n").is_none());
+        assert!(parse_devtools_active_port("51234\n/devtools/browser/a#b\n").is_none());
+        assert!(parse_devtools_active_port("51234\n/devtools/browser/a b\n").is_none());
+        assert!(parse_devtools_active_port(&format!(
+            "51234\n/devtools/browser/{}\n",
+            "a".repeat(300)
+        ))
+        .is_none());
     }
 
     #[test]
@@ -752,6 +948,7 @@ mod tests {
                     Some("http://127.0.0.1:51234"),
                     "https://platform.example.test/",
                     None,
+                    |_| {},
                     move || {
                         callbacks.fetch_add(1, Ordering::SeqCst);
                     },
@@ -813,6 +1010,7 @@ mod tests {
                     target_url: "https://platform.example.test/",
                     window: None,
                 },
+                |_| {},
                 || {},
                 move || {
                     locked_tx.send(()).unwrap();
@@ -847,6 +1045,7 @@ mod tests {
                 Some("http://127.0.0.1:51234"),
                 "https://platform.example.test/",
                 None,
+                |_| {},
                 || {},
             ),
             Err(BrowserError::ShuttingDown)

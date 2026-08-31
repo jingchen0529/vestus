@@ -30,6 +30,7 @@ const CHANGE_PASSWORD_PATH: &str = "/api/user/auth/change-password";
 const DESKTOP_CONFIG_PATH: &str = "/api/user/desktop-config";
 const DESKTOP_CONFIG_LEASE_PATH: &str = "/api/user/desktop-config/lease";
 const PRODUCT_NAME_PATH: &str = "/api/product";
+const ACTIVITY_REPORT_PATH: &str = "/api/user/browser-activity";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -742,6 +743,37 @@ impl DesktopAuthState {
         }
     }
 
+    /// Upload one batch of collected browser activity.
+    ///
+    /// This rides the same channel as every other desktop request: the same
+    /// `no_proxy` client and the same in-memory token, so telemetry neither
+    /// travels through the proxy being configured nor requires handing the token
+    /// to another module.
+    ///
+    /// A 401/403 is reported but does **not** clear the local session. Reporting
+    /// is a background activity and must not eject the user from the UI; the
+    /// next foreground request discovers an expired login on its own.
+    pub(crate) async fn report_browser_activity<T: Serialize + ?Sized>(
+        &self,
+        payload: &T,
+    ) -> AuthResult<()> {
+        let token = self
+            .in_memory_token()?
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| {
+                DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录")
+            })?;
+        let response = self
+            .client()?
+            .post(self.endpoint(ACTIVITY_REPORT_PATH)?)
+            .bearer_auth(token)
+            .json(payload)
+            .send()
+            .await
+            .map_err(network_error)?;
+        ensure_success(response).await
+    }
+
     fn client(&self) -> AuthResult<&Client> {
         self.client.as_ref().map_err(Clone::clone)
     }
@@ -761,6 +793,7 @@ impl DesktopAuthState {
                 | DESKTOP_CONFIG_PATH
                 | DESKTOP_CONFIG_LEASE_PATH
                 | PRODUCT_NAME_PATH
+                | ACTIVITY_REPORT_PATH
         ));
         Ok(format!("{base}{path}"))
     }

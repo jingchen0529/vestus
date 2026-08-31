@@ -12,6 +12,7 @@ failing log insert.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.db.models import Platform, Proxy, UploadedFile
@@ -22,8 +23,28 @@ from app.schemas.serializers import (
     desktop_proxy_dict,
     platform_dict,
 )
+from app.services.errors import CredentialUnreadableError
+
+logger = logging.getLogger(__name__)
 
 MISSING_USER_DETAIL = "用户不存在"
+UNREADABLE_PROXY_DETAIL = "代理凭据不可用，请联系管理员在后台重新保存该代理的密码"
+
+
+def _desktop_proxy(proxy: Proxy) -> Dict[str, Any]:
+    """Serialize the proxy credential, naming the failure an operator can fix.
+
+    ``decrypt_proxy_password`` raises ``ValueError`` when the ciphertext was
+    written under a different key -- a rotated ``VESTUS_PROXY_SECRET_KEY``, or a
+    row from the pre-refactor build's per-process random fallback.  Re-saving the
+    password is the only fix, so say that instead of failing as a bare 500.
+    """
+
+    try:
+        return desktop_proxy_dict(proxy)
+    except ValueError as exc:
+        logger.error("proxy %s credential does not decrypt with the configured key", proxy.id)
+        raise CredentialUnreadableError(UNREADABLE_PROXY_DETAIL) from exc
 
 
 def _serialize(
@@ -40,7 +61,7 @@ def _serialize(
     visible_proxy = proxy if proxy is not None and proxy.status == "active" else None
     visible_platforms = [item for item in platforms if item[0].status == "active"]
     return {
-        "proxy": desktop_proxy_dict(visible_proxy) if visible_proxy is not None else None,
+        "proxy": _desktop_proxy(visible_proxy) if visible_proxy is not None else None,
         "platforms": [
             platform_dict(item, desktop=True, uploaded_file=uploaded_file)
             for item, uploaded_file in visible_platforms

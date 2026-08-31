@@ -83,11 +83,11 @@ export function LogsView({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={onRefresh}
+                onClick={() => onRefresh()}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs text-muted-foreground hover:text-foreground"
+                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
               </Button>
 
@@ -95,7 +95,7 @@ export function LogsView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportCsv}
-                className="h-9 gap-1.5 text-xs font-medium"
+                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
               >
                 <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
                 <span>导出 CSV</span>
@@ -105,7 +105,7 @@ export function LogsView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportJson}
-                className="h-9 gap-1.5 text-xs font-medium"
+                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
               >
                 <FileJson className="h-3.5 w-3.5 text-blue-600" />
                 <span>导出 JSON</span>

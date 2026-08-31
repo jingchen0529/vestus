@@ -24,6 +24,11 @@ import {
   UpdateAdminPayload,
 } from "@/types/admin";
 import { UserLogResponse, UserLogItem } from "@/types/log";
+import {
+  BrowserSessionDetail,
+  BrowserSessionQuery,
+  BrowserSessionResponse,
+} from "@/types/browser-activity";
 import { API_CODE_OK, ApiCollection, ApiEnvelope, SystemHealth } from "@/types/api";
 
 const REQUEST_FAILED_MESSAGE = "请求失败，请稍后重试";
@@ -327,6 +332,26 @@ export const api = {
 
   async getLog(id: number): Promise<UserLogItem> {
     return request<UserLogItem>(`/api/admin/user-logs/${id}`);
+  },
+
+  // Browser activity
+  async listBrowserSessions(params: BrowserSessionQuery = {}): Promise<BrowserSessionResponse> {
+    const searchParams = new URLSearchParams();
+    searchParams.append("page", String(params.page || 1));
+    searchParams.append("pageSize", String(params.pageSize || 50));
+    if (params.userId !== undefined) searchParams.append("userId", String(params.userId));
+    if (params.platformId !== undefined) searchParams.append("platformId", String(params.platformId));
+    // 直连和走代理都要能单独筛出来，所以 false 也得发出去，只有 undefined 才是不筛。
+    if (params.directMode !== undefined) searchParams.append("directMode", String(params.directMode));
+    if (params.startAt) searchParams.append("startAt", params.startAt);
+    if (params.endAt) searchParams.append("endAt", params.endAt);
+
+    return request<BrowserSessionResponse>(`/api/admin/browser-sessions?${searchParams.toString()}`);
+  },
+
+  async getBrowserSession(id: number, pageLimit?: number): Promise<BrowserSessionDetail> {
+    const query = pageLimit ? `?pageLimit=${pageLimit}` : "";
+    return request<BrowserSessionDetail>(`/api/admin/browser-sessions/${id}${query}`);
   },
 
   // System Health

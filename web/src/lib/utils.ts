@@ -24,6 +24,25 @@ export function formatDate(isoString?: string | null): string {
   }
 }
 
+/**
+ * 毫秒转成紧凑的中文时长，给前台停留这类累计值用。
+ *
+ * 只保留两级单位：一小时以上不再显示秒，读数的人关心的是量级。
+ */
+export function formatDuration(ms?: number | null): string {
+  if (!ms || ms <= 0) return "—";
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
+
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours} 小时 ${restMinutes} 分` : `${hours} 小时`;
+}
+
 export function generateRandomPassword(length: number = 12): string {
   const lowercase = "abcdefghijkmnopqrstuvwxyz";
   const uppercase = "ABCDEFGHJKLMNPQRSTUVWXYZ";

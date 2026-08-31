@@ -60,6 +60,20 @@ class NotFoundError(ServiceError):
     code = ApiCode.NOT_FOUND
 
 
+class CredentialUnreadableError(ServiceError):
+    """A stored reversible credential does not decrypt with the configured key.
+
+    Raised instead of letting the ``ValueError`` from
+    :func:`app.core.security.decrypt_proxy_password` reach the catch-all handler:
+    the cause is a key change (or a row written by the pre-refactor build, which
+    fell back to a per-process random key), and only re-saving the credential
+    fixes it.  A blanket 500 told nobody that.
+    """
+
+    status_code = 500
+    code = ApiCode.INTERNAL
+
+
 class ConflictError(ServiceError):
     """A uniqueness constraint rejected the write."""
 
@@ -72,6 +86,7 @@ __all__ = [
     "AuthenticationError",
     "BadRequestError",
     "ConflictError",
+    "CredentialUnreadableError",
     "LastSuperAdminError",
     "NotFoundError",
     "ServiceError",

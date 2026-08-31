@@ -60,20 +60,20 @@ pub async fn probe_via_upstream(
 
     // 第二步：完整请求，凭据交给 reqwest 处理
     let proxy = reqwest::Proxy::all(upstream.proxy_url_without_credentials())
-        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?
+        .map_err(|e| ProbeError::Request(describe(&e)))?
         .basic_auth(upstream.username(), upstream.expose_password());
 
     let client = reqwest::Client::builder()
         .proxy(proxy)
         .timeout(PROBE_TIMEOUT)
         .build()
-        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
 
     let resp = client
         .get(probe_url)
         .send()
         .await
-        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED {
@@ -86,7 +86,7 @@ pub async fn probe_via_upstream(
     let body = resp
         .text()
         .await
-        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
 
     parse_ip(&body).ok_or(ProbeError::Unparsable)
 }
@@ -102,13 +102,13 @@ pub async fn probe_direct(probe_url: &str) -> Result<String, ProbeError> {
         .no_proxy()
         .timeout(Duration::from_secs(5))
         .build()
-        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
 
     let resp = client
         .get(probe_url)
         .send()
         .await
-        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -118,7 +118,7 @@ pub async fn probe_direct(probe_url: &str) -> Result<String, ProbeError> {
     let body = resp
         .text()
         .await
-        .map_err(|e| ProbeError::Request(sanitize(&e.to_string())))?;
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
 
     parse_ip(&body).ok_or(ProbeError::Unparsable)
 }
@@ -178,6 +178,26 @@ fn sanitize(message: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// 把一个错误连同它的原因链转成一句话，并脱敏。
+///
+/// reqwest 的顶层 `Display` 永远只有 `error sending request for url (...)`，
+/// 真正的原因——连接被拒、DNS 失败、TLS 失败、上游代理答了什么——全在
+/// `source()` 链里。只取顶层等于把唯一有用的信息扔掉，用户拿到一句什么都没说的
+/// 话，排查只能靠猜。
+fn describe(error: &dyn std::error::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut current = error.source();
+    while let Some(cause) = current {
+        let text = cause.to_string();
+        // hyper/reqwest 的链里常有上一层的原文，重复一遍只会更难读。
+        if !parts.iter().any(|part| part == &text) {
+            parts.push(text);
+        }
+        current = cause.source();
+    }
+    sanitize(&parts.join("："))
 }
 
 #[cfg(test)]
@@ -331,5 +351,93 @@ mod tests {
     fn sanitize_keeps_plain_text() {
         let msg = "connection timed out after 20s";
         assert_eq!(sanitize(msg), msg);
+    }
+
+    /// reqwest 的顶层消息永远是 `error sending request for url (...)`，真正的原因在
+    /// 原因链里。只报顶层就等于告诉用户「失败了」而不说为什么。
+    #[test]
+    fn describe_includes_the_whole_cause_chain() {
+        #[derive(Debug)]
+        struct Layer {
+            message: &'static str,
+            cause: Option<Box<Layer>>,
+        }
+        impl std::fmt::Display for Layer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.message)
+            }
+        }
+        impl std::error::Error for Layer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.cause
+                    .as_deref()
+                    .map(|cause| cause as &(dyn std::error::Error + 'static))
+            }
+        }
+
+        let error = Layer {
+            message: "error sending request for url (http://127.0.0.1:8000/api/network/ip)",
+            cause: Some(Box::new(Layer {
+                message: "client error (Connect)",
+                cause: Some(Box::new(Layer {
+                    message: "tcp connect error: Connection refused (os error 61)",
+                    cause: None,
+                })),
+            })),
+        };
+
+        let text = describe(&error);
+        assert!(text.contains("error sending request for url"), "{text}");
+        assert!(text.contains("Connection refused"), "{text}");
+    }
+
+    /// 原因链里重复的原文只保留一次，否则一句提示里同一句话出现三遍。
+    #[test]
+    fn describe_collapses_repeated_causes() {
+        #[derive(Debug)]
+        struct Echo(Option<Box<Echo>>);
+        impl std::fmt::Display for Echo {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("same text")
+            }
+        }
+        impl std::error::Error for Echo {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.0
+                    .as_deref()
+                    .map(|cause| cause as &(dyn std::error::Error + 'static))
+            }
+        }
+
+        assert_eq!(describe(&Echo(Some(Box::new(Echo(None))))), "same text");
+    }
+
+    /// 原因链同样要脱敏：带凭据的代理 URL 常常就藏在链的深处。
+    #[test]
+    fn describe_redacts_credentials_in_causes() {
+        #[derive(Debug)]
+        struct Wrapper;
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("proxy failed")
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&Leaf)
+            }
+        }
+        #[derive(Debug)]
+        struct Leaf;
+        impl std::fmt::Display for Leaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("connecting to http://user:s3cret@1.2.3.4:8080 failed")
+            }
+        }
+        impl std::error::Error for Leaf {}
+
+        let text = describe(&Wrapper);
+        assert!(!text.contains("s3cret"), "{text}");
+        assert!(text.contains("<redacted-url>"), "{text}");
     }
 }

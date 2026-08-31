@@ -6,10 +6,13 @@ from datetime import timedelta
 from threading import Barrier, BrokenBarrierError
 from typing import Any
 
+from cryptography.fernet import Fernet
 from sqlalchemy import event, inspect, select
 
+from app.core.api_contract import ApiCode
 from app.core.security import decrypt_proxy_password
-from tests.envelope import items, message, payload
+from app.services.desktop import UNREADABLE_PROXY_DETAIL
+from tests.envelope import code, items, message, payload
 
 
 def _login(client: Any, path: str, username: str, password: str) -> str:
@@ -971,3 +974,61 @@ def test_platform_api_rejects_unmanaged_and_unsafe_icon_references(api: Any) -> 
             },
         )
         assert response.status_code in {400, 422}, (reference, response.text)
+
+
+def test_undecryptable_proxy_password_names_the_operator_fix(api: Any) -> None:
+    """A ciphertext written under another key must not read as a bare 500.
+
+    Rows created by the pre-refactor build fell back to a per-process random
+    Fernet key, so their password is unrecoverable and only re-saving it helps.
+    A ``ValueError`` reaching the catch-all handler said "内部错误" instead.
+    """
+
+    client, module = api
+    admin_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "test-admin",
+        "test-admin-password",
+    )
+    proxy = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=_bearer(admin_token),
+            json={
+                "name": "Stale Key Proxy",
+                "host": "stale-key.example.test",
+                "port": 3128,
+                "username": "stale-user",
+                "password": "stale-secret",
+            },
+        )
+    )
+    _create_user(client, admin_token)
+    user_token = _login(client, "/api/auth/login", "configured-user", "configured-password")
+
+    with module.db.session() as session:
+        row = session.get(module.Proxy, proxy["id"])
+        assert row is not None
+        # A syntactically valid Fernet token that this deployment's key cannot verify.
+        row.encrypted_password = Fernet(Fernet.generate_key()).encrypt(b"stale-secret")
+
+    response = client.get("/api/user/desktop-config", headers=_bearer(user_token))
+    assert response.status_code == 500, response.text
+    assert code(response) == ApiCode.INTERNAL
+    assert message(response) == UNREADABLE_PROXY_DETAIL
+
+    # The lease never decrypts, so it still answers -- the client keeps polling.
+    assert client.get("/api/user/desktop-config/lease", headers=_bearer(user_token)).status_code == 200
+
+    # Re-saving the password through the admin API is the documented fix.
+    assert (
+        client.patch(
+            f"/api/admin/proxies/{proxy['id']}",
+            headers=_bearer(admin_token),
+            json={"password": "restored-secret"},
+        ).status_code
+        == 200
+    )
+    restored = payload(client.get("/api/user/desktop-config", headers=_bearer(user_token)))
+    assert restored["proxy"]["password"] == "restored-secret"

@@ -150,7 +150,12 @@ test("审计日志列表不发送后端不支持的 search 参数", async () => 
   globalThis.fetch = async (input) => {
     requestedUrl = String(input);
     return new Response(
-      JSON.stringify({ items: [], total: 0, page: 2, pageSize: 50 }),
+      JSON.stringify({
+        code: 0,
+        msg: "ok",
+        data: { items: [], total: 0, page: 2, pageSize: 50 },
+        requestId: "test-request-id",
+      }),
       {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -209,4 +214,104 @@ test("品牌图片拒绝 SVG 和伪装的图片类型", async () => {
     validateBrandImage({ type: "image/png", size: 2 * 1024 * 1024 + 1 }),
     /2MB/,
   );
+});
+
+test("浏览器会话列表把筛选条件翻成查询参数，直连和走代理都能单独筛", async () => {
+  const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
+  const { EMPTY_BROWSER_SESSION_FILTERS, toBrowserSessionQuery } =
+    await server.ssrLoadModule("/src/types/browser-activity.ts");
+  const originalFetch = globalThis.fetch;
+  const requestedUrls = [];
+
+  globalThis.fetch = async (input) => {
+    requestedUrls.push(String(input));
+    return new Response(
+      JSON.stringify({
+        code: 0,
+        msg: "ok",
+        data: { items: [], total: 0, page: 1, pageSize: 50, pages: 0 },
+        requestId: "test-request-id",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  try {
+    await api.listBrowserSessions({
+      page: 3,
+      pageSize: 20,
+      ...toBrowserSessionQuery({
+        userId: "7",
+        platformId: "2",
+        connection: "DIRECT",
+        startAt: "2026-08-01",
+        endAt: "2026-08-31",
+      }),
+    });
+    await api.listBrowserSessions(
+      toBrowserSessionQuery({ ...EMPTY_BROWSER_SESSION_FILTERS, connection: "PROXY" }),
+    );
+    await api.listBrowserSessions(toBrowserSessionQuery(EMPTY_BROWSER_SESSION_FILTERS));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(
+    requestedUrls[0],
+    "/api/admin/browser-sessions?page=3&pageSize=20&userId=7&platformId=2&directMode=true&startAt=2026-08-01&endAt=2026-08-31",
+  );
+  // 走代理是 directMode=false，不能因为它是假值就被当成"不筛"漏掉。
+  assert.equal(requestedUrls[1], "/api/admin/browser-sessions?page=1&pageSize=50&directMode=false");
+  assert.equal(requestedUrls[2], "/api/admin/browser-sessions?page=1&pageSize=50");
+});
+
+test("浏览器会话表格标出客户端漏记过地址的会话", async () => {
+  const { SessionTable } = await server.ssrLoadModule(
+    "/src/components/activity/session-table.tsx",
+  );
+  const proxied = {
+    id: 1,
+    userId: 7,
+    username: "op01",
+    sessionKey: "session-key-1",
+    browserId: 3,
+    platformId: 2,
+    platformName: "站点 A",
+    directMode: false,
+    pageCount: 4,
+    visits: 10,
+    clicks: 20,
+    inputs: 3,
+    submits: 1,
+    scrolls: 12,
+    dwellMs: 3_723_000,
+    droppedPages: 0,
+    ipAddress: "10.0.0.9",
+    startedAt: "2026-08-30T02:00:00Z",
+    lastReportAt: "2026-08-30T02:30:00Z",
+  };
+  const html = renderToStaticMarkup(
+    createElement(SessionTable, {
+      sessions: [proxied, { ...proxied, id: 2, directMode: true, droppedPages: 5 }],
+      onViewDetail() {},
+    }),
+  );
+
+  assert.match(html, /走代理/);
+  assert.match(html, /直连/);
+  assert.match(html, /1 小时 2 分/);
+  // 只有 droppedPages > 0 的那一行才该带警告
+  assert.equal(html.match(/不完整/g).length, 1);
+});
+
+test("前台停留时长最多显示两级单位", async () => {
+  const { formatDuration } = await server.ssrLoadModule("/src/lib/utils.ts");
+
+  assert.equal(formatDuration(0), "—");
+  assert.equal(formatDuration(undefined), "—");
+  assert.equal(formatDuration(45_000), "45 秒");
+  assert.equal(formatDuration(600_000), "10 分");
+  assert.equal(formatDuration(605_000), "10 分 5 秒");
+  assert.equal(formatDuration(3_723_000), "1 小时 2 分");
+  assert.equal(formatDuration(7_200_000), "2 小时");
 });

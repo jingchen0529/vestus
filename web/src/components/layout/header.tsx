@@ -1,6 +1,4 @@
-import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { RefreshCw } from "lucide-react";
 import { NavTab } from "./sidebar";
 
@@ -12,12 +10,13 @@ interface HeaderProps {
 
 const tabTitles: Record<NavTab, { title: string; subtitle: string }> = {
   dashboard: { title: "控制总览", subtitle: "系统状态与综合统计指标" },
-  users: { title: "桌面用户管理", subtitle: "管理桌面客户端受权账号、并发与到期时间" },
-  desktop: { title: "全局代理配置", subtitle: "配置所有桌面用户共享的代理节点，系统最多启用一个" },
-  platforms: { title: "平台统一管理", subtitle: "统一维护业务平台入口与可用状态" },
-  admins: { title: "系统管理控制", subtitle: "超级管理员与普通管理员受权及安全控制" },
-  settings: { title: "系统全局配置", subtitle: "自定义管理端与桌面端品牌名称、Logo 图标及主题配色风格" },
-  logs: { title: "审计日志追踪", subtitle: "完整追踪桌面端与管理员操作轨迹" },
+  admins: { title: "系统管理", subtitle: "超级管理员与普通管理员授权及安全控制" },
+  users: { title: "桌面用户", subtitle: "管理桌面客户端授权账号、并发与到期时间" },
+  desktop: { title: "代理管理", subtitle: "配置所有桌面用户共享的代理节点，系统最多启用一个" },
+  platforms: { title: "平台管理", subtitle: "统一维护业务平台入口与可用状态" },
+  activity: { title: "浏览器活动", subtitle: "桌面端内置浏览器的会话、访问地址与交互统计" },
+  logs: { title: "审计日志", subtitle: "完整追踪桌面端与管理员操作轨迹" },
+  settings: { title: "系统配置", subtitle: "自定义管理端与桌面端品牌名称、Logo 图标及主题配色风格" },
 };
 
 export function Header({
@@ -25,8 +24,6 @@ export function Header({
   onRefreshCurrent,
   isRefreshing = false,
 }: HeaderProps) {
-  const { user } = useAuth();
-
   const currentInfo = tabTitles[currentTab] || { title: "管理后台", subtitle: "" };
 
   return (
@@ -37,11 +34,6 @@ export function Header({
           <h1 className="text-lg font-bold tracking-tight text-foreground">
             {currentInfo.title}
           </h1>
-          {user?.role === "super_admin" && (
-            <Badge variant="primary" className="text-[10px] px-1.5 py-0">
-              超级管理员模式
-            </Badge>
-          )}
         </div>
         <p className="text-xs text-muted-foreground hidden sm:block">
           {currentInfo.subtitle}

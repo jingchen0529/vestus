@@ -9,6 +9,7 @@ import { DesktopConfigView } from "@/components/desktop-config/desktop-config-vi
 import { PlatformsView } from "@/components/platforms/platforms-view";
 import { AdminsView } from "@/components/admins/admins-view";
 import { LogsView } from "@/components/logs/logs-view";
+import { ActivityView } from "@/components/activity/activity-view";
 import { SettingsView } from "@/components/settings/settings-view";
 import { Toaster } from "@/components/ui/sonner";
 import { api } from "@/lib/api-client";
@@ -17,6 +18,12 @@ import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy
 import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
 import { AdminUser, CreateAdminPayload, UpdateAdminPayload } from "@/types/admin";
 import { UserLogItem } from "@/types/log";
+import {
+  BrowserSessionFilters,
+  BrowserSessionItem,
+  EMPTY_BROWSER_SESSION_FILTERS,
+  toBrowserSessionQuery,
+} from "@/types/browser-activity";
 import { Loader2, Layers } from "lucide-react";
 import { toast } from "sonner";
 
@@ -26,6 +33,7 @@ const VALID_TABS: NavTab[] = [
   "users",
   "desktop",
   "platforms",
+  "activity",
   "logs",
   "settings",
 ];
@@ -110,6 +118,24 @@ export function App() {
   const [logPageSize] = useState(50);
   const [logStatusFilter, setLogStatusFilter] = useState("ALL");
 
+  // Browser activity state
+  const [sessions, setSessions] = useState<BrowserSessionItem[]>([]);
+  const [totalSessions, setTotalSessions] = useState(0);
+  const [sessionPage, setSessionPage] = useState(1);
+  const [sessionPageSize] = useState(50);
+  const [sessionFilters, setSessionFilters] = useState<BrowserSessionFilters>(
+    EMPTY_BROWSER_SESSION_FILTERS,
+  );
+
+  // 改筛选条件就回到第一页：留在第 7 页上换条件，多半只会看到空列表。
+  const handleSessionFiltersChange = useCallback((next: BrowserSessionFilters) => {
+    setSessionFilters(next);
+    setSessionPage(1);
+  }, []);
+
+  // 详情弹窗的取数函数，保持稳定引用。
+  const loadSessionDetail = useCallback((id: number) => api.getBrowserSession(id), []);
+
   // Data Fetching Functions
   const loadUsers = useCallback(async (searchQuery = userSearch, statusQuery = userStatusFilter) => {
     try {
@@ -157,11 +183,13 @@ export function App() {
     }
   }, [adminSearch, adminStatusFilter, isSuperAdmin]);
 
-  const loadLogs = useCallback(async (page = logPage, status = logStatusFilter) => {
+  const loadLogs = useCallback(async (page?: any, status?: any) => {
     try {
-      const filter = status === "ALL" ? undefined : status;
+      const pageNum = typeof page === "number" ? page : logPage;
+      const statusVal = typeof status === "string" ? status : logStatusFilter;
+      const filter = statusVal === "ALL" ? undefined : statusVal;
       const res = await api.listLogs({
-        page,
+        page: pageNum,
         pageSize: logPageSize,
         status: filter,
       });
@@ -171,6 +199,25 @@ export function App() {
       toast.error("加载审计日志失败", { description: err.message });
     }
   }, [logPage, logPageSize, logStatusFilter]);
+
+  const loadSessions = useCallback(async (page?: any, filters?: any) => {
+    try {
+      const pageNum = typeof page === "number" ? page : sessionPage;
+      const activeFilters =
+        filters && typeof filters === "object" && !("nativeEvent" in filters)
+          ? filters
+          : sessionFilters;
+      const res = await api.listBrowserSessions({
+        page: pageNum,
+        pageSize: sessionPageSize,
+        ...toBrowserSessionQuery(activeFilters),
+      });
+      setSessions(res.items || []);
+      setTotalSessions(res.total || 0);
+    } catch (err: any) {
+      toast.error("加载浏览器活动失败", { description: err.message });
+    }
+  }, [sessionPage, sessionPageSize, sessionFilters]);
 
   // Refresh All handler
   const handleRefreshAll = useCallback(async () => {
@@ -183,11 +230,12 @@ export function App() {
         loadPlatforms(),
         loadAdmins(),
         loadLogs(),
+        loadSessions(),
       ]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadAdmins, loadLogs]);
+  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadAdmins, loadLogs, loadSessions]);
 
   // Initial Load on login
   useEffect(() => {
@@ -222,6 +270,15 @@ export function App() {
     }, 250);
     return () => clearTimeout(timer);
   }, [logPage, logStatusFilter, user]);
+
+  // Browser activity filter or page change
+  useEffect(() => {
+    if (!user) return;
+    const timer = setTimeout(() => {
+      loadSessions(sessionPage, sessionFilters);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [sessionPage, sessionFilters, user]);
 
   // User Mutators
   const handleCreateUser = async (payload: CreateUserPayload) => {
@@ -452,7 +509,25 @@ export function App() {
           />
         )}
 
-        {/* Tab 5: Audit Logs */}
+        {/* Tab 5: Browser Activity */}
+        {currentTab === "activity" && (
+          <ActivityView
+            sessions={sessions}
+            totalSessions={totalSessions}
+            currentPage={sessionPage}
+            pageSize={sessionPageSize}
+            onPageChange={setSessionPage}
+            filters={sessionFilters}
+            onFiltersChange={handleSessionFiltersChange}
+            users={users}
+            platforms={platforms}
+            onRefresh={loadSessions}
+            isRefreshing={isRefreshing}
+            onLoadDetail={loadSessionDetail}
+          />
+        )}
+
+        {/* Tab 6: Audit Logs */}
         {currentTab === "logs" && (
           <LogsView
             logs={logs}

@@ -6,7 +6,7 @@ import { DesktopUser, CreateUserPayload, UpdateUserPayload, UserStats } from "@/
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { UserPlus, Search, RefreshCw, AlertTriangle, Loader2 } from "lucide-react";
+import { Plus, Search, RefreshCw, AlertTriangle, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -100,10 +100,11 @@ export function UsersView({
             <div className="flex items-center gap-2 shrink-0">
               <Button
                 onClick={handleOpenCreate}
+                variant="outline"
                 size="sm"
-                className="h-9 gap-1.5 text-xs bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm font-semibold"
+                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
               >
-                <UserPlus className="h-4 w-4" />
+                <Plus className="h-4 w-4 text-muted-foreground" />
                 <span>开通桌面端账号</span>
               </Button>
               <Button
@@ -111,9 +112,9 @@ export function UsersView({
                 size="sm"
                 onClick={onRefresh}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs text-muted-foreground hover:text-foreground"
+                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
               </Button>
             </div>

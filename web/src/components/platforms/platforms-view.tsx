@@ -10,6 +10,9 @@ import {
   CheckCircle2,
   XCircle,
   Copy,
+  MoreHorizontal,
+  Power,
+  PowerOff,
 } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,6 +26,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -198,10 +208,11 @@ export function PlatformsView({
             <div className="flex items-center gap-2 shrink-0">
               <Button
                 onClick={handleOpenCreate}
+                variant="outline"
                 size="sm"
-                className="h-9 gap-1.5 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-xs"
+                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
               >
-                <Plus className="h-4 w-4" />
+                <Plus className="h-4 w-4 text-muted-foreground" />
                 <span>新增平台</span>
               </Button>
               <Button
@@ -209,9 +220,9 @@ export function PlatformsView({
                 size="sm"
                 onClick={onRefresh}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs text-muted-foreground hover:text-foreground"
+                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
               </Button>
             </div>
@@ -350,37 +361,55 @@ export function PlatformsView({
 
                       {/* Actions */}
                       <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-end gap-1.5">
                           <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onTogglePlatformStatus(platform)}
-                            className={`h-7 px-2 text-[11px] font-medium ${
-                              platform.status === "active"
-                                ? "text-amber-600 hover:text-amber-700 hover:bg-amber-500/10"
-                                : "text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
-                            }`}
-                          >
-                            {platform.status === "active" ? "停用" : "启用"}
-                          </Button>
-                          <Button
-                            variant="ghost"
+                            variant="outline"
                             size="sm"
                             onClick={() => handleOpenEdit(platform)}
-                            className="h-7 px-2 text-[11px] text-primary hover:text-primary hover:bg-primary/10 gap-1"
+                            className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
                           >
-                            <Edit2 className="h-3 w-3" />
+                            <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                             <span>编辑</span>
                           </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleOpenDelete(platform)}
-                            className="h-7 px-2 text-[11px] text-destructive hover:text-destructive hover:bg-destructive/10 gap-1"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                            <span>删除</span>
-                          </Button>
+
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 w-8 p-0 rounded-lg border-border/80 bg-background hover:bg-accent text-muted-foreground hover:text-foreground shadow-xs"
+                              >
+                                <MoreHorizontal className="h-4 w-4" />
+                                <span className="sr-only">更多操作</span>
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-36">
+                              <DropdownMenuItem
+                                onClick={() => onTogglePlatformStatus(platform)}
+                                className="gap-2 text-xs cursor-pointer"
+                              >
+                                {platform.status === "active" ? (
+                                  <>
+                                    <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                                    <span className="text-amber-600">停用平台</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Power className="h-3.5 w-3.5 text-emerald-600" />
+                                    <span className="text-emerald-600">启用平台</span>
+                                  </>
+                                )}
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                onClick={() => handleOpenDelete(platform)}
+                                className="gap-2 text-xs text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer font-medium"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                <span>删除平台</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </TableCell>
                     </TableRow>

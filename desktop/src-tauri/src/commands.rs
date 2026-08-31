@@ -14,6 +14,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
 
+use crate::activity::{ActivityCollector, SessionKey as ActivitySessionKey};
 use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
 use crate::browser::BrowserSessionManager;
 use crate::bypass::DirectHosts;
@@ -25,6 +26,10 @@ use crate::{adapter, upstream::UpstreamProxy};
 
 const SESSION_WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
 const NETWORK_IP_PATH: &str = "/api/network/ip";
+
+/// 开发期覆盖出口检测地址的环境变量。只在 debug 构建生效。
+#[cfg(all(debug_assertions, not(test)))]
+const PROBE_URL_ENV: &str = "VESTUS_PROBE_URL";
 
 /// 前端能看到的错误形态。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -125,7 +130,24 @@ struct ValidatedDesktopConfig {
     lease: String,
 }
 
+/// 出口检测地址：默认就是自己后端的 `/api/network/ip`。
+///
+/// 刻意不回退到任何第三方 IP 回显服务——见 [`crate::config`] 里那条测试。
+///
+/// 但这个地址是**上游代理那一侧**去访问的，而开发默认的 API 基址是
+/// `http://127.0.0.1:8000`：它在代理服务器上指向代理机自己，探测必然失败。所以
+/// debug 构建允许用 `VESTUS_PROBE_URL` 单独指到一个公网可达的地址。release 构建
+/// 里这段代码不存在，行为与之前逐字节相同。
+///
+/// 单元测试里也不启用覆盖：`network_probe_url` 的既有断言不该被外部环境左右。
 fn network_probe_url(api_base: &str) -> String {
+    #[cfg(all(debug_assertions, not(test)))]
+    if let Ok(configured) = std::env::var(PROBE_URL_ENV) {
+        let configured = configured.trim();
+        if !configured.is_empty() {
+            return configured.to_string();
+        }
+    }
     format!("{}{NETWORK_IP_PATH}", api_base.trim_end_matches('/'))
 }
 
@@ -568,6 +590,7 @@ pub async fn open_browser<R: Runtime>(
     state: tauri::State<'_, AppState>,
     auth: tauri::State<'_, DesktopAuthState>,
     browsers: tauri::State<'_, BrowserSessionManager>,
+    activity: tauri::State<'_, ActivityCollector>,
     platform_id: i64,
     direct_mode: Option<bool>,
 ) -> CmdResult<BrowserHandleView> {
@@ -599,11 +622,22 @@ pub async fn open_browser<R: Runtime>(
         .map_err(|error| CommandError::new(format!("起始网址无法解析：{error}"), "invalid_form"))?;
     let state_for_exit = state.inner().clone();
     let app_for_exit = app.clone();
+    // 采集通道：调试端点可读时才开，开不起来也只是这次会话没有日志。
+    let activity_collector = activity.inner().clone();
+    let activity_auth = auth.inner().clone();
+    let activity_key = ActivitySessionKey {
+        browser_id,
+        platform_id,
+        direct_mode,
+    };
     if let Err(error) = browsers.launch(
         &app,
         browser_id,
         local_proxy.as_deref(),
         target.as_str(),
+        move |endpoint| {
+            activity_collector.start(activity_key, endpoint, activity_auth);
+        },
         move || {
             state_for_exit.mark_browser_closed_for(browser_id);
             let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());

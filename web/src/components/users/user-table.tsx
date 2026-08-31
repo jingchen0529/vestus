@@ -155,33 +155,27 @@ export function UserTable({
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-1.5">
                   <Button
-                    variant={user.status === "active" ? "outline" : "secondary"}
+                    variant="outline"
                     size="sm"
-                    onClick={() => onToggleStatus(user)}
-                    className="h-8 px-2 text-xs"
+                    onClick={() => onEditUser(user)}
+                    className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
                   >
-                    {user.status === "active" ? (
-                      <span className="text-destructive hover:underline">停用</span>
-                    ) : (
-                      <span className="text-emerald-600 font-medium">启用</span>
-                    )}
+                    <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span>编辑</span>
                   </Button>
 
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" className="h-8 w-8">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-8 p-0 rounded-lg border-border/80 bg-background hover:bg-accent text-muted-foreground hover:text-foreground shadow-xs"
+                      >
                         <MoreHorizontal className="h-4 w-4" />
                         <span className="sr-only">更多操作</span>
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-40">
-                      <DropdownMenuItem
-                        onClick={() => onEditUser(user)}
-                        className="gap-2 text-xs cursor-pointer"
-                      >
-                        <Edit2 className="h-3.5 w-3.5 text-blue-500" />
-                        <span>编辑资料</span>
-                      </DropdownMenuItem>
                       <DropdownMenuItem
                         onClick={() => onResetPassword(user)}
                         className="gap-2 text-xs cursor-pointer"

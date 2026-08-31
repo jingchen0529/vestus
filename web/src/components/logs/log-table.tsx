@@ -102,13 +102,13 @@ export function LogTable({ logs, onViewDetail, isLoading }: LogTableProps) {
               {/* Detail Button */}
               <TableCell className="text-right">
                 <Button
-                  variant="ghost"
-                  size="icon-sm"
+                  variant="outline"
+                  size="sm"
                   onClick={() => onViewDetail(log)}
-                  className="h-7 w-7 text-muted-foreground hover:text-primary"
-                  title="查看完整日志详情"
+                  className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
                 >
-                  <Eye className="h-3.5 w-3.5" />
+                  <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span>详情</span>
                 </Button>
               </TableCell>
             </TableRow>

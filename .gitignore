@@ -80,6 +80,7 @@ oa/
 ad_browser/
 dosc/
 
-# Removed browser-automation prototypes kept only as local references.
-desktop/src-tauri/src/cdp.rs
+# Removed browser-automation prototype kept only as a local reference.
+# 不要把 cdp.rs 加回来：它已经是 `mod cdp;` 编译进桌面端的采集模块，
+# 忽略掉会让干净 clone 直接编译失败。
 desktop/src-tauri/src/page.rs

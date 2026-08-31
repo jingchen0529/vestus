@@ -10,6 +10,7 @@ import {
   Sliders,
   ShieldCheck,
   FileText,
+  Activity,
   ChevronLeft,
   ChevronRight,
   Shield,
@@ -34,7 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export type NavTab = "dashboard" | "users" | "desktop" | "platforms" | "admins" | "logs" | "settings";
+export type NavTab = "dashboard" | "users" | "desktop" | "platforms" | "admins" | "activity" | "logs" | "settings";
 
 interface SidebarProps {
   currentTab: NavTab;
@@ -135,6 +136,12 @@ export function Sidebar({
       label: "平台管理",
       icon: Globe,
       badge: platformsTotal !== undefined ? `${platformsTotal}` : null,
+    },
+    {
+      id: "activity" as NavTab,
+      label: "浏览器活动",
+      icon: Activity,
+      badge: null,
     },
     {
       id: "logs" as NavTab,

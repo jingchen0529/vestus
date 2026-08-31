@@ -14,7 +14,16 @@ from typing import Any, Dict, List, Optional
 from app.core.security import decrypt_proxy_password
 from app.core.uploads import is_inline_safe, normalize_upload_reference
 from app.db.base import ip_text, iso_datetime
-from app.db.models import Admin, Platform, Proxy, UploadedFile, User, UserLog
+from app.db.models import (
+    Admin,
+    BrowserPageVisit,
+    BrowserSession,
+    Platform,
+    Proxy,
+    UploadedFile,
+    User,
+    UserLog,
+)
 
 
 def admin_dict(item: Admin) -> Dict[str, Any]:
@@ -204,8 +213,49 @@ def uploaded_file_dict(item: UploadedFile) -> Dict[str, Any]:
     }
 
 
+def browser_session_dict(item: BrowserSession) -> Dict[str, Any]:
+    return {
+        "id": item.id,
+        "userId": item.user_id,
+        "username": item.username,
+        "sessionKey": item.session_key,
+        "browserId": item.browser_id,
+        "platformId": item.platform_id,
+        "platformName": item.platform_name,
+        "directMode": bool(item.direct_mode),
+        "pageCount": item.page_count,
+        "visits": item.visits,
+        "clicks": item.clicks,
+        "inputs": item.inputs,
+        "submits": item.submits,
+        "scrolls": item.scrolls,
+        "dwellMs": item.dwell_ms,
+        "droppedPages": item.dropped_pages,
+        "ipAddress": ip_text(item.ip_address),
+        "startedAt": iso_datetime(item.started_at),
+        "lastReportAt": iso_datetime(item.last_report_at),
+    }
+
+
+def browser_page_visit_dict(item: BrowserPageVisit) -> Dict[str, Any]:
+    return {
+        "id": item.id,
+        "url": item.url,
+        "visits": item.visits,
+        "clicks": item.clicks,
+        "inputs": item.inputs,
+        "submits": item.submits,
+        "scrolls": item.scrolls,
+        "dwellMs": item.dwell_ms,
+        "firstSeenAt": iso_datetime(item.first_seen_at),
+        "lastSeenAt": iso_datetime(item.last_seen_at),
+    }
+
+
 __all__ = [
     "admin_dict",
+    "browser_page_visit_dict",
+    "browser_session_dict",
     "desktop_lease_from_snapshot",
     "desktop_proxy_dict",
     "log_dict",

@@ -108,6 +108,22 @@ pub fn validate(form: &ProxyForm) -> Result<ValidatedConfig, ConfigError> {
     }
 
     let probe_url = normalize_url(&form.probe_url, "出口检测地址")?;
+    // 出口检测地址是**上游代理那一侧**去访问的。代理在远端而检测地址指向本机时，
+    // 它在代理服务器上解析成代理机自己，必然打不通——而失败形态取决于代理实现
+    // （连接被拒、超时、或者一个无关的响应），从报错反推原因的成本极高。在这里
+    // 就说清楚，比让它撞上去再翻译网络错误好。
+    //
+    // 上游代理本身就在本机（本地代理软件）时，这个组合是可达的，不拦。
+    let probe_host = url::Url::parse(&probe_url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_default();
+    if is_loopback_host(&probe_host) && !is_loopback_host(&host) {
+        return Err(ConfigError::Invalid(format!(
+            "出口检测地址 {probe_host} 指向本机，而上游代理在远端（{host}）——代理访问不到它，\
+             请把桌面端的 API 地址设为公网可达的地址"
+        )));
+    }
 
     // 直连例外必须在这里拦下：适配器只认已校验过的列表。
     let direct_hosts = DirectHosts::parse(&form.bypass_hosts)
@@ -121,6 +137,19 @@ pub fn validate(form: &ProxyForm) -> Result<ValidatedConfig, ConfigError> {
         probe_url,
         direct_hosts,
     })
+}
+
+/// 这个主机名是否指向「本机」。
+///
+/// 只做字面判断，不做 DNS 解析：校验阶段还没到网络层，而这里要拦下的恰恰是
+/// `127.0.0.1` / `localhost` / `0.0.0.0` 这种一眼可辨的情况。
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback() || ip.is_unspecified();
+    }
+    host == "localhost" || host.ends_with(".localhost")
 }
 
 fn normalize_url(input: &str, label: &str) -> Result<String, ConfigError> {
@@ -171,6 +200,41 @@ mod tests {
         };
 
         assert_eq!(error.to_string(), "出口检测地址不能为空");
+    }
+
+    /// 远端代理 + 指向本机的检测地址是必然失败的组合：代理那一侧的 `127.0.0.1`
+    /// 是代理机自己。让它撞上去只会得到一句取决于代理实现的网络错误。
+    #[test]
+    fn rejects_a_loopback_probe_url_when_the_proxy_is_remote() {
+        for loopback in [
+            "http://127.0.0.1:8000/api/network/ip",
+            "http://localhost:8000/api/network/ip",
+            "http://[::1]:8000/api/network/ip",
+            "http://0.0.0.0:8000/api/network/ip",
+        ] {
+            let mut f = form();
+            f.probe_url = loopback.into();
+
+            let error = match validate(&f) {
+                Ok(_) => panic!("远端代理配上本机检测地址不应通过：{loopback}"),
+                Err(error) => error,
+            };
+            let text = error.to_string();
+            assert!(text.contains("指向本机"), "{loopback} -> {text}");
+            // 提示必须点出上游代理是谁，否则看不出「本机」是相对谁而言
+            assert!(text.contains("203.0.113.10"), "{loopback} -> {text}");
+        }
+    }
+
+    /// 上游代理本身就在本机（本地代理软件）时，这个组合是可达的，不能误伤。
+    #[test]
+    fn keeps_a_loopback_probe_url_when_the_proxy_is_also_local() {
+        let mut f = form();
+        f.host = "127.0.0.1".into();
+        f.probe_url = "http://127.0.0.1:8000/api/network/ip".into();
+
+        let cfg = validate(&f).expect("本机代理配本机检测地址是可达的");
+        assert_eq!(cfg.probe_url, "http://127.0.0.1:8000/api/network/ip");
     }
 
     #[test]

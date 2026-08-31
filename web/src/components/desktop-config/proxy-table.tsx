@@ -44,10 +44,11 @@ export function ProxyTable({
         <div className="flex items-center gap-2">
           <Button
             onClick={onOpenCreate}
+            variant="outline"
             size="sm"
-            className="h-8 gap-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+            className="h-8 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-3.5 w-3.5 text-muted-foreground" />
             <span>新增代理</span>
           </Button>
           <Button
@@ -55,9 +56,9 @@ export function ProxyTable({
             size="sm"
             onClick={onRefresh}
             disabled={isLoading}
-            className="h-8 gap-1 text-xs"
+            className="h-8 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
           >
-            <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isLoading ? "animate-spin" : ""}`} />
             <span>刷新</span>
           </Button>
         </div>
@@ -117,12 +118,12 @@ export function ProxyTable({
                   </TableCell>
                   <TableCell className="text-right">
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
                       onClick={() => onEditProxy(proxy)}
-                      className="h-7 px-2 text-xs gap-1 text-primary hover:text-primary"
+                      className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
                     >
-                      <Edit2 className="h-3 w-3" />
+                      <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                       <span>编辑</span>
                     </Button>
                   </TableCell>
