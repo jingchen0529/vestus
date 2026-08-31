@@ -137,17 +137,30 @@ fn parse_ip(body: &str) -> Option<String> {
 
     // JSON：Vestus 自有探测接口以及常见兼容字段
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        for key in ["ip", "origin", "clientIp", "client_ip"] {
-            if let Some(raw) = value.get(key).and_then(|v| v.as_str()) {
-                // httpbin 的 origin 可能是 "1.2.3.4, 5.6.7.8"
-                let first = raw.split(',').next().unwrap_or(raw).trim();
-                if first.parse::<std::net::IpAddr>().is_ok() {
-                    return Some(first.to_string());
-                }
-            }
+        // Vestus 的业务数据在统一信封的 data 里；第三方探测服务是平铺的。
+        // 探测地址允许由用户配置，所以两种形状都得认。
+        if let Some(ip) = value
+            .get("data")
+            .and_then(ip_field)
+            .or_else(|| ip_field(&value))
+        {
+            return Some(ip);
         }
     }
 
+    None
+}
+
+fn ip_field(value: &serde_json::Value) -> Option<String> {
+    for key in ["ip", "origin", "clientIp", "client_ip"] {
+        if let Some(raw) = value.get(key).and_then(|v| v.as_str()) {
+            // httpbin 的 origin 可能是 "1.2.3.4, 5.6.7.8"
+            let first = raw.split(',').next().unwrap_or(raw).trim();
+            if first.parse::<std::net::IpAddr>().is_ok() {
+                return Some(first.to_string());
+            }
+        }
+    }
     None
 }
 
@@ -275,6 +288,15 @@ mod tests {
     fn parses_json_ip_field() {
         assert_eq!(
             parse_ip(r#"{"ip":"203.0.113.7"}"#).as_deref(),
+            Some("203.0.113.7")
+        );
+    }
+
+    #[test]
+    fn parses_enveloped_vestus_response() {
+        assert_eq!(
+            parse_ip(r#"{"code":0,"msg":"ok","data":{"ip":"203.0.113.7"},"requestId":"abc"}"#)
+                .as_deref(),
             Some("203.0.113.7")
         );
     }

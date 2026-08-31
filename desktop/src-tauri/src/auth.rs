@@ -34,6 +34,12 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The success code of the shared response envelope.
+///
+/// Mirrors `app.core.api_contract.ApiCode.OK`; every other value carries the
+/// HTTP status in its leading digits (`40100` for a 401).
+const API_CODE_OK: i64 = 0;
+
 // The bearer token is the only persistent secret owned by the desktop app.
 // Proxy credentials remain in Rust memory for the active synchronized session.
 const KEYRING_SERVICE: &str = "com.zhixi.vestus";
@@ -1008,6 +1014,17 @@ fn keyring_error(_error: String) -> DesktopAuthError {
     DesktopAuthError::new("keyring", "无法访问系统安全存储，请解锁系统钥匙串后重试")
 }
 
+/// The envelope every Vestus JSON endpoint answers with.
+///
+/// `data` stays generic so each caller still deserializes straight into its own
+/// wire type; `requestId` is deliberately not read -- the desktop app has no use
+/// for it, and ignoring an unknown field is serde's default anyway.
+#[derive(Deserialize)]
+struct ApiEnvelope<T> {
+    code: i64,
+    data: T,
+}
+
 async fn decode_success_json<T: DeserializeOwned>(
     response: reqwest::Response,
     malformed_message: &str,
@@ -1020,7 +1037,14 @@ async fn decode_success_json<T: DeserializeOwned>(
     if !status.is_success() {
         return Err(http_error(status, &body));
     }
-    serde_json::from_slice(&body).map_err(|_| DesktopAuthError::invalid_response(malformed_message))
+    let envelope: ApiEnvelope<T> = serde_json::from_slice(&body)
+        .map_err(|_| DesktopAuthError::invalid_response(malformed_message))?;
+    if envelope.code != API_CODE_OK {
+        // The contract pairs every failure code with a non-2xx status, so this
+        // is a server that disagrees with itself -- or a proxy answering for it.
+        return Err(http_error(status, &body));
+    }
+    Ok(envelope.data)
 }
 
 async fn ensure_success(response: reqwest::Response) -> AuthResult<()> {
@@ -1043,27 +1067,17 @@ fn http_error(status: StatusCode, body: &[u8]) -> DesktopAuthError {
         status if status.is_server_error() => ("server", "账号服务暂时不可用，请稍后再试"),
         _ => ("request_failed", "账号服务拒绝了本次请求"),
     };
-    let message = api_error_detail(body).unwrap_or_else(|| fallback.to_string());
+    let message = api_error_message(body).unwrap_or_else(|| fallback.to_string());
     DesktopAuthError::new(code, message)
 }
 
-fn api_error_detail(body: &[u8]) -> Option<String> {
+/// The envelope's human-readable `msg`, when the body is one.
+///
+/// A 422 no longer needs the per-field walk the old FastAPI `detail` array
+/// required: the server already joins those into a single `msg`.
+fn api_error_message(body: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let detail = value.get("detail")?;
-    let message = match detail {
-        serde_json::Value::String(message) => message.clone(),
-        serde_json::Value::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                serde_json::Value::String(message) => Some(message.as_str()),
-                serde_json::Value::Object(object) => object.get("msg")?.as_str(),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("；"),
-        _ => String::new(),
-    };
-    let message = message.trim();
+    let message = value.get("msg")?.as_str()?.trim();
     if message.is_empty() {
         None
     } else {
@@ -1462,10 +1476,25 @@ mod tests {
     }
 
     #[test]
-    fn extracts_bounded_fastapi_error_detail() {
-        let detail = "x".repeat(400);
-        let body = serde_json::to_vec(&serde_json::json!({ "detail": detail })).unwrap();
-        let extracted = api_error_detail(&body).unwrap();
+    fn extracts_bounded_envelope_error_message() {
+        let msg = "x".repeat(400);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "code": 40000,
+            "msg": msg,
+            "data": null,
+            "requestId": "",
+        }))
+        .unwrap();
+        let extracted = api_error_message(&body).unwrap();
         assert_eq!(extracted.chars().count(), 300);
+    }
+
+    #[test]
+    fn falls_back_to_the_status_message_when_the_body_is_not_an_envelope() {
+        // A reverse proxy answering for a stopped backend does not know the
+        // envelope; the user still has to see something actionable.
+        let error = http_error(StatusCode::BAD_GATEWAY, b"<html>502 Bad Gateway</html>");
+        assert_eq!(error.code, "server");
+        assert_eq!(error.message, "账号服务暂时不可用，请稍后再试");
     }
 }
