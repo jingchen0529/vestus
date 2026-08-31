@@ -2,25 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.deps import admin_auth, audit_context, get_db
+from app.api.envelope import EnvelopeRoute
+from app.api.responses import collection
 from app.db.session import Database
 from app.schemas.platforms import PlatformCreate, PlatformUpdate
 from app.services import platforms as platforms_service
 
 NO_FIELDS_DETAIL = "至少提供一个待更新字段"
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.get("/api/admin/platforms", tags=["desktop-config"])
 def list_platforms(
     _auth: Dict[str, Any] = Depends(admin_auth), db: Database = Depends(get_db)
-) -> List[Dict[str, Any]]:
-    return platforms_service.list_platforms(db)
+) -> Dict[str, Any]:
+    return collection(platforms_service.list_platforms(db))
 
 
 @router.post("/api/admin/platforms", status_code=201, tags=["desktop-config"])
@@ -57,9 +59,8 @@ def delete_platform(
     request: Request,
     auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
-) -> Dict[str, bool]:
+) -> None:
     platforms_service.delete_platform(db, platform_id, audit=audit_context(request, auth))
-    return {"success": True}
 
 
 __all__ = ["router"]

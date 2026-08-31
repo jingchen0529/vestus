@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import admin_auth, audit_context, get_db
+from app.api.envelope import EnvelopeRoute
+from app.api.responses import collection
 from app.db.session import Database
 from app.schemas.auth import PasswordReset
 from app.schemas.users import UserCreate, UserUpdate
@@ -15,7 +17,7 @@ from app.services.users import MISSING_USER_DETAIL
 
 DESKTOP_CONFIG_GONE_DETAIL = "桌面代理和平台已改为全局共享配置"
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.get("/api/admin/users", tags=["users"])
@@ -24,8 +26,8 @@ def list_users(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     _auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
-) -> List[Dict[str, Any]]:
-    return users_service.list_users(db, search, status_filter)
+) -> Dict[str, Any]:
+    return collection(users_service.list_users(db, search, status_filter))
 
 
 @router.post("/api/admin/users", status_code=201, tags=["users"])
@@ -96,11 +98,12 @@ def reset_user_password(
     request: Request,
     auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
-) -> Dict[str, bool]:
+) -> None:
+    # No payload: ``code == 0`` already says it worked, and the old
+    # ``{"success": true}`` carried no information beyond that.
     users_service.reset_password(
         db, user_id, payload.password, audit=audit_context(request, auth)
     )
-    return {"success": True}
 
 
 @router.delete("/api/admin/users/{user_id}", tags=["users"])
@@ -109,9 +112,10 @@ def delete_user(
     request: Request,
     auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
-) -> Dict[str, bool]:
-    deleted = users_service.delete_user(db, user_id, audit=audit_context(request, auth))
-    return {"success": deleted}
+) -> None:
+    # The service raises NotFoundError when there is nothing to delete, so the
+    # old ``{"success": deleted}`` could only ever report ``true``.
+    users_service.delete_user(db, user_id, audit=audit_context(request, auth))
 
 
 @router.get("/api/admin/users/{user_id}/desktop-config", tags=["desktop-config"], deprecated=True)

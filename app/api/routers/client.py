@@ -7,10 +7,11 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends
 
 from app.api.deps import user_auth
+from app.api.envelope import EnvelopeRoute
 from app.db.base import iso_datetime, utc_now
 from app.schemas.serializers import user_dict
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.get("/api/client/me", include_in_schema=False)

@@ -1,4 +1,4 @@
-"""Turning stored upload paths into absolute URLs.
+"""Response shaping: collection payloads, and absolute URLs for stored uploads.
 
 Managed uploads are stored as ``/uploads/<name>`` so the database never records
 a hostname.  The desktop client and the admin console both need a fetchable URL,
@@ -8,9 +8,21 @@ behind a reverse proxy, and behind a different one tomorrow.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import Request
+
+
+def collection(items: List[Any]) -> Dict[str, Any]:
+    """The shape every unpaginated list endpoint answers with.
+
+    Collections used to come back as bare JSON arrays, which left no room to add
+    a count or a cursor without breaking the callers.  Naming the array makes
+    every list response extensible and identical to the paginated one, whose
+    ``total`` comes from the query instead of ``len()``.
+    """
+
+    return {"items": items, "total": len(items)}
 
 
 def absolute_upload_reference(request: Request, relative_path: str) -> str:
@@ -32,6 +44,7 @@ def uploaded_file_response(request: Request, item: Dict[str, Any]) -> Dict[str, 
 
 __all__ = [
     "absolute_upload_reference",
+    "collection",
     "externalize_platform_icons",
     "uploaded_file_response",
 ]

@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import audit_context, get_db, super_admin_auth
+from app.api.envelope import EnvelopeRoute
+from app.api.responses import collection
 from app.db.session import Database
 from app.schemas.admins import AdminCreate, AdminUpdate
 from app.schemas.auth import PasswordReset
 from app.services import admins as admins_service
 from app.services.admins import MISSING_ADMIN_DETAIL
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.get("/api/admin/admins", tags=["admins"])
@@ -22,8 +24,8 @@ def list_admins(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     _auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
-) -> List[Dict[str, Any]]:
-    return admins_service.list_admins(db, search, status_filter)
+) -> Dict[str, Any]:
+    return collection(admins_service.list_admins(db, search, status_filter))
 
 
 @router.post("/api/admin/admins", status_code=201, tags=["admins"])
@@ -97,11 +99,10 @@ def reset_admin_password(
     request: Request,
     auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
-) -> Dict[str, bool]:
+) -> None:
     admins_service.reset_password(
         db, admin_id, payload.password, audit=audit_context(request, auth)
     )
-    return {"success": True}
 
 
 @router.delete("/api/admin/admins/{admin_id}", tags=["admins"])
@@ -110,11 +111,10 @@ def delete_admin(
     request: Request,
     auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
-) -> Dict[str, bool]:
-    deleted = admins_service.delete_admin(
+) -> None:
+    admins_service.delete_admin(
         db, admin_id, actor_admin_id=auth["id"], audit=audit_context(request, auth)
     )
-    return {"success": deleted}
 
 
 __all__ = ["router"]

@@ -12,13 +12,14 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.api.deps import current_account, get_db
+from app.api.envelope import EnvelopeRoute
 from app.api.login import perform_login, perform_logout
 from app.db.session import Database
 from app.schemas.auth import LoginRequest
 from app.schemas.serializers import admin_dict, user_dict
 from app.services import auth as auth_service
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.post("/api/auth/login", include_in_schema=False)
@@ -50,8 +51,8 @@ def legacy_logout(
     response: Response,
     auth: Dict[str, Any] = Depends(current_account),
     db: Database = Depends(get_db),
-) -> Dict[str, bool]:
-    return perform_logout(db, request, auth, response)
+) -> None:
+    perform_logout(db, request, auth, response)
 
 
 __all__ = ["router"]

@@ -47,11 +47,10 @@ def perform_login(
 
 def perform_logout(
     db: Database, request: Request, auth: Dict[str, Any], response: Response | None = None
-) -> Dict[str, bool]:
+) -> None:
     auth_service.logout(db, auth["type"], auth["id"], audit=audit_context(request, auth))
     if response is not None:
         response.delete_cookie(SESSION_COOKIE, path="/")
-    return {"success": True}
 
 
 __all__ = ["perform_login", "perform_logout"]

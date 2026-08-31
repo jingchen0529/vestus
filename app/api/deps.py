@@ -9,12 +9,12 @@ they only inspect the dictionary the account dependency already produced.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
 from fastapi import Cookie, Depends, Header, HTTPException, Request
 
+from app.core.middleware import REQUEST_ID_HEADER, new_request_id, sanitized_request_id
 from app.core.security import decode_access_token
 from app.db.base import utc_now
 from app.db.models import User
@@ -51,7 +51,18 @@ def client_ip(request: Request) -> str:
 
 
 def request_id(request: Request) -> str:
-    return request.headers.get("x-request-id", "")[:36] or os.urandom(16).hex()
+    """The id assigned to this request, as it will appear in the response envelope.
+
+    :class:`app.core.middleware.RequestIdMiddleware` resolves it once per request
+    so an audit row and the ``requestId`` the client is handed are the same
+    string.  The fallback covers a ``Request`` built without that middleware --
+    only a unit test that calls a dependency directly.
+    """
+
+    existing: str = getattr(request.state, "request_id", "")
+    if existing:
+        return existing
+    return sanitized_request_id(request.headers.get(REQUEST_ID_HEADER, "")) or new_request_id()
 
 
 def auth_error(detail: str = INVALID_TOKEN_DETAIL) -> HTTPException:

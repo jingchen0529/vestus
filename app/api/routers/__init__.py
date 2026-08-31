@@ -2,7 +2,9 @@
 
 ``ROUTERS`` is included by ``create_app()`` in this exact order.  It mirrors the
 order the routes were declared in before the split so that path matching -- and
-therefore behaviour -- cannot shift.
+therefore behaviour -- cannot shift.  ``system.probe_router`` is listed
+separately because ``/healthz`` is the one JSON endpoint that stays outside the
+response envelope; see the note on it in :mod:`app.api.routers.system`.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from app.api.routers import (
 )
 
 ROUTERS: List[APIRouter] = [
+    system.probe_router,
     system.router,
     uploads.router,
     settings.router,

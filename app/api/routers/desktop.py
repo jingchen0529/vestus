@@ -7,6 +7,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.api.deps import audit_context, get_db, user_auth
+from app.api.envelope import EnvelopeRoute
 from app.api.responses import externalize_platform_icons
 from app.db.session import Database
 from app.services import desktop as desktop_service
@@ -14,7 +15,7 @@ from app.services.audit import record_standalone
 
 MISSING_USER_DETAIL = "用户不存在"
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.get("/api/user/desktop-config", tags=["desktop-config"])

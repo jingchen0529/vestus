@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from app.api.deps import admin_auth, get_db
+from app.api.envelope import EnvelopeRoute
 from app.api.responses import uploaded_file_response
 from app.core.uploads import (
     EmptyUploadError,
@@ -34,7 +35,7 @@ from app.services import uploads as uploads_service
 
 MISSING_FILE_DETAIL = "文件不存在"
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.post("/api/admin/uploads", status_code=201, tags=["uploads"])

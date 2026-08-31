@@ -9,6 +9,8 @@ tests were written against -- ``module.db.<verb>``, ``module.<Model>``,
 ``module.utc_now`` -- even though the verbs now live in ``app.services`` and the
 models in ``app.db.models``.  Preserving that seam is deliberate: the assertions
 stay a check on behaviour instead of turning into a check on the file layout.
+
+The response envelope has the same kind of seam in :mod:`tests.envelope`.
 """
 
 from __future__ import annotations

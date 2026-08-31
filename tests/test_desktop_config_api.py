@@ -9,12 +9,13 @@ from typing import Any
 from sqlalchemy import event, inspect, select
 
 from app.core.security import decrypt_proxy_password
+from tests.envelope import items, message, payload
 
 
 def _login(client: Any, path: str, username: str, password: str) -> str:
     response = client.post(path, json={"username": username, "password": password})
     assert response.status_code == 200, response.text
-    return response.json()["accessToken"]
+    return payload(response)["accessToken"]
 
 
 def _bearer(token: str) -> dict[str, str]:
@@ -33,7 +34,7 @@ def _create_user(client: Any, admin_token: str) -> dict[str, Any]:
         },
     )
     assert response.status_code == 201, response.text
-    return response.json()
+    return payload(response)
 
 
 def _create_named_user(
@@ -54,7 +55,7 @@ def _create_named_user(
         },
     )
     assert response.status_code == 201, response.text
-    return response.json()
+    return payload(response)
 
 
 def test_active_proxy_and_platforms_are_shared_by_every_desktop_user(api: Any) -> None:
@@ -78,47 +79,55 @@ def test_active_proxy_and_platforms_are_shared_by_every_desktop_user(api: Any) -
         password="shared-password-two",
     )
 
-    proxy = client.post(
-        "/api/admin/proxies",
-        headers=_bearer(admin_token),
-        json={
-            "name": "Global Proxy",
-            "host": "global-proxy.example.test",
-            "port": 3128,
-            "username": "global-user",
-            "password": "global-secret",
-        },
-    ).json()
-    legacy_disabled_proxy = client.post(
-        "/api/admin/proxies",
-        headers=_bearer(admin_token),
-        json={
-            "name": "Legacy Assigned Proxy",
-            "host": "legacy-assigned-proxy.example.test",
-            "port": 8080,
-            "username": "legacy-user",
-            "password": "legacy-secret",
-            "status": "disabled",
-        },
-    ).json()
-    active_platform = client.post(
-        "/api/admin/platforms",
-        headers=_bearer(admin_token),
-        json={
-            "name": "Global Platform",
-            "url": "https://global-platform.example.test",
-            "sortOrder": 10,
-        },
-    ).json()
-    disabled_platform = client.post(
-        "/api/admin/platforms",
-        headers=_bearer(admin_token),
-        json={
-            "name": "Disabled Global Platform",
-            "url": "https://disabled-global-platform.example.test",
-            "status": "disabled",
-        },
-    ).json()
+    proxy = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=_bearer(admin_token),
+            json={
+                "name": "Global Proxy",
+                "host": "global-proxy.example.test",
+                "port": 3128,
+                "username": "global-user",
+                "password": "global-secret",
+            },
+        )
+    )
+    legacy_disabled_proxy = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=_bearer(admin_token),
+            json={
+                "name": "Legacy Assigned Proxy",
+                "host": "legacy-assigned-proxy.example.test",
+                "port": 8080,
+                "username": "legacy-user",
+                "password": "legacy-secret",
+                "status": "disabled",
+            },
+        )
+    )
+    active_platform = payload(
+        client.post(
+            "/api/admin/platforms",
+            headers=_bearer(admin_token),
+            json={
+                "name": "Global Platform",
+                "url": "https://global-platform.example.test",
+                "sortOrder": 10,
+            },
+        )
+    )
+    disabled_platform = payload(
+        client.post(
+            "/api/admin/platforms",
+            headers=_bearer(admin_token),
+            json={
+                "name": "Disabled Global Platform",
+                "url": "https://disabled-global-platform.example.test",
+                "status": "disabled",
+            },
+        )
+    )
 
     # Historical assignment rows can remain after an upgrade, but must not
     # narrow or replace the global resources delivered to either user.
@@ -148,14 +157,12 @@ def test_active_proxy_and_platforms_are_shared_by_every_desktop_user(api: Any) -
         second_user["username"],
         "shared-password-two",
     )
-    first_config = client.get(
-        "/api/user/desktop-config",
-        headers=_bearer(first_token),
-    ).json()
-    second_config = client.get(
-        "/api/user/desktop-config",
-        headers=_bearer(second_token),
-    ).json()
+    first_config = payload(
+        client.get("/api/user/desktop-config", headers=_bearer(first_token))
+    )
+    second_config = payload(
+        client.get("/api/user/desktop-config", headers=_bearer(second_token))
+    )
 
     assert first_config["proxy"]["id"] == proxy["id"]
     assert second_config["proxy"]["id"] == proxy["id"]
@@ -178,30 +185,34 @@ def test_creating_an_active_proxy_makes_it_the_only_active_proxy(api: Any) -> No
         "test-admin-password",
     )
     headers = _bearer(admin_token)
-    first = client.post(
-        "/api/admin/proxies",
-        headers=headers,
-        json={
-            "name": "First Global Proxy",
-            "host": "first-global-proxy.example.test",
-            "port": 3128,
-            "username": "first-user",
-            "password": "first-secret",
-        },
-    ).json()
-    second = client.post(
-        "/api/admin/proxies",
-        headers=headers,
-        json={
-            "name": "Second Global Proxy",
-            "host": "second-global-proxy.example.test",
-            "port": 8080,
-            "username": "second-user",
-            "password": "second-secret",
-        },
-    ).json()
+    first = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=headers,
+            json={
+                "name": "First Global Proxy",
+                "host": "first-global-proxy.example.test",
+                "port": 3128,
+                "username": "first-user",
+                "password": "first-secret",
+            },
+        )
+    )
+    second = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=headers,
+            json={
+                "name": "Second Global Proxy",
+                "host": "second-global-proxy.example.test",
+                "port": 8080,
+                "username": "second-user",
+                "password": "second-secret",
+            },
+        )
+    )
 
-    proxies = client.get("/api/admin/proxies", headers=headers).json()
+    proxies = items(client.get("/api/admin/proxies", headers=headers))
     statuses = {item["id"]: item["status"] for item in proxies}
     assert statuses == {
         first["id"]: "disabled",
@@ -218,29 +229,33 @@ def test_enabling_a_proxy_disables_the_previous_active_proxy(api: Any) -> None:
         "test-admin-password",
     )
     headers = _bearer(admin_token)
-    first = client.post(
-        "/api/admin/proxies",
-        headers=headers,
-        json={
-            "name": "Current Global Proxy",
-            "host": "current-global-proxy.example.test",
-            "port": 3128,
-            "username": "current-user",
-            "password": "current-secret",
-        },
-    ).json()
-    replacement = client.post(
-        "/api/admin/proxies",
-        headers=headers,
-        json={
-            "name": "Replacement Global Proxy",
-            "host": "replacement-global-proxy.example.test",
-            "port": 8080,
-            "username": "replacement-user",
-            "password": "replacement-secret",
-            "status": "disabled",
-        },
-    ).json()
+    first = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=headers,
+            json={
+                "name": "Current Global Proxy",
+                "host": "current-global-proxy.example.test",
+                "port": 3128,
+                "username": "current-user",
+                "password": "current-secret",
+            },
+        )
+    )
+    replacement = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=headers,
+            json={
+                "name": "Replacement Global Proxy",
+                "host": "replacement-global-proxy.example.test",
+                "port": 8080,
+                "username": "replacement-user",
+                "password": "replacement-secret",
+                "status": "disabled",
+            },
+        )
+    )
 
     enabled = client.patch(
         f"/api/admin/proxies/{replacement['id']}",
@@ -249,7 +264,7 @@ def test_enabling_a_proxy_disables_the_previous_active_proxy(api: Any) -> None:
     )
     assert enabled.status_code == 200, enabled.text
 
-    proxies = client.get("/api/admin/proxies", headers=headers).json()
+    proxies = items(client.get("/api/admin/proxies", headers=headers))
     statuses = {item["id"]: item["status"] for item in proxies}
     assert statuses == {
         first["id"]: "disabled",
@@ -312,18 +327,20 @@ def test_proxy_activation_locks_singleton_before_target_row(api: Any) -> None:
         "test-admin",
         "test-admin-password",
     )
-    proxy = client.post(
-        "/api/admin/proxies",
-        headers=_bearer(admin_token),
-        json={
-            "name": "Lock Order Proxy",
-            "host": "lock-order.example.test",
-            "port": 3128,
-            "username": "lock-order-user",
-            "password": "lock-order-secret",
-            "status": "disabled",
-        },
-    ).json()
+    proxy = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=_bearer(admin_token),
+            json={
+                "name": "Lock Order Proxy",
+                "host": "lock-order.example.test",
+                "port": 3128,
+                "username": "lock-order-user",
+                "password": "lock-order-secret",
+                "status": "disabled",
+            },
+        )
+    )
     statements: list[str] = []
 
     def record_statement(
@@ -367,29 +384,33 @@ def test_startup_normalizes_legacy_multiple_active_proxies(api: Any) -> None:
         "test-admin-password",
     )
     headers = _bearer(admin_token)
-    first = client.post(
-        "/api/admin/proxies",
-        headers=headers,
-        json={
-            "name": "Legacy Active One",
-            "host": "legacy-one.example.test",
-            "port": 3128,
-            "username": "legacy-one",
-            "password": "legacy-one-secret",
-        },
-    ).json()
-    second = client.post(
-        "/api/admin/proxies",
-        headers=headers,
-        json={
-            "name": "Legacy Active Two",
-            "host": "legacy-two.example.test",
-            "port": 8080,
-            "username": "legacy-two",
-            "password": "legacy-two-secret",
-            "status": "disabled",
-        },
-    ).json()
+    first = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=headers,
+            json={
+                "name": "Legacy Active One",
+                "host": "legacy-one.example.test",
+                "port": 3128,
+                "username": "legacy-one",
+                "password": "legacy-one-secret",
+            },
+        )
+    )
+    second = payload(
+        client.post(
+            "/api/admin/proxies",
+            headers=headers,
+            json={
+                "name": "Legacy Active Two",
+                "host": "legacy-two.example.test",
+                "port": 8080,
+                "username": "legacy-two",
+                "password": "legacy-two-secret",
+                "status": "disabled",
+            },
+        )
+    )
 
     with module.db.session() as session:
         older = session.get(module.Proxy, first["id"])
@@ -402,7 +423,7 @@ def test_startup_normalizes_legacy_multiple_active_proxies(api: Any) -> None:
 
     module.db.initialize()
 
-    proxies = client.get("/api/admin/proxies", headers=headers).json()
+    proxies = items(client.get("/api/admin/proxies", headers=headers))
     active_ids = [item["id"] for item in proxies if item["status"] == "active"]
     assert active_ids == [second["id"]]
 
@@ -435,9 +456,9 @@ def test_user_specific_desktop_config_admin_api_is_gone(api: Any) -> None:
     assert read_response.status_code == 410
     assert write_response.status_code == 410
     assert bodyless_write_response.status_code == 410
-    assert read_response.json()["detail"] == "桌面代理和平台已改为全局共享配置"
-    assert write_response.json()["detail"] == "桌面代理和平台已改为全局共享配置"
-    assert bodyless_write_response.json()["detail"] == "桌面代理和平台已改为全局共享配置"
+    assert message(read_response) == "桌面代理和平台已改为全局共享配置"
+    assert message(write_response) == "桌面代理和平台已改为全局共享配置"
+    assert message(bodyless_write_response) == "桌面代理和平台已改为全局共享配置"
 
 
 def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> None:
@@ -476,7 +497,7 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
         },
     )
     assert proxy_response.status_code == 201, proxy_response.text
-    proxy = proxy_response.json()
+    proxy = payload(proxy_response)
     assert "password" not in proxy
     assert "encryptedPassword" not in proxy
     assert "encrypted_password" not in proxy
@@ -505,6 +526,8 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
         json={"name": "First in UI", "url": "http://one.example.test", "sortOrder": 10},
     )
     assert first_platform.status_code == second_platform.status_code == 201
+    first_platform_id = payload(first_platform)["id"]
+    second_platform_id = payload(second_platform)["id"]
 
     snapshot_statements: list[str] = []
 
@@ -522,7 +545,7 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
     desktop_response = client.get("/api/user/desktop-config", headers=_bearer(user_token))
     assert desktop_response.status_code == 200, desktop_response.text
     assert desktop_response.headers["cache-control"] == "no-store"
-    desktop = desktop_response.json()
+    desktop = payload(desktop_response)
     lease = desktop.pop("lease")
     assert len(lease) == 64
     assert atomic_snapshot["lease"] == lease
@@ -541,14 +564,14 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
         },
         "platforms": [
             {
-                "id": second_platform.json()["id"],
+                "id": second_platform_id,
                 "name": "First in UI",
                 "url": "http://one.example.test",
                 "iconUrl": "",
                 "sortOrder": 10,
             },
             {
-                "id": first_platform.json()["id"],
+                "id": first_platform_id,
                 "name": "Second in UI",
                 "url": "https://two.example.test/path",
                 "iconUrl": "",
@@ -563,17 +586,17 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
     )
     assert lease_response.status_code == 200
     assert lease_response.headers["cache-control"] == "no-store"
-    assert lease_response.json() == {"lease": lease}
+    assert payload(lease_response) == {"lease": lease}
 
     changed_platform = client.patch(
-        f"/api/admin/platforms/{second_platform.json()['id']}",
+        f"/api/admin/platforms/{second_platform_id}",
         headers=_bearer(admin_token),
         json={"name": "First in UI updated"},
     )
     assert changed_platform.status_code == 200
-    changed_lease = client.get(
-        "/api/user/desktop-config/lease", headers=_bearer(user_token)
-    ).json()["lease"]
+    changed_lease = payload(
+        client.get("/api/user/desktop-config/lease", headers=_bearer(user_token))
+    )["lease"]
     assert changed_lease != lease
 
     # Changing only the direct-connect list must invalidate the lease too: the
@@ -584,12 +607,14 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
         json={"bypassHosts": ["lf3-ad-platform.byteadverts.com"]},
     )
     assert changed_bypass.status_code == 200, changed_bypass.text
-    assert changed_bypass.json()["bypassHosts"] == ["lf3-ad-platform.byteadverts.com"]
-    bypass_lease = client.get(
-        "/api/user/desktop-config/lease", headers=_bearer(user_token)
-    ).json()["lease"]
+    assert payload(changed_bypass)["bypassHosts"] == ["lf3-ad-platform.byteadverts.com"]
+    bypass_lease = payload(
+        client.get("/api/user/desktop-config/lease", headers=_bearer(user_token))
+    )["lease"]
     assert bypass_lease != changed_lease
-    refreshed = client.get("/api/user/desktop-config", headers=_bearer(user_token)).json()
+    refreshed = payload(
+        client.get("/api/user/desktop-config", headers=_bearer(user_token))
+    )
     assert refreshed["proxy"]["bypassHosts"] == ["lf3-ad-platform.byteadverts.com"]
 
     cleared_bypass = client.patch(
@@ -598,11 +623,11 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
         json={"bypassHosts": []},
     )
     assert cleared_bypass.status_code == 200
-    assert cleared_bypass.json()["bypassHosts"] == []
+    assert payload(cleared_bypass)["bypassHosts"] == []
 
     logs = client.get("/api/admin/user-logs?page=1&pageSize=100", headers=_bearer(admin_token))
     assert logs.status_code == 200
-    actions = {item["action"] for item in logs.json()["items"]}
+    actions = {item["action"] for item in items(logs)}
     assert {
         "PROXY_CREATE",
         "PLATFORM_CREATE",
@@ -718,9 +743,9 @@ def test_desktop_config_validation_and_disabled_reference_filtering(api: Any) ->
     )
     assert disabled_platform.status_code == 201, disabled_platform.text
 
-    filtered_desktop = client.get(
-        "/api/user/desktop-config", headers=_bearer(user_token)
-    ).json()
+    filtered_desktop = payload(
+        client.get("/api/user/desktop-config", headers=_bearer(user_token))
+    )
     filtered_desktop.pop("lease")
     assert filtered_desktop == {
         "proxy": None,
@@ -735,16 +760,20 @@ def test_platform_management_and_deletion(api: Any) -> None:
     _create_user(client, admin_token)
     user_token = _login(client, "/api/user/auth/login", "configured-user", "configured-password")
     admin_headers = _bearer(admin_token)
-    icon_path = client.post(
-        "/api/admin/uploads",
-        headers=admin_headers,
-        files={"file": ("logo.png", b"logo", "image/png")},
-    ).json()["path"]
-    updated_icon_path = client.post(
-        "/api/admin/uploads",
-        headers=admin_headers,
-        files={"file": ("new-logo.png", b"new-logo", "image/png")},
-    ).json()["path"]
+    icon_path = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=admin_headers,
+            files={"file": ("logo.png", b"logo", "image/png")},
+        )
+    )["path"]
+    updated_icon_path = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=admin_headers,
+            files={"file": ("new-logo.png", b"new-logo", "image/png")},
+        )
+    )["path"]
 
     # 1. Create a platform with iconUrl
     create_res = client.post(
@@ -758,13 +787,13 @@ def test_platform_management_and_deletion(api: Any) -> None:
         },
     )
     assert create_res.status_code == 201
-    assert create_res.json()["iconUrl"] == icon_path
-    platform_id = create_res.json()["id"]
+    assert payload(create_res)["iconUrl"] == icon_path
+    platform_id = payload(create_res)["id"]
 
     # 2. Every desktop user sees a newly enabled global platform immediately.
     desktop_res = client.get("/api/user/desktop-config", headers=_bearer(user_token))
     assert desktop_res.status_code == 200
-    platforms = desktop_res.json()["platforms"]
+    platforms = payload(desktop_res)["platforms"]
     assert any(
         p["id"] == platform_id
         and p["name"] == "Global Test Platform"
@@ -779,9 +808,9 @@ def test_platform_management_and_deletion(api: Any) -> None:
         json={"status": "disabled", "iconUrl": updated_icon_path},
     )
     assert patch_res.status_code == 200
-    assert patch_res.json()["iconUrl"] == updated_icon_path
+    assert payload(patch_res)["iconUrl"] == updated_icon_path
     desktop_res = client.get("/api/user/desktop-config", headers=_bearer(user_token))
-    assert not any(p["id"] == platform_id for p in desktop_res.json()["platforms"])
+    assert not any(p["id"] == platform_id for p in payload(desktop_res)["platforms"])
 
     # 4. Delete platform -> returns 200 and removed completely
     del_res = client.delete(
@@ -789,7 +818,8 @@ def test_platform_management_and_deletion(api: Any) -> None:
         headers=_bearer(admin_token),
     )
     assert del_res.status_code == 200
-    assert del_res.json() == {"success": True}
+    # ``code == 0`` says the platform is gone; there is nothing else to report.
+    assert payload(del_res) is None
 
     # 5. Non-existent platform returns 404
     del_again = client.delete(
@@ -819,18 +849,22 @@ def test_all_active_platforms_are_visible_to_every_user(api: Any) -> None:
         },
     )
     assert second_user_response.status_code == 201, second_user_response.text
-    second_user = second_user_response.json()
+    second_user = payload(second_user_response)
 
-    first_platform = client.post(
-        "/api/admin/platforms",
-        headers=_bearer(admin_token),
-        json={"name": "Assigned", "url": "https://assigned.example.test"},
-    ).json()
-    other_platform = client.post(
-        "/api/admin/platforms",
-        headers=_bearer(admin_token),
-        json={"name": "Not assigned", "url": "https://other.example.test"},
-    ).json()
+    first_platform = payload(
+        client.post(
+            "/api/admin/platforms",
+            headers=_bearer(admin_token),
+            json={"name": "Assigned", "url": "https://assigned.example.test"},
+        )
+    )
+    other_platform = payload(
+        client.post(
+            "/api/admin/platforms",
+            headers=_bearer(admin_token),
+            json={"name": "Not assigned", "url": "https://other.example.test"},
+        )
+    )
 
     first_token = _login(
         client,
@@ -844,12 +878,12 @@ def test_all_active_platforms_are_visible_to_every_user(api: Any) -> None:
         second_user["username"],
         "unconfigured-password",
     )
-    first_config = client.get(
-        "/api/user/desktop-config", headers=_bearer(first_token)
-    ).json()
-    second_config = client.get(
-        "/api/user/desktop-config", headers=_bearer(second_token)
-    ).json()
+    first_config = payload(
+        client.get("/api/user/desktop-config", headers=_bearer(first_token))
+    )
+    second_config = payload(
+        client.get("/api/user/desktop-config", headers=_bearer(second_token))
+    )
     expected_platform_ids = [first_platform["id"], other_platform["id"]]
     assert [item["id"] for item in first_config["platforms"]] == expected_platform_ids
     assert [item["id"] for item in second_config["platforms"]] == expected_platform_ids
@@ -867,11 +901,13 @@ def test_platform_icon_is_relative_for_admin_and_absolute_for_desktop(api: Any) 
     )
     user = _create_user(client, admin_token)
     headers = _bearer(admin_token)
-    icon_path = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("platform.webp", b"platform-icon", "image/webp")},
-    ).json()["path"]
+    icon_path = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("platform.webp", b"platform-icon", "image/webp")},
+        )
+    )["path"]
 
     created = client.post(
         "/api/admin/platforms",
@@ -883,9 +919,9 @@ def test_platform_icon_is_relative_for_admin_and_absolute_for_desktop(api: Any) 
         },
     )
     assert created.status_code == 201, created.text
-    assert created.json()["iconUrl"] == icon_path
-    platform_id = created.json()["id"]
-    listed = client.get("/api/admin/platforms", headers=headers).json()
+    assert payload(created)["iconUrl"] == icon_path
+    platform_id = payload(created)["id"]
+    listed = items(client.get("/api/admin/platforms", headers=headers))
     assert next(item for item in listed if item["id"] == platform_id)["iconUrl"] == icon_path
 
     user_token = _login(
@@ -899,7 +935,7 @@ def test_platform_icon_is_relative_for_admin_and_absolute_for_desktop(api: Any) 
         headers={**_bearer(user_token), "Host": "desktop.example.test"},
     )
     assert desktop.status_code == 200, desktop.text
-    assert desktop.json()["platforms"][0]["iconUrl"] == (
+    assert payload(desktop)["platforms"][0]["iconUrl"] == (
         f"http://desktop.example.test{icon_path}"
     )
 
@@ -913,11 +949,13 @@ def test_platform_api_rejects_unmanaged_and_unsafe_icon_references(api: Any) -> 
         "test-admin-password",
     )
     headers = _bearer(admin_token)
-    unsafe_path = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("unsafe.png", b"not-an-image", "text/html")},
-    ).json()["path"]
+    unsafe_path = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("unsafe.png", b"not-an-image", "text/html")},
+        )
+    )["path"]
     missing_path = f"/uploads/2026/08/{'e' * 32}.png"
 
     for index, reference in enumerate(

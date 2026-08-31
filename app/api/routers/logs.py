@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import admin_auth, get_db
+from app.api.envelope import EnvelopeRoute
+from app.api.responses import collection
 from app.db.session import Database
 from app.services import logs as logs_service
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 @router.get("/api/admin/user-logs", tags=["logs"])
@@ -57,8 +59,8 @@ def legacy_logs(
     user_id: Optional[int] = Query(None),
     _auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
-) -> List[Dict[str, Any]]:
-    return logs_service.list_recent(db, limit=limit, actor_id=user_id)
+) -> Dict[str, Any]:
+    return collection(logs_service.list_recent(db, limit=limit, actor_id=user_id))
 
 
 __all__ = ["router"]

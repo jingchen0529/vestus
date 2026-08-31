@@ -7,13 +7,14 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.deps import admin_auth, audit_context, get_db
+from app.api.envelope import EnvelopeRoute
 from app.db.session import Database
 from app.schemas.settings import SettingsUpdate
 from app.services import settings as settings_service
 
 MAX_TITLE_LENGTH = 100
 
-router = APIRouter()
+router = APIRouter(route_class=EnvelopeRoute)
 
 
 def _validated_title(value: str | None, detail: str) -> str | None:

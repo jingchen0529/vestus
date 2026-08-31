@@ -5,6 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from tests.envelope import payload
+
 
 def test_storage_path_is_relative_and_cannot_escape_upload_root(
     api, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -141,7 +143,7 @@ def _login_admin(client):
         json={"username": "test-admin", "password": "test-admin-password"},
     )
     assert response.status_code == 200
-    return response.json()["accessToken"]
+    return payload(response)["accessToken"]
 
 
 def test_only_admin_can_upload_and_response_uses_current_origin(api) -> None:
@@ -158,7 +160,7 @@ def test_only_admin_can_upload_and_response_uses_current_origin(api) -> None:
         files={"file": ("notes.txt", b"hello", "text/plain")},
     )
     assert response.status_code == 201, response.text
-    body = response.json()
+    body = payload(response)
     assert body["path"].startswith("/uploads/")
     assert body["url"] == f"http://files.example.test{body['path']}"
     assert body["name"] == "notes.txt"
@@ -230,7 +232,7 @@ def test_cookie_authenticated_admin_write_policy_is_not_upload_specific(api) -> 
     )
 
     assert response.status_code == 403, response.text
-    assert client.get("/api/product").json()["productName"] != "must-not-be-written"
+    assert payload(client.get("/api/product"))["productName"] != "must-not-be-written"
 
 
 def test_unauthenticated_malformed_multipart_is_rejected_before_parsing(api) -> None:
@@ -403,16 +405,20 @@ def test_uploaded_files_are_public_and_dangerous_types_download_as_attachment(ap
     client, _module = api
     token = _login_admin(client)
     headers = {"Authorization": f"Bearer {token}"}
-    html = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("page.html", b"<script>alert(1)</script>", "text/html")},
-    ).json()
-    mismatch = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("looks-safe.png", b"<script>alert(2)</script>", "text/html")},
-    ).json()
+    html = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("page.html", b"<script>alert(1)</script>", "text/html")},
+        )
+    )
+    mismatch = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("looks-safe.png", b"<script>alert(2)</script>", "text/html")},
+        )
+    )
     client.cookies.clear()
     download = client.get(html["path"])
     assert download.status_code == 200
@@ -425,11 +431,13 @@ def test_uploaded_files_are_public_and_dangerous_types_download_as_attachment(ap
 
     token = _login_admin(client)
     headers = {"Authorization": f"Bearer {token}"}
-    image = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("logo.png", b"not-executable", "image/png")},
-    ).json()
+    image = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("logo.png", b"not-executable", "image/png")},
+        )
+    )
     client.cookies.clear()
     inline = client.get(image["path"])
     assert inline.status_code == 200
@@ -489,11 +497,13 @@ def test_unknown_upload_path_returns_not_found(api) -> None:
 def test_public_upload_route_rejects_symlinked_file(api, tmp_path: Path) -> None:
     client, _module = api
     token = _login_admin(client)
-    uploaded = client.post(
-        "/api/admin/uploads",
-        headers={"Authorization": f"Bearer {token}"},
-        files={"file": ("report.txt", b"uploaded", "text/plain")},
-    ).json()
+    uploaded = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("report.txt", b"uploaded", "text/plain")},
+        )
+    )
     upload_root = tmp_path / "uploads"
     target = upload_root / "other-file.txt"
     target.write_bytes(b"not the uploaded file")
@@ -508,11 +518,13 @@ def test_public_upload_route_rejects_symlinked_file(api, tmp_path: Path) -> None
 def test_public_upload_route_rejects_regular_file_in_path(api, tmp_path: Path) -> None:
     client, module = api
     token = _login_admin(client)
-    uploaded = client.post(
-        "/api/admin/uploads",
-        headers={"Authorization": f"Bearer {token}"},
-        files={"file": ("report.txt", b"uploaded", "text/plain")},
-    ).json()
+    uploaded = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("report.txt", b"uploaded", "text/plain")},
+        )
+    )
     stored_path = tmp_path / "uploads" / uploaded["path"].removeprefix("/uploads/")
     month_directory = stored_path.parent
     stored_path.unlink()

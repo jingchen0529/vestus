@@ -6,12 +6,14 @@ from typing import Any
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
 
+from tests.envelope import items, payload
+
 
 def _login(client: Any, path: str, username: str, password: str) -> tuple[str, dict[str, Any]]:
     response = client.post(path, json={"username": username, "password": password})
     assert response.status_code == 200, response.text
-    payload = response.json()
-    return payload["accessToken"], payload
+    grant = payload(response)
+    return grant["accessToken"], grant
 
 
 def _bearer(token: str) -> dict[str, str]:
@@ -31,7 +33,7 @@ def test_public_network_ip_uses_the_asgi_validated_peer_and_ignores_raw_forwardi
     )
 
     assert response.status_code == 200
-    assert response.json() == {"ip": "198.51.100.27"}
+    assert payload(response) == {"ip": "198.51.100.27"}
     assert response.headers["cache-control"] == "no-store"
 
 
@@ -52,8 +54,8 @@ def test_public_product_name_is_available_before_desktop_login(api: Any, monkeyp
     response = client.get("/api/product")
 
     assert response.status_code == 200
-    assert response.json()["productName"] == "专属代理客户端"
-    assert "logoUrl" in response.json()
+    assert payload(response)["productName"] == "专属代理客户端"
+    assert "logoUrl" in payload(response)
     assert response.headers["cache-control"] == "no-store"
 
 
@@ -82,7 +84,7 @@ def _create_user(client: Any, admin_token: str, username: str = "desktop-user", 
         },
     )
     assert response.status_code == 201, response.text
-    return response.json()
+    return payload(response)
 
 
 def test_three_tables_and_auth_boundaries(api: Any) -> None:
@@ -149,7 +151,7 @@ def test_admin_can_manage_user_and_old_token_is_invalidated(api: Any) -> None:
 
     disabled = client.post(f"/api/admin/users/{user_id}/disable", headers=_bearer(admin_token))
     assert disabled.status_code == 200
-    assert disabled.json()["status"] == "disabled"
+    assert payload(disabled)["status"] == "disabled"
     assert client.get("/api/user/auth/me", headers=_bearer(old_token)).status_code == 401
     assert client.post("/api/user/auth/login", json={"username": "managed-user", "password": "initial-password"}).status_code == 403
 
@@ -167,8 +169,8 @@ def test_admin_can_manage_user_and_old_token_is_invalidated(api: Any) -> None:
         json={"username": "managed-user", "password": "replacement-password"},
     )
     assert replacement_login.status_code == 200
-    assert replacement_login.json()["user"]["mustChangePassword"] is False
-    valid_token = replacement_login.json()["accessToken"]
+    assert payload(replacement_login)["user"]["mustChangePassword"] is False
+    valid_token = payload(replacement_login)["accessToken"]
     # 用户可直接读取配置而无需强制先修改密码
     desktop_cfg = client.get(
         "/api/user/desktop-config", headers=_bearer(valid_token)
@@ -192,7 +194,7 @@ def test_admin_can_manage_user_and_old_token_is_invalidated(api: Any) -> None:
         json={"username": "managed-user", "password": "final-password"},
     )
     assert final_login.status_code == 200
-    assert final_login.json()["user"]["mustChangePassword"] is False
+    assert payload(final_login)["user"]["mustChangePassword"] is False
 
 
 def test_expired_user_and_manual_token_version_invalidation(api: Any) -> None:
@@ -231,7 +233,7 @@ def test_logs_written_for_login_and_management_actions(api: Any) -> None:
 
     response = client.get("/api/admin/user-logs?page=1&pageSize=100", headers=_bearer(admin_token))
     assert response.status_code == 200, response.text
-    actions = {row["action"] for row in response.json()["items"]}
+    actions = {row["action"] for row in items(response)}
     assert {"LOGIN", "USER_CREATE", "USER_DISABLE"}.issubset(actions)
 
     with module.db.session() as session:
@@ -245,16 +247,20 @@ def test_admin_branding_keeps_upload_paths_and_public_product_uses_current_origi
     client, _module = api
     admin_token, _ = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
     headers = _bearer(admin_token)
-    product_logo = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("product.png", b"product-logo", "image/png")},
-    ).json()["path"]
-    admin_logo = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("admin.ico", b"admin-logo", "image/x-icon")},
-    ).json()["path"]
+    product_logo = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("product.png", b"product-logo", "image/png")},
+        )
+    )["path"]
+    admin_logo = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("admin.ico", b"admin-logo", "image/x-icon")},
+        )
+    )["path"]
 
     update_res = client.put(
         "/api/admin/settings",
@@ -266,28 +272,30 @@ def test_admin_branding_keeps_upload_paths_and_public_product_uses_current_origi
         },
     )
     assert update_res.status_code == 200
-    assert update_res.json()["productName"] == "企业智选浏览器"
-    assert update_res.json()["logoUrl"] == product_logo
-    assert update_res.json()["adminLogoUrl"] == admin_logo
+    assert payload(update_res)["productName"] == "企业智选浏览器"
+    assert payload(update_res)["logoUrl"] == product_logo
+    assert payload(update_res)["adminLogoUrl"] == admin_logo
     admin_res = client.get("/api/admin/settings", headers=headers)
-    assert admin_res.json()["logoUrl"] == product_logo
-    assert admin_res.json()["adminLogoUrl"] == admin_logo
+    assert payload(admin_res)["logoUrl"] == product_logo
+    assert payload(admin_res)["adminLogoUrl"] == admin_logo
 
     public_res = client.get("/api/product", headers={"Host": "product.example.test"})
     assert public_res.status_code == 200
-    assert public_res.json()["productName"] == "企业智选浏览器"
-    assert public_res.json()["logoUrl"] == f"http://product.example.test{product_logo}"
+    assert payload(public_res)["productName"] == "企业智选浏览器"
+    assert payload(public_res)["logoUrl"] == f"http://product.example.test{product_logo}"
 
 
 def test_branding_api_rejects_unmanaged_and_unsafe_image_references(api: Any) -> None:
     client, _module = api
     admin_token, _ = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
     headers = _bearer(admin_token)
-    unsafe_upload = client.post(
-        "/api/admin/uploads",
-        headers=headers,
-        files={"file": ("looks-like-image.png", b"<script>bad</script>", "text/html")},
-    ).json()["path"]
+    unsafe_upload = payload(
+        client.post(
+            "/api/admin/uploads",
+            headers=headers,
+            files={"file": ("looks-like-image.png", b"<script>bad</script>", "text/html")},
+        )
+    )["path"]
     missing_upload = f"/uploads/2026/08/{'f' * 32}.png"
 
     for reference in (
@@ -304,7 +312,7 @@ def test_branding_api_rejects_unmanaged_and_unsafe_image_references(api: Any) ->
         )
         assert response.status_code in {400, 422}, (reference, response.text)
 
-    settings = client.get("/api/admin/settings", headers=headers).json()
+    settings = payload(client.get("/api/admin/settings", headers=headers))
     assert settings["logoUrl"] == ""
 
 
@@ -323,7 +331,7 @@ def test_settings_reject_unknown_theme_color(api: Any) -> None:
     assert response.status_code == 422, response.text
 
 
-def test_reset_admin_password_returns_success(api: Any) -> None:
+def test_reset_admin_password_succeeds_with_an_empty_payload(api: Any) -> None:
     client, _module = api
     super_admin_token, _ = _login(
         client, "/api/admin/auth/login", "test-admin", "test-admin-password"
@@ -342,10 +350,11 @@ def test_reset_admin_password_returns_success(api: Any) -> None:
     assert created.status_code == 201, created.text
 
     response = client.post(
-        f"/api/admin/admins/{created.json()['id']}/reset-password",
+        f"/api/admin/admins/{payload(created)['id']}/reset-password",
         headers=_bearer(super_admin_token),
         json={"password": "replacement-admin-password"},
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"success": True}
+    # ``code == 0`` is the whole answer; there is nothing to report back.
+    assert payload(response) is None
