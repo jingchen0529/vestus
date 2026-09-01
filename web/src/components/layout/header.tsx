@@ -14,7 +14,7 @@ const tabTitles: Record<NavTab, { title: string; subtitle: string }> = {
   users: { title: "桌面用户", subtitle: "管理桌面客户端授权账号、并发与到期时间" },
   desktop: { title: "代理管理", subtitle: "配置所有桌面用户共享的代理节点，系统最多启用一个" },
   platforms: { title: "平台管理", subtitle: "统一维护业务平台入口与可用状态" },
-  activity: { title: "浏览器活动", subtitle: "桌面端内置浏览器的会话、访问地址与交互统计" },
+  activity: { title: "会话追踪", subtitle: "桌面端内置浏览器会话链路、访问地址与交互统计" },
   logs: { title: "审计日志", subtitle: "完整追踪桌面端与管理员操作轨迹" },
   settings: { title: "系统配置", subtitle: "自定义管理端与桌面端品牌名称、Logo 图标及主题配色风格" },
 };

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { UserTable } from "./user-table";
 import { UserDialog } from "./user-dialog";
 import { UserResetPasswordDialog } from "./user-reset-password-dialog";
-import { DesktopUser, CreateUserPayload, UpdateUserPayload, UserStats } from "@/types/user";
+import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -19,7 +19,6 @@ import {
 
 interface UsersViewProps {
   users: DesktopUser[];
-  userStats?: UserStats | null;
   search: string;
   onSearchChange: (val: string) => void;
   statusFilter: string;
@@ -35,7 +34,6 @@ interface UsersViewProps {
 
 export function UsersView({
   users,
-  userStats,
   search,
   onSearchChange,
   statusFilter,
@@ -93,41 +91,41 @@ export function UsersView({
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-300">
       {/* Top Action & Filter Toolbar */}
-      <Card className="border-border/80 shadow-sm">
-        <CardContent className="p-4">
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+      <Card className="border-border/80 shadow-xs">
+        <CardContent className="p-3">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
             {/* Action Buttons on Left */}
             <div className="flex items-center gap-2 shrink-0">
-              <Button
-                onClick={handleOpenCreate}
-                variant="outline"
-                size="sm"
-                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
-              >
-                <Plus className="h-4 w-4 text-muted-foreground" />
-                <span>开通桌面端账号</span>
-              </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={onRefresh}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
               </Button>
+              <Button
+                onClick={handleOpenCreate}
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
+              >
+                <Plus className="h-4 w-4 text-muted-foreground" />
+                <span>开通桌面端账号</span>
+              </Button>
             </div>
 
             {/* Search and Filters on Right */}
-            <div className="flex flex-1 items-center justify-end gap-2.5">
+            <div className="flex flex-1 items-center justify-end gap-2">
               <div className="relative w-full max-w-xs">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   placeholder="搜索账号、姓名或所属企业..."
                   value={search}
                   onChange={(e) => onSearchChange(e.target.value)}
-                  className="pl-9 h-9 text-xs"
+                  className="pl-9 h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none"
                 />
               </div>
 
@@ -136,7 +134,7 @@ export function UsersView({
                   value={statusFilter}
                   onValueChange={onStatusFilterChange}
                 >
-                  <SelectTrigger className="h-9 text-xs">
+                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none">
                     <SelectValue placeholder="全部状态" />
                   </SelectTrigger>
                   <SelectContent>
@@ -149,31 +147,6 @@ export function UsersView({
               </div>
             </div>
           </div>
-
-          {/* Stats Bar */}
-          {userStats && (
-            <div className="mt-3 pt-3 border-t flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-              <div className="flex items-center gap-4">
-                <span>
-                  共 <strong className="text-foreground">{userStats.total}</strong> 个受权账号
-                </span>
-                <span>
-                  正常: <strong className="text-emerald-600 dark:text-emerald-400">{userStats.active}</strong>
-                </span>
-                <span>
-                  已禁用: <strong className="text-foreground">{userStats.disabled}</strong>
-                </span>
-                {userStats.locked > 0 && (
-                  <span>
-                    锁定: <strong className="text-amber-500">{userStats.locked}</strong>
-                  </span>
-                )}
-              </div>
-              <div className="text-[11px]">
-                当前列表匹配: {users.length} 条记录
-              </div>
-            </div>
-          )}
         </CardContent>
       </Card>
 

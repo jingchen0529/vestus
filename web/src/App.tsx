@@ -454,7 +454,6 @@ export function App() {
         {currentTab === "users" && (
           <UsersView
             users={users}
-            userStats={userStats}
             search={userSearch}
             onSearchChange={setUserSearch}
             statusFilter={userStatusFilter}

@@ -349,7 +349,7 @@ export function SessionDetailModal({
                       size="sm"
                       disabled={page <= 1}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      className="h-7 px-2 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground gap-1 font-normal disabled:opacity-40"
+                      className="h-7 px-2 text-xs rounded-md border-border/60 bg-background hover:bg-muted text-foreground gap-1 font-normal shadow-none disabled:opacity-40"
                     >
                       <ChevronLeft className="h-3.5 w-3.5" />
                       <span>上一页</span>
@@ -359,7 +359,7 @@ export function SessionDetailModal({
                       size="sm"
                       disabled={page >= totalPages}
                       onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                      className="h-7 px-2 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground gap-1 font-normal disabled:opacity-40"
+                      className="h-7 px-2 text-xs rounded-md border-border/60 bg-background hover:bg-muted text-foreground gap-1 font-normal shadow-none disabled:opacity-40"
                     >
                       <span>下一页</span>
                       <ChevronRight className="h-3.5 w-3.5" />

@@ -116,16 +116,16 @@ export function AdminsView({
       </div>
 
       {/* Toolbar */}
-      <Card className="border-border/80 shadow-sm">
-        <CardContent className="p-4">
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+      <Card className="border-border/80 shadow-none">
+        <CardContent className="p-3">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
             {/* Action Buttons on Left */}
             <div className="flex items-center gap-2 shrink-0">
               <Button
                 onClick={handleOpenCreate}
                 variant="outline"
                 size="sm"
-                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <Plus className="h-4 w-4 text-muted-foreground" />
                 <span>新增管理员</span>
@@ -135,7 +135,7 @@ export function AdminsView({
                 size="sm"
                 onClick={onRefresh}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
@@ -143,14 +143,14 @@ export function AdminsView({
             </div>
 
             {/* Search and Filters on Right */}
-            <div className="flex flex-1 items-center justify-end gap-2.5">
+            <div className="flex flex-1 items-center justify-end gap-2">
               <div className="relative w-full max-w-xs">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   placeholder="搜索管理员账号或姓名..."
                   value={search}
                   onChange={(e) => onSearchChange(e.target.value)}
-                  className="pl-9 h-9 text-xs"
+                  className="pl-9 h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none"
                 />
               </div>
 
@@ -159,7 +159,7 @@ export function AdminsView({
                   value={statusFilter}
                   onValueChange={onStatusFilterChange}
                 >
-                  <SelectTrigger className="h-9 text-xs">
+                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none">
                     <SelectValue placeholder="全部状态" />
                   </SelectTrigger>
                   <SelectContent>

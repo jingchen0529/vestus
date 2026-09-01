@@ -22,9 +22,9 @@ export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTable
   if (sessions.length === 0 && !isLoading) {
     return (
       <div className="flex flex-col items-center justify-center p-12 text-center border rounded-xl bg-card">
-        <h3 className="text-sm font-semibold text-foreground">暂无符合条件的浏览器会话</h3>
+        <h3 className="text-sm font-semibold text-foreground">暂无符合条件的会话追踪记录</h3>
         <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-          桌面端打开内置浏览器并产生交互后，活动记录会在这里出现
+          桌面端打开内置浏览器并产生交互后，会话数据与访问明细会在此实时呈现
         </p>
       </div>
     );
@@ -125,10 +125,10 @@ export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTable
 
               <TableCell className="text-right">
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   onClick={() => onViewDetail(session)}
-                  className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                  className="h-7 px-2.5 text-xs gap-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                 >
                   <Eye className="h-3.5 w-3.5 text-muted-foreground" />
                   <span>查看</span>

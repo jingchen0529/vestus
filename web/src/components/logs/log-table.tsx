@@ -102,10 +102,10 @@ export function LogTable({ logs, onViewDetail, isLoading }: LogTableProps) {
               {/* Detail Button */}
               <TableCell className="text-right">
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   onClick={() => onViewDetail(log)}
-                  className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                  className="h-7 px-2.5 text-xs gap-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                 >
                   <Eye className="h-3.5 w-3.5 text-muted-foreground" />
                   <span>详情</span>

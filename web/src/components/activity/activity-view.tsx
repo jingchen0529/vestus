@@ -79,7 +79,7 @@ export function ActivityView({
       sessions,
       `vestus-browser-sessions-p${currentPage}-${new Date().toISOString().slice(0, 10)}.json`,
     );
-    toast.success(`已导出 ${sessions.length} 条浏览器会话 (JSON)`);
+    toast.success(`已导出 ${sessions.length} 条会话追踪记录 (JSON)`);
   };
 
   const handleExportCsv = () => {
@@ -109,7 +109,7 @@ export function ActivityView({
       sessions,
       `vestus-browser-sessions-p${currentPage}-${new Date().toISOString().slice(0, 10)}.csv`,
     );
-    toast.success(`已导出 ${sessions.length} 条浏览器会话 (CSV)`);
+    toast.success(`已导出 ${sessions.length} 条会话追踪记录 (CSV)`);
   };
 
   const totalPages = Math.ceil(totalSessions / pageSize) || 1;
@@ -117,9 +117,9 @@ export function ActivityView({
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-300">
       {/* 工具条 */}
-      <Card className="border-border/80 shadow-sm">
-        <CardContent className="p-3.5">
-          <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
+      <Card className="border-border/80 shadow-xs">
+        <CardContent className="p-3">
+          <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-2.5">
             {/* 左侧操作按钮 */}
             <div className="flex items-center gap-2 shrink-0">
               <Button
@@ -127,7 +127,7 @@ export function ActivityView({
                 size="sm"
                 onClick={() => onRefresh()}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
@@ -137,7 +137,7 @@ export function ActivityView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportCsv}
-                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
                 <span>导出 CSV</span>
@@ -147,7 +147,7 @@ export function ActivityView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportJson}
-                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <FileJson className="h-3.5 w-3.5 text-blue-600" />
                 <span>导出 JSON</span>
@@ -161,7 +161,7 @@ export function ActivityView({
                   value={filters.userId}
                   onValueChange={(value) => patchFilters({ userId: value })}
                 >
-                  <SelectTrigger className="h-9 text-xs">
+                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 shadow-none bg-background/80">
                     <SelectValue placeholder="全部桌面用户" />
                   </SelectTrigger>
                   <SelectContent>
@@ -180,7 +180,7 @@ export function ActivityView({
                   value={filters.platformId}
                   onValueChange={(value) => patchFilters({ platformId: value })}
                 >
-                  <SelectTrigger className="h-9 text-xs">
+                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 shadow-none bg-background/80">
                     <SelectValue placeholder="全部平台" />
                   </SelectTrigger>
                   <SelectContent>
@@ -201,7 +201,7 @@ export function ActivityView({
                     patchFilters({ connection: value as BrowserSessionFilters["connection"] })
                   }
                 >
-                  <SelectTrigger className="h-9 text-xs">
+                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 shadow-none bg-background/80">
                     <SelectValue placeholder="全部连接方式" />
                   </SelectTrigger>
                   <SelectContent>
@@ -245,7 +245,7 @@ export function ActivityView({
       {/* 分页 */}
       <div className="flex items-center justify-between px-2 text-xs text-muted-foreground">
         <div>
-          共 <strong className="text-foreground">{totalSessions}</strong> 条浏览器会话 · 当前第{" "}
+          共 <strong className="text-foreground">{totalSessions}</strong> 条会话追踪记录 · 当前第{" "}
           {currentPage} / {totalPages} 页
         </div>
 

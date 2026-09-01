@@ -74,10 +74,10 @@ export function LogsView({
 
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-300">
-      {/* Top Toolbar */}
-      <Card className="border-border/80 shadow-sm">
-        <CardContent className="p-4">
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+      {/* Action and Filter Toolbar */}
+      <Card className="border-border/80 shadow-xs">
+        <CardContent className="p-3">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
             {/* Left Action Buttons */}
             <div className="flex items-center gap-2 shrink-0">
               <Button
@@ -85,7 +85,7 @@ export function LogsView({
                 size="sm"
                 onClick={() => onRefresh()}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
@@ -95,7 +95,7 @@ export function LogsView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportCsv}
-                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
                 <span>导出 CSV</span>
@@ -105,7 +105,7 @@ export function LogsView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportJson}
-                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <FileJson className="h-3.5 w-3.5 text-blue-600" />
                 <span>导出 JSON</span>
@@ -119,7 +119,7 @@ export function LogsView({
                   value={statusFilter}
                   onValueChange={onStatusFilterChange}
                 >
-                  <SelectTrigger className="h-9 text-xs">
+                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none">
                     <SelectValue placeholder="全部结果" />
                   </SelectTrigger>
                   <SelectContent>

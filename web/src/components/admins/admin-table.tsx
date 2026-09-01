@@ -8,18 +8,10 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { AdminUser } from "@/types/admin";
-import { formatDate } from "@/lib/utils";
+import { formatDate, cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  MoreHorizontal,
   Edit2,
   KeyRound,
   PowerOff,
@@ -58,7 +50,7 @@ export function AdminTable({
             <TableHead className="w-[140px]">权限角色</TableHead>
             <TableHead className="w-[100px]">账号状态</TableHead>
             <TableHead className="w-[180px]">最后登录时间</TableHead>
-            <TableHead className="w-[140px] text-right">操作管理</TableHead>
+            <TableHead className="w-[280px] text-right">操作管理</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -124,65 +116,64 @@ export function AdminTable({
                 </TableCell>
 
                 {/* Actions */}
-                <TableCell className="text-right">
+                <TableCell className="text-right whitespace-nowrap">
                   <div className="flex items-center justify-end gap-1.5">
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
                       onClick={() => onEditAdmin(admin)}
-                      className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                      className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                     >
                       <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                       <span>编辑</span>
                     </Button>
 
                     {!isSelf && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-8 p-0 rounded-lg border-border/80 bg-background hover:bg-accent text-muted-foreground hover:text-foreground shadow-xs"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">更多操作</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-36">
-                          <DropdownMenuItem
-                            onClick={() => onResetPassword(admin)}
-                            className="gap-2 text-xs cursor-pointer"
-                          >
-                            <KeyRound className="h-3.5 w-3.5 text-amber-500" />
-                            <span>重置密码</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={() => onToggleStatus(admin)}
-                            className="gap-2 text-xs cursor-pointer"
-                          >
-                            {admin.status === "active" ? (
-                              <>
-                                <PowerOff className="h-3.5 w-3.5 text-amber-600" />
-                                <span className="text-amber-600">禁用账号</span>
-                              </>
-                            ) : (
-                              <>
-                                <Power className="h-3.5 w-3.5 text-emerald-600" />
-                                <span className="text-emerald-600">启用账号</span>
-                              </>
-                            )}
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={() => onDeleteAdmin(admin)}
-                            className="gap-2 text-xs text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer font-medium"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            <span>删除此管理员</span>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onResetPassword(admin)}
+                          className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 border border-border/40 hover:border-amber-500/30 shadow-none font-normal transition-colors"
+                        >
+                          <KeyRound className="h-3.5 w-3.5 text-amber-500" />
+                          <span>重置密码</span>
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onToggleStatus(admin)}
+                          className={cn(
+                            "h-7 px-2 text-xs gap-1 rounded-md border border-border/40 shadow-none font-normal transition-colors",
+                            admin.status === "active"
+                              ? "text-muted-foreground hover:text-amber-600 hover:bg-amber-500/10 hover:border-amber-500/30"
+                              : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                          )}
+                        >
+                          {admin.status === "active" ? (
+                            <>
+                              <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                              <span>禁用</span>
+                            </>
+                          ) : (
+                            <>
+                              <Power className="h-3.5 w-3.5 text-emerald-600" />
+                              <span>启用</span>
+                            </>
+                          )}
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onDeleteAdmin(admin)}
+                          className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border/40 hover:border-destructive/30 shadow-none font-normal transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          <span>删除</span>
+                        </Button>
+                      </>
                     )}
                   </div>
                 </TableCell>

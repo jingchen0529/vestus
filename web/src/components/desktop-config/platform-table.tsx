@@ -46,7 +46,7 @@ export function PlatformTable({
             onClick={onOpenCreate}
             variant="outline"
             size="sm"
-            className="h-8 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+            className="h-8 gap-1.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
           >
             <Plus className="h-3.5 w-3.5 text-muted-foreground" />
             <span>新增平台</span>
@@ -56,7 +56,7 @@ export function PlatformTable({
             size="sm"
             onClick={onRefresh}
             disabled={isLoading}
-            className="h-8 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+            className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
           >
             <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isLoading ? "animate-spin" : ""}`} />
             <span>刷新</span>
@@ -118,10 +118,10 @@ export function PlatformTable({
                   </TableCell>
                   <TableCell className="text-right">
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
                       onClick={() => onEditPlatform(platform)}
-                      className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                      className="h-7 px-2.5 text-xs gap-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                     >
                       <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                       <span>编辑</span>

@@ -126,7 +126,7 @@ export function Sidebar({
     },
     {
       id: "activity" as NavTab,
-      label: "浏览器活动",
+      label: "会话追踪",
       icon: Activity,
       badge: null,
     },

@@ -8,17 +8,17 @@ import {
   RefreshCw,
   CheckCircle2,
   XCircle,
-  ShieldCheck,
-  Globe,
-  MoreHorizontal,
   Power,
   PowerOff,
+  ShieldCheck,
+  Globe,
 } from "lucide-react";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -26,13 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -187,60 +180,47 @@ export function DesktopConfigView({
 
       {/* 2. Main Proxy Table Card */}
       <Card className="border-border/80 shadow-sm">
-        <CardHeader className="pb-3 border-b">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Server className="h-4 w-4 text-emerald-600" />
-            <span>网络代理列表</span>
-            <Badge variant="secondary" className="font-mono text-xs px-2 py-0.5">
-              {filteredProxies.length}
-            </Badge>
-          </CardTitle>
-          <CardDescription className="text-xs">
-            全局统一管理网络代理节点，支持节点配置、直连域名例外与一键启/停用
-          </CardDescription>
-        </CardHeader>
-
         <CardContent className="p-0">
           {/* Action, Search & Filter Bar */}
-          <div className="p-4 border-b bg-muted/10 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="p-3 border-b bg-muted/10 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
             {/* Left Action Buttons */}
             <div className="flex items-center gap-2 shrink-0">
-              <Button
-                onClick={handleOpenCreate}
-                variant="outline"
-                size="sm"
-                className="h-9 gap-1.5 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
-              >
-                <Plus className="h-4 w-4 text-muted-foreground" />
-                <span>新增代理</span>
-              </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={onRefresh}
                 disabled={isRefreshing}
-                className="h-9 gap-1.5 px-3 text-xs rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
                 <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
                 <span>刷新</span>
               </Button>
+              <Button
+                onClick={handleOpenCreate}
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
+              >
+                <Plus className="h-4 w-4 text-muted-foreground" />
+                <span>新增代理</span>
+              </Button>
             </div>
 
             {/* Right Search and Status Filter */}
-            <div className="flex flex-1 items-center justify-end gap-2.5">
+            <div className="flex flex-1 items-center justify-end gap-2">
               <div className="relative w-full max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   placeholder="搜索代理名称、主机或端口..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9 h-9 text-xs bg-background"
+                  className="pl-9 h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none"
                 />
               </div>
 
               <div className="w-36 shrink-0">
                 <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="h-9 text-xs bg-background">
+                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none">
                     <SelectValue placeholder="全部状态" />
                   </SelectTrigger>
                   <SelectContent>
@@ -275,7 +255,7 @@ export function DesktopConfigView({
                     <TableHead className="min-w-[120px]">认证账号</TableHead>
                     <TableHead className="min-w-[160px]">直连白名单</TableHead>
                     <TableHead className="w-[120px] text-center">状态</TableHead>
-                    <TableHead className="w-[160px] text-right">操作</TableHead>
+                    <TableHead className="w-[220px] text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -345,56 +325,51 @@ export function DesktopConfigView({
                       </TableCell>
 
                       {/* Actions */}
-                      <TableCell className="text-right">
+                      <TableCell className="text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
                           <Button
-                            variant="outline"
+                            variant="ghost"
                             size="sm"
                             onClick={() => handleOpenEdit(proxy)}
-                            className="h-8 px-2.5 text-xs gap-1.5 rounded-lg border-border/80 bg-background hover:bg-accent text-foreground shadow-xs font-normal"
+                            className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                           >
                             <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                             <span>编辑</span>
                           </Button>
 
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-8 w-8 p-0 rounded-lg border-border/80 bg-background hover:bg-accent text-muted-foreground hover:text-foreground shadow-xs"
-                              >
-                                <MoreHorizontal className="h-4 w-4" />
-                                <span className="sr-only">更多操作</span>
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-36">
-                              <DropdownMenuItem
-                                onClick={() => onToggleProxyStatus(proxy)}
-                                className="gap-2 text-xs cursor-pointer"
-                              >
-                                {proxy.status === "active" ? (
-                                  <>
-                                    <PowerOff className="h-3.5 w-3.5 text-amber-600" />
-                                    <span className="text-amber-600">停用节点</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Power className="h-3.5 w-3.5 text-emerald-600" />
-                                    <span className="text-emerald-600">启用节点</span>
-                                  </>
-                                )}
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                onClick={() => handlePromptDelete(proxy)}
-                                className="gap-2 text-xs text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer font-medium"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                <span>删除节点</span>
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onToggleProxyStatus(proxy)}
+                            className={cn(
+                              "h-7 px-2 text-xs gap-1 rounded-md border border-border/40 shadow-none font-normal transition-colors",
+                              proxy.status === "active"
+                                ? "text-muted-foreground hover:text-amber-600 hover:bg-amber-500/10 hover:border-amber-500/30"
+                                : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                            )}
+                          >
+                            {proxy.status === "active" ? (
+                              <>
+                                <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                                <span>停用</span>
+                              </>
+                            ) : (
+                              <>
+                                <Power className="h-3.5 w-3.5 text-emerald-600" />
+                                <span>启用</span>
+                              </>
+                            )}
+                          </Button>
+
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handlePromptDelete(proxy)}
+                            className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border/40 hover:border-destructive/30 shadow-none font-normal transition-colors"
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                            <span>删除</span>
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>
