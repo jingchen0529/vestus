@@ -46,6 +46,13 @@ const MAX_ACTIVITY_REPORT_BYTES: usize = 4 * 1024 * 1024;
 /// 关应用时等各会话把最后一批发完的上限。等不到就放弃，不能让用户卡在退出上。
 const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 随每批上报一起发的客户端版本号，由 `build.rs` 从 `tauri.conf.json` 读出。
+///
+/// 不用 `CARGO_PKG_VERSION`：发布流水线只把版本号写进 `tauri.conf.json`，
+/// `Cargo.toml` 的 `version` 不参与打包命名也不随标签变动，用它会让每个版本
+/// 都报同一个数字。
+const CLIENT_VERSION: &str = env!("VESTUS_CLIENT_VERSION");
+
 /// 一次浏览器会话的身份。`browser_id` 由 [`crate::state`] 分配，同一进程唯一。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionKey {
@@ -471,7 +478,7 @@ fn activity_report(
         browser_id: key.browser_id,
         platform_id: key.platform_id,
         direct_mode: key.direct_mode,
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: CLIENT_VERSION.to_string(),
         reported_at_ms,
         dropped_pages,
         pages,
@@ -500,6 +507,20 @@ fn next_delay(failures: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 上报的版本号必须是安装包自己的版本号。换回 `CARGO_PKG_VERSION` 会在这里
+    /// 失败：那个值不随发布标签走，会让每个版本都报同一个数字。
+    #[test]
+    fn reported_client_version_is_the_packaged_version() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            CLIENT_VERSION,
+            config["version"]
+                .as_str()
+                .expect("tauri.conf.json 缺少字符串字段 version")
+        );
+    }
 
     fn visit(url: &str) -> PageReport {
         PageReport {
