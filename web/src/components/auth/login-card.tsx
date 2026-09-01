@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { Lock, User, Eye, EyeOff, AlertCircle, Sparkles } from "lucide-react";
 import defaultLogo from "@/assets/logo.png";
 import { Button } from "@/components/ui/button";
@@ -7,30 +7,16 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useTheme } from "@/hooks/use-theme";
-import { api } from "@/lib/api-client";
 import { toast } from "sonner";
 
 export function LoginCard() {
   const { login } = useAuth();
-  const { adminTitle, adminLogoUrl, setAdminLogoUrl, setAdminTitle } = useTheme();
+  const { adminTitle, adminLogoUrl } = useTheme();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    api.getProduct()
-      .then((res) => {
-        if (res.logoUrl && !adminLogoUrl) {
-          setAdminLogoUrl(res.logoUrl);
-        }
-        if (res.productName && (!adminTitle || adminTitle === "Vestus Admin")) {
-          setAdminTitle(`${res.productName} 管理后台`);
-        }
-      })
-      .catch(() => {});
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

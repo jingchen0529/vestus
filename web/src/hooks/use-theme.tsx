@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
+import defaultLogo from "@/assets/logo.png";
+import { api } from "@/lib/api-client";
 
 export type Theme = "dark" | "light" | "system";
 
@@ -87,12 +89,60 @@ export const ACCENT_COLOR_PRESETS: Record<AccentColor, AccentColorPreset> = {
   },
 };
 
+type BrandingStorage = Pick<Storage, "setItem" | "removeItem">;
+
+type BrandingStorageKeys = {
+  title: string;
+  logo: string;
+  accent: string;
+};
+
+type PublicBranding = {
+  adminTitle: string;
+  adminLogoUrl: string;
+  adminThemeColor: AccentColor | null;
+};
+
+function nonEmptyString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function syncPublicBranding(
+  payload: Record<string, unknown>,
+  storage: BrandingStorage,
+  keys: BrandingStorageKeys,
+): PublicBranding {
+  const adminTitle = nonEmptyString(payload.adminTitle) || "Vestus 管理后台";
+  const adminLogoUrl =
+    nonEmptyString(payload.adminLogoUrl) || nonEmptyString(payload.logoUrl);
+  const accentCandidate = nonEmptyString(payload.adminThemeColor);
+  const adminThemeColor = Object.prototype.hasOwnProperty.call(
+    ACCENT_COLOR_PRESETS,
+    accentCandidate,
+  )
+    ? (accentCandidate as AccentColor)
+    : null;
+
+  try {
+    storage.setItem(keys.title, adminTitle);
+    if (adminLogoUrl) storage.setItem(keys.logo, adminLogoUrl);
+    else storage.removeItem(keys.logo);
+    if (adminThemeColor) storage.setItem(keys.accent, adminThemeColor);
+  } catch {
+    // Storage may be unavailable in hardened/private browser contexts.
+  }
+
+  return { adminTitle, adminLogoUrl, adminThemeColor };
+}
+
 type ThemeProviderProps = {
   children: React.ReactNode;
   defaultTheme?: Theme;
   defaultAccent?: AccentColor;
   storageKey?: string;
   accentStorageKey?: string;
+  titleStorageKey?: string;
+  logoStorageKey?: string;
 };
 
 type ThemeProviderState = {
@@ -111,7 +161,7 @@ const initialState: ThemeProviderState = {
   setTheme: () => null,
   accentColor: "blue",
   setAccentColor: () => null,
-  adminTitle: "Vestus Admin",
+  adminTitle: "Vestus 管理后台",
   setAdminTitle: () => null,
   adminLogoUrl: "",
   setAdminLogoUrl: () => null,
@@ -125,6 +175,8 @@ export function ThemeProvider({
   defaultAccent = "blue",
   storageKey = "vestus-admin-ui-theme",
   accentStorageKey = "vestus-admin-ui-accent",
+  titleStorageKey = "vestus-admin-ui-title",
+  logoStorageKey = "vestus-admin-ui-logo",
   ...props
 }: ThemeProviderProps) {
   const [theme, setTheme] = useState<Theme>(() => {
@@ -143,10 +195,23 @@ export function ThemeProvider({
     }
   });
 
-  const [adminTitle, setAdminTitle] = useState("Vestus Admin");
-  const [adminLogoUrl, setAdminLogoUrl] = useState("");
+  const [adminTitle, setAdminTitleState] = useState<string>(() => {
+    try {
+      return localStorage.getItem(titleStorageKey) || "Vestus 管理后台";
+    } catch {
+      return "Vestus 管理后台";
+    }
+  });
 
-  // Apply light/dark classes
+  const [adminLogoUrl, setAdminLogoUrlState] = useState<string>(() => {
+    try {
+      return localStorage.getItem(logoStorageKey) || "";
+    } catch {
+      return "";
+    }
+  });
+
+  // Apply light/dark classes and primary theme colors
   useEffect(() => {
     const root = window.document.documentElement;
     root.classList.remove("light", "dark");
@@ -169,6 +234,48 @@ export function ThemeProvider({
     root.style.setProperty("--ring", ringHsl);
   }, [theme, accentColor]);
 
+  // Synchronize document.title dynamically with system configuration
+  useEffect(() => {
+    if (adminTitle && adminTitle.trim()) {
+      document.title = adminTitle.trim();
+    } else {
+      document.title = "Vestus 管理后台";
+    }
+  }, [adminTitle]);
+
+  // Synchronize browser tab favicon dynamically with system configuration
+  useEffect(() => {
+    const targetHref = adminLogoUrl && adminLogoUrl.trim() ? adminLogoUrl.trim() : defaultLogo;
+    let link: HTMLLinkElement | null = document.querySelector("link[rel*='icon']");
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.type = targetHref.endsWith(".ico")
+      ? "image/x-icon"
+      : targetHref.endsWith(".svg")
+        ? "image/svg+xml"
+        : "image/png";
+    link.href = targetHref;
+  }, [adminLogoUrl]);
+
+  // Initial fetch of system settings from backend
+  useEffect(() => {
+    api.getProduct()
+      .then((res) => {
+        const branding = syncPublicBranding(res, localStorage, {
+          title: titleStorageKey,
+          logo: logoStorageKey,
+          accent: accentStorageKey,
+        });
+        setAdminTitleState(branding.adminTitle);
+        setAdminLogoUrlState(branding.adminLogoUrl);
+        if (branding.adminThemeColor) setAccentColor(branding.adminThemeColor);
+      })
+      .catch(() => {});
+  }, [titleStorageKey, logoStorageKey, accentStorageKey]);
+
   const value: ThemeProviderState = {
     theme,
     setTheme: (newTheme: Theme) => {
@@ -185,9 +292,19 @@ export function ThemeProvider({
       setAccentColor(newAccent);
     },
     adminTitle,
-    setAdminTitle,
+    setAdminTitle: (newTitle: string) => {
+      try {
+        localStorage.setItem(titleStorageKey, newTitle);
+      } catch {}
+      setAdminTitleState(newTitle);
+    },
     adminLogoUrl,
-    setAdminLogoUrl,
+    setAdminLogoUrl: (newLogo: string) => {
+      try {
+        localStorage.setItem(logoStorageKey, newLogo);
+      } catch {}
+      setAdminLogoUrlState(newLogo);
+    },
   };
 
   return (

@@ -65,29 +65,16 @@ export function Sidebar({
     theme,
     setTheme,
     adminTitle,
-    setAdminTitle,
     adminLogoUrl,
-    setAdminLogoUrl,
   } = useTheme();
 
   const [health, setHealth] = useState<SystemHealth | null>(null);
-  const [product, setProduct] = useState<any>(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
 
   const fetchHealthStatus = async () => {
     setIsHealthLoading(true);
     try {
-      const [h, p, s] = await Promise.allSettled([
-        api.getHealth(),
-        api.getProduct(),
-        api.getSettings(),
-      ]);
-      if (h.status === "fulfilled") setHealth(h.value);
-      if (p.status === "fulfilled") setProduct(p.value);
-      if (s.status === "fulfilled") {
-        if (s.value.adminTitle) setAdminTitle(s.value.adminTitle);
-        if (s.value.adminLogoUrl) setAdminLogoUrl(s.value.adminLogoUrl);
-      }
+      setHealth(await api.getHealth());
     } catch {
       // ignore
     } finally {
@@ -435,7 +422,7 @@ export function Sidebar({
                     <span className="text-[11px] text-foreground font-medium">企业内核</span>
                   </div>
                   <span className="font-mono text-[10px] text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded border border-border/40">
-                    v{product?.version || "2.0.0"}
+                    v2.0.0
                   </span>
                 </div>
               </div>

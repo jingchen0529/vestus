@@ -268,21 +268,30 @@ def test_admin_branding_keeps_upload_paths_and_public_product_uses_current_origi
         json={
             "productName": "企业智选浏览器",
             "logoUrl": product_logo,
+            "adminTitle": "企业运营控制台",
             "adminLogoUrl": admin_logo,
+            "adminThemeColor": "rose",
         },
     )
     assert update_res.status_code == 200
     assert payload(update_res)["productName"] == "企业智选浏览器"
     assert payload(update_res)["logoUrl"] == product_logo
+    assert payload(update_res)["adminTitle"] == "企业运营控制台"
     assert payload(update_res)["adminLogoUrl"] == admin_logo
+    assert payload(update_res)["adminThemeColor"] == "rose"
     admin_res = client.get("/api/admin/settings", headers=headers)
     assert payload(admin_res)["logoUrl"] == product_logo
+    assert payload(admin_res)["adminTitle"] == "企业运营控制台"
     assert payload(admin_res)["adminLogoUrl"] == admin_logo
+    assert payload(admin_res)["adminThemeColor"] == "rose"
 
     public_res = client.get("/api/product", headers={"Host": "product.example.test"})
     assert public_res.status_code == 200
     assert payload(public_res)["productName"] == "企业智选浏览器"
     assert payload(public_res)["logoUrl"] == f"http://product.example.test{product_logo}"
+    assert payload(public_res)["adminTitle"] == "企业运营控制台"
+    assert payload(public_res)["adminLogoUrl"] == f"http://product.example.test{admin_logo}"
+    assert payload(public_res)["adminThemeColor"] == "rose"
 
 
 def test_branding_api_rejects_unmanaged_and_unsafe_image_references(api: Any) -> None:

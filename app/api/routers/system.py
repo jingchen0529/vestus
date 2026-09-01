@@ -77,6 +77,9 @@ def product(
     return {
         "productName": branding["productName"],
         "logoUrl": absolute_upload_reference(request, branding.get("logoUrl", "")),
+        "adminTitle": branding.get("adminTitle", "Vestus Admin"),
+        "adminLogoUrl": absolute_upload_reference(request, branding.get("adminLogoUrl", "")),
+        "adminThemeColor": branding.get("adminThemeColor", "blue"),
     }
 
 

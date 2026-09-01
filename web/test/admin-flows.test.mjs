@@ -216,6 +216,48 @@ test("品牌图片拒绝 SVG 和伪装的图片类型", async () => {
   );
 });
 
+test("公共品牌清空 Logo 时同步清除旧缓存", async () => {
+  const { syncPublicBranding } = await server.ssrLoadModule(
+    "/src/hooks/use-theme.tsx",
+  );
+  assert.equal(typeof syncPublicBranding, "function");
+
+  const values = new Map([
+    ["title", "旧管理后台"],
+    ["logo", "/uploads/old-logo.png"],
+    ["accent", "red"],
+  ]);
+  const storage = {
+    setItem(key, value) {
+      values.set(key, value);
+    },
+    removeItem(key) {
+      values.delete(key);
+    },
+  };
+
+  const branding = syncPublicBranding(
+    {
+      adminTitle: "新管理后台",
+      adminLogoUrl: "",
+      logoUrl: "",
+      adminThemeColor: "blue",
+    },
+    storage,
+    { title: "title", logo: "logo", accent: "accent" },
+  );
+
+  assert.deepEqual(branding, {
+    adminTitle: "新管理后台",
+    adminLogoUrl: "",
+    adminThemeColor: "blue",
+  });
+  assert.deepEqual(Object.fromEntries(values), {
+    title: "新管理后台",
+    accent: "blue",
+  });
+});
+
 test("浏览器会话列表把筛选条件翻成查询参数，直连和走代理都能单独筛", async () => {
   const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
   const { EMPTY_BROWSER_SESSION_FILTERS, toBrowserSessionQuery } =
