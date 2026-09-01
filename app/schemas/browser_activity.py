@@ -223,6 +223,7 @@ class BrowserActivityReport(BaseModel):
     browser_id: int = Field(alias="browserId", ge=0, le=2**63 - 1)
     platform_id: int = Field(alias="platformId", ge=0, le=2**63 - 1)
     direct_mode: bool = Field(default=False, alias="directMode")
+    client_version: Optional[str] = Field(default="", alias="clientVersion", max_length=50)
     reported_at_ms: int = Field(default=0, alias="reportedAtMs", ge=0)
     dropped_pages: int = Field(default=0, alias="droppedPages", ge=0, le=2**31 - 1)
     pages: List[BrowserPageReport] = Field(min_length=1, max_length=MAX_PAGES_PER_REPORT)

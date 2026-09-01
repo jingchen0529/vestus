@@ -83,6 +83,7 @@ struct ActivityReport {
     browser_id: u64,
     platform_id: i64,
     direct_mode: bool,
+    client_version: String,
     /// 客户端本机时钟的毫秒时间戳。服务端不信这个值，只用它排序并夹到「现在」，
     /// 记录时间仍由服务端自己盖。
     reported_at_ms: u64,
@@ -470,6 +471,7 @@ fn activity_report(
         browser_id: key.browser_id,
         platform_id: key.platform_id,
         direct_mode: key.direct_mode,
+        client_version: env!("CARGO_PKG_VERSION").to_string(),
         reported_at_ms,
         dropped_pages,
         pages,
@@ -524,6 +526,7 @@ mod tests {
             direct_mode: false,
             reported_at_ms: 3,
             dropped_pages: 0,
+            client_version: "0.1.8".into(),
             pages: rows,
         })
         .unwrap()
@@ -776,6 +779,7 @@ mod tests {
             browser_id: 7,
             platform_id: 3,
             direct_mode: true,
+            client_version: "0.1.8".into(),
             reported_at_ms: 1_700_000_000_000,
             dropped_pages: 0,
             pages: vec![PageRow {
@@ -804,6 +808,7 @@ mod tests {
         assert_eq!(json["browserId"], 7);
         assert_eq!(json["platformId"], 3);
         assert_eq!(json["directMode"], true);
+        assert_eq!(json["clientVersion"], "0.1.8");
         assert_eq!(json["reportedAtMs"], 1_700_000_000_000_u64);
         assert_eq!(json["droppedPages"], 0);
         assert_eq!(json["pages"][0]["dwellMs"], 6);

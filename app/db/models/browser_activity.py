@@ -50,6 +50,7 @@ class BrowserSession(Base):
     #: Also copied at report time; the platform may be renamed or removed later.
     platform_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     direct_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    client_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     #: Running totals over the whole session, summed from the reported deltas.
     #: BIGINT throughout: these accumulate for as long as the browser stays open.

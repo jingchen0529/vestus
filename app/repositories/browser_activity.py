@@ -50,6 +50,7 @@ def create_session(
     platform_id: int,
     platform_name: Optional[str],
     direct_mode: bool,
+    client_version: Optional[str] = None,
     ip: Optional[str],
     started_at: datetime,
 ) -> BrowserSession:
@@ -61,6 +62,7 @@ def create_session(
         platform_id=platform_id,
         platform_name=(platform_name or None) and platform_name[:100],
         direct_mode=direct_mode,
+        client_version=(client_version or None) and client_version[:50],
         ip_address=ip_bytes(ip),
         started_at=started_at,
         last_report_at=started_at,
@@ -77,6 +79,7 @@ def add_session_totals(
     new_pages: int,
     dropped_pages: int,
     reported_at: datetime,
+    client_version: Optional[str] = None,
     ip: Optional[str],
 ) -> None:
     for name in _COUNTERS:
@@ -86,6 +89,8 @@ def add_session_totals(
     # the larger value keeps it monotonic even if reports arrive out of order.
     item.dropped_pages = max(int(item.dropped_pages or 0), dropped_pages)
     item.last_report_at = max(item.last_report_at, reported_at)
+    if client_version and not item.client_version:
+        item.client_version = client_version[:50]
     if ip:
         item.ip_address = ip_bytes(ip)
 

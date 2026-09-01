@@ -108,6 +108,7 @@ def _session_for_report(
     started_at = min(
         (_server_time(page.first_seen_at_ms, now) for page in report.pages), default=now
     )
+    client_ver = (report.client_version or "").strip() or None
     try:
         with session.begin_nested():
             return activity_repo.create_session(
@@ -119,6 +120,7 @@ def _session_for_report(
                 platform_id=report.platform_id,
                 platform_name=getattr(platform, "name", None),
                 direct_mode=report.direct_mode,
+                client_version=client_ver,
                 ip=ip,
                 started_at=started_at,
             )
@@ -176,6 +178,7 @@ def record_activity(
             new_pages=new_pages,
             dropped_pages=report.dropped_pages,
             reported_at=_server_time(report.reported_at_ms, now),
+            client_version=(report.client_version or "").strip() or None,
             ip=ip,
         )
         session.flush()

@@ -9,6 +9,8 @@ export interface BrowserSessionItem {
   platformName?: string | null;
   /** 直连模式下打开的会话（未经上游代理）。 */
   directMode: boolean;
+  /** 上报该会话的桌面客户端版本（如 v0.1.8）。 */
+  clientVersion?: string | null;
   /** 这次会话记录到的不同地址数。 */
   pageCount: number;
   visits: number;

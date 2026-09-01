@@ -739,3 +739,30 @@ def test_the_page_table_stores_the_digest_not_a_long_index(api: Any) -> None:
         assert row.url == url
         assert row.url_hash == url_hash(url)
         assert len(row.url_hash) == 64
+
+
+def test_session_records_and_returns_client_version(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/versioned", visits=1),
+            platformId=platform_id,
+            clientVersion="0.1.8",
+        ),
+    )
+    assert response.status_code == 200, response.text
+    session_id = payload(response)["sessionId"]
+
+    # In listing
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["items"][0]["clientVersion"] == "0.1.8"
+
+    # In detail
+    detail = payload(
+        client.get(f"/api/admin/browser-sessions/{session_id}", headers=_bearer(admin_token))
+    )
+    assert detail["clientVersion"] == "0.1.8"

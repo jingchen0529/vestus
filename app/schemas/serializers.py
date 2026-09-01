@@ -223,6 +223,7 @@ def browser_session_dict(item: BrowserSession) -> Dict[str, Any]:
         "platformId": item.platform_id,
         "platformName": item.platform_name,
         "directMode": bool(item.direct_mode),
+        "clientVersion": getattr(item, "client_version", "") or "",
         "pageCount": item.page_count,
         "visits": item.visits,
         "clicks": item.clicks,

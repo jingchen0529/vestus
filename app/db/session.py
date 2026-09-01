@@ -107,6 +107,7 @@ class Database:
             self._ensure_global_proxy_lock()
             self._normalize_active_proxies()
             self._bootstrap_admin()
+            self._ensure_browser_session_columns()
         except SQLAlchemyError as exc:
             self.available = False
             self.initialization_error = str(exc)
@@ -121,6 +122,7 @@ class Database:
                 self._ensure_global_proxy_lock()
                 self._normalize_active_proxies()
                 self._bootstrap_admin()
+                self._ensure_browser_session_columns()
 
     def ping(self) -> bool:
         try:
@@ -199,6 +201,28 @@ class Database:
                         password_changed_at=utc_now(),
                     )
                 )
+
+    def _ensure_browser_session_columns(self) -> None:
+        """Add missing client_version column if database predates this feature."""
+        try:
+            with self.engine.begin() as conn:
+                # Check if client_version column exists
+                if self.url.startswith("sqlite"):
+                    cursor = conn.execute(text("PRAGMA table_info(browser_session)"))
+                    columns = [row[1] for row in cursor.fetchall()]
+                    if "client_version" not in columns:
+                        conn.execute(text("ALTER TABLE browser_session ADD COLUMN client_version VARCHAR(50)"))
+                elif "mysql" in self.url:
+                    cursor = conn.execute(text(
+                        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                        "WHERE TABLE_NAME = 'browser_session' AND COLUMN_NAME = 'client_version' "
+                        "AND TABLE_SCHEMA = DATABASE()"
+                    ))
+                    if not cursor.fetchall():
+                        conn.execute(text("ALTER TABLE browser_session ADD COLUMN client_version VARCHAR(50) NULL"))
+        except Exception:
+            # Ignore schema alter errors if table does not exist or column already added
+            pass
 
 
 __all__ = ["Database", "GLOBAL_PROXY_LOCK_KEY", "lock_global_proxy_activation"]
