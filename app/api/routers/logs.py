@@ -18,7 +18,7 @@ router = APIRouter(route_class=EnvelopeRoute)
 @router.get("/api/admin/user-logs", tags=["logs"])
 def user_logs(
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+    page_size: int = Query(10, ge=1, le=200, alias="pageSize"),
     actor_type: Optional[str] = Query(None, alias="actorType"),
     actor_id: Optional[int] = Query(None, alias="actorId"),
     action: Optional[str] = None,

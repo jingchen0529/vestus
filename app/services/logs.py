@@ -21,7 +21,7 @@ def list_logs(
     database: Database,
     *,
     page: int = 1,
-    page_size: int = 50,
+    page_size: int = 10,
     actor_type: Optional[str] = None,
     actor_id: Optional[int] = None,
     action: Optional[str] = None,

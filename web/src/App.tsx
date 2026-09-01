@@ -115,7 +115,7 @@ export function App() {
   const [logs, setLogs] = useState<UserLogItem[]>([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [logPage, setLogPage] = useState(1);
-  const [logPageSize] = useState(50);
+  const [logPageSize] = useState(10);
   const [logStatusFilter, setLogStatusFilter] = useState("ALL");
 
   // Browser activity state

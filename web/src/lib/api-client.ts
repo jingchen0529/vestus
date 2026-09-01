@@ -323,7 +323,7 @@ export const api = {
   } = {}): Promise<UserLogResponse> {
     const searchParams = new URLSearchParams();
     searchParams.append("page", String(params.page || 1));
-    searchParams.append("pageSize", String(params.pageSize || 100));
+    searchParams.append("pageSize", String(params.pageSize || 10));
     if (params.status) searchParams.append("status", params.status);
     if (params.action) searchParams.append("action", params.action);
 
