@@ -128,14 +128,23 @@ export function SessionDetailModal({
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
-  // 走 ref 读取加载函数：调用方传个内联箭头函数也不会把这个 effect 变成取数死循环。
+  // 走 ref 读取回调：调用方传个内联箭头函数也不会让 fetchDetail 换引用，
+  // 下面那个 effect 也就不会因为父组件重渲染而反复取数。
   const loadRef = useRef(onLoadDetail);
   loadRef.current = onLoadDetail;
+  const refreshListRef = useRef(onRefreshSessions);
+  refreshListRef.current = onRefreshSessions;
+
+  // 请求序号：只有最新那次请求可以写状态。换了一行或者关掉弹窗之后迟到的响应
+  // 会在这里被挡住，不会盖掉新会话的数据。
+  const requestSeq = useRef(0);
 
   const sessionId = session?.id ?? null;
 
-  const fetchDetail = useCallback(async (isManual = false) => {
-    if (sessionId === null) return;
+  const fetchDetail = useCallback(async (id: number, isManual = false) => {
+    const seq = ++requestSeq.current;
+    const isCurrent = () => requestSeq.current === seq;
+
     if (isManual) {
       setIsRefreshing(true);
     } else {
@@ -143,51 +152,44 @@ export function SessionDetailModal({
     }
     setError(null);
     try {
-      const loaded = await loadRef.current(sessionId);
+      const loaded = await loadRef.current(id);
+      if (!isCurrent()) return;
       setDetail(loaded);
       if (isManual) {
-        if (onRefreshSessions) {
-          onRefreshSessions();
-        }
+        refreshListRef.current?.();
         toast.success("会话明细与数据已刷新");
       }
     } catch (err: any) {
+      if (!isCurrent()) return;
       setError(err?.message || "读取地址明细失败");
       if (isManual) {
         toast.error("刷新失败", { description: err?.message || "请稍后重试" });
       }
     } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
+      // 已经被后一次请求接管的话，转圈状态归它管，这里不要抢着关掉。
+      if (isCurrent()) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
     }
-  }, [sessionId, onRefreshSessions]);
+  }, []);
 
   useEffect(() => {
     if (!open || sessionId === null) return;
-    let abandoned = false;
 
     // 换行之后先清掉上一行的详情，否则加载期间概要显示的还是上一个会话。
     setDetail(null);
     setPage(1);
-    setIsLoading(true);
-    setError(null);
-    loadRef
-      .current(sessionId)
-      .then((loaded) => {
-        // 弹窗已经关掉、或者换了一行，就把这次结果丢掉，别覆盖新的。
-        if (!abandoned) setDetail(loaded);
-      })
-      .catch((err: any) => {
-        if (!abandoned) setError(err?.message || "读取地址明细失败");
-      })
-      .finally(() => {
-        if (!abandoned) setIsLoading(false);
-      });
+    void fetchDetail(sessionId);
 
     return () => {
-      abandoned = true;
+      // 序号往前挪一格，在飞的那次请求回来时就认不出自己是最新的了；顺手收掉
+      // 转圈状态，否则被作废的请求没人替它关。
+      requestSeq.current += 1;
+      setIsLoading(false);
+      setIsRefreshing(false);
     };
-  }, [open, sessionId]);
+  }, [open, sessionId, fetchDetail]);
 
   // 摘要优先用详情里的数字：它和地址明细来自同一次查询，彼此对得上。
   const summary = detail ?? session;
@@ -224,7 +226,7 @@ export function SessionDetailModal({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => fetchDetail(true)}
+              onClick={() => void fetchDetail(session.id, true)}
               disabled={isLoading || isRefreshing}
               className="h-7 text-xs gap-1.5 px-2.5 text-muted-foreground hover:text-foreground border border-border/60 hover:bg-muted/60 rounded-md shadow-none font-normal"
               title="点击刷新会话明细并同步刷新外部列表"
