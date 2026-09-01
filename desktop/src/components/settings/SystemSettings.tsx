@@ -30,7 +30,9 @@ import { tauriBridge, DesktopConfigView, StatusView } from "@/services/tauriBrid
 import {
   versionService,
   VersionCheckResult,
-  DEFAULT_CURRENT_VERSION,
+  UNKNOWN_VERSION,
+  detectCurrentSystem,
+  filterCurrentSystemAssets,
 } from "@/services/versionService";
 
 interface SystemSettingsProps {
@@ -61,11 +63,17 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
   const [directIpLoading, setDirectIpLoading] = React.useState(false);
 
   // Version check state
-  const [currentVersion, setCurrentVersion] = React.useState(DEFAULT_CURRENT_VERSION);
+  const [currentVersion, setCurrentVersion] = React.useState(UNKNOWN_VERSION);
   const [versionInfo, setVersionInfo] = React.useState<VersionCheckResult | null>(null);
   const [checkingVersion, setCheckingVersion] = React.useState(false);
   const [versionError, setVersionError] = React.useState<string | null>(null);
-  const [showNotes, setShowNotes] = React.useState(false);
+
+  const systemInfo = React.useMemo(() => detectCurrentSystem(), []);
+
+  const displayedAssets = React.useMemo(() => {
+    if (!versionInfo?.assets) return [];
+    return filterCurrentSystemAssets(versionInfo.assets, systemInfo);
+  }, [versionInfo?.assets, systemInfo]);
 
   const fetchVersion = React.useCallback(async () => {
     setCheckingVersion(true);
@@ -374,10 +382,10 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
               <span className="text-muted-foreground text-[11px]">当前安装版本</span>
               <div className="mt-1.5 flex items-center gap-2">
                 <span className="font-mono font-bold text-foreground text-sm">
-                  v{currentVersion}
+                  {currentVersion ? `v${currentVersion}` : "未知"}
                 </span>
                 <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-medium">
-                  本机版本
+                  {currentVersion ? "本机版本" : "非桌面客户端"}
                 </Badge>
               </div>
             </div>
@@ -433,19 +441,18 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
                     发现新版本 v{versionInfo.latestVersion} 可用！
                   </p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
-                    最新版本已在 GitHub Release 发布，点击右侧链接可快速查看与下载更新包。
+                    最新版本已在 GitHub Release 发布，点击可快速查看。
                   </p>
                 </div>
               </div>
-              <a
-                href={versionInfo.htmlUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center gap-1.5 h-7 px-3 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 transition-colors shrink-0 shadow-xs"
+              <button
+                type="button"
+                onClick={() => tauriBridge.openExternalUrl(versionInfo.htmlUrl)}
+                className="inline-flex items-center justify-center gap-1.5 h-7 px-3 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 active:scale-[0.98] transition-colors shrink-0 shadow-xs cursor-pointer text-xs"
               >
                 <span>前往 GitHub 下载</span>
                 <ExternalLink className="w-3 h-3" />
-              </a>
+              </button>
             </div>
           )}
 
@@ -454,17 +461,20 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
             <div className="p-2.5 rounded-lg border border-border/60 bg-muted/30 flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 text-muted-foreground">
                 <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                <span>当前客户端已是 GitHub 发布的最新版本 (v{currentVersion})。</span>
+                <span>
+                  {currentVersion
+                    ? `当前客户端已是 GitHub 发布的最新版本 (v${currentVersion})。`
+                    : "读不到本机版本（未在桌面客户端中运行），未与 GitHub 最新发布比对。"}
+                </span>
               </div>
-              <a
-                href={versionInfo.htmlUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-primary hover:underline inline-flex items-center gap-1 text-[11px]"
+              <button
+                type="button"
+                onClick={() => tauriBridge.openExternalUrl(versionInfo.htmlUrl)}
+                className="text-primary hover:underline inline-flex items-center gap-1 text-[11px] cursor-pointer"
               >
                 <span>Release 记录</span>
                 <ExternalLink className="w-3 h-3" />
-              </a>
+              </button>
             </div>
           )}
 
@@ -486,30 +496,26 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
             </div>
           )}
 
-          {/* 安装包下载列表 (当有 assets 时展示) */}
-          {versionInfo && versionInfo.assets.length > 0 && (
+          {/* 安装包下载列表 (当有当前系统 assets 时展示) */}
+          {versionInfo && displayedAssets.length > 0 && (
             <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
-              <div className="flex items-center justify-between text-muted-foreground text-[11px] font-medium">
-                <div className="flex items-center gap-1.5">
-                  <Download className="w-3.5 h-3.5" />
-                  <span>各操作系统原生安装包（GitHub 下载源）：</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowNotes(!showNotes)}
-                  className="text-primary hover:underline text-[11px]"
-                >
-                  {showNotes ? "收起更新日志" : "查看更新日志"}
-                </button>
+              <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] font-medium">
+                <Download className="w-3.5 h-3.5 text-primary" />
+                <span>当前系统原生安装包（{systemInfo.label} · GitHub 下载源）：</span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {versionInfo.assets.map((asset) => (
-                  <a
+              <div
+                className={
+                  displayedAssets.length === 1
+                    ? "grid grid-cols-1 gap-1.5"
+                    : "grid grid-cols-1 sm:grid-cols-2 gap-1.5"
+                }
+              >
+                {displayedAssets.map((asset) => (
+                  <button
+                    type="button"
                     key={asset.name}
-                    href={asset.downloadUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-between p-2 rounded-md border border-border/60 bg-card hover:bg-muted/60 hover:border-primary/40 transition-colors text-xs group"
+                    onClick={() => tauriBridge.openExternalUrl(asset.downloadUrl)}
+                    className="flex items-center justify-between p-2.5 rounded-md border border-border/60 bg-card hover:bg-muted/60 hover:border-primary/40 active:scale-[0.99] transition-all text-xs group cursor-pointer text-left w-full"
                   >
                     <div className="flex items-center gap-2 truncate mr-2">
                       <FileCode className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary shrink-0" />
@@ -521,18 +527,9 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
                       {asset.size > 0 && <span>{formatFileSize(asset.size)}</span>}
                       <Download className="w-3 h-3 group-hover:text-primary" />
                     </div>
-                  </a>
+                  </button>
                 ))}
               </div>
-
-              {showNotes && versionInfo.body && (
-                <div className="mt-2.5 pt-2.5 border-t border-border/60">
-                  <p className="text-[11px] font-semibold text-foreground mb-1">更新说明：</p>
-                  <pre className="p-2 rounded bg-muted/60 text-[11px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed max-h-48 overflow-y-auto">
-                    {versionInfo.body}
-                  </pre>
-                </div>
-              )}
             </div>
           )}
         </CardContent>

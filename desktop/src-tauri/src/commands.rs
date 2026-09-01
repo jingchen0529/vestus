@@ -663,6 +663,56 @@ pub async fn get_direct_ip(auth: tauri::State<'_, DesktopAuthState>) -> CmdResul
         .map_err(|error| CommandError::new(format!("获取本机公网 IP 失败：{error}"), error.code()))
 }
 
+/// 在操作系统默认浏览器中打开指定的外部 HTTP/HTTPS 链接（如 GitHub Release 与安装包下载）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn open_external_url(url: String) -> CmdResult<()> {
+    let parsed =
+        Url::parse(&url).map_err(|_| CommandError::new("无效的网址格式", "invalid_url"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(CommandError::new(
+            "仅支持打开 HTTP 或 HTTPS 链接",
+            "invalid_scheme",
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| {
+                CommandError::new(format!("打开系统默认浏览器失败：{e}"), "open_failed")
+            })?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| {
+                CommandError::new(format!("打开系统默认浏览器失败：{e}"), "open_failed")
+            })?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| {
+                CommandError::new(format!("打开系统默认浏览器失败：{e}"), "open_failed")
+            })?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        return Err(CommandError::new(
+            "当前操作系统不支持自动打开外部浏览器",
+            "unsupported_os",
+        ));
+    }
+
+    Ok(())
+}
+
 fn emit_status<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     let _ = app.emit("status-changed", state.snapshot());
 }

@@ -68,16 +68,22 @@ export const tauriBridge = {
     return await invokeDesktop<StatusView>("get_status");
   },
 
+  /**
+   * 本机安装的版本号，来自打包时写进 tauri.conf.json 的那个值。
+   *
+   * 只有在 Tauri 窗口里才有；浏览器里跑的开发会话没有版本可言，返回空串让
+   * 调用方显示「未知」，而不是替它编一个会过期的版本号。
+   */
   async getAppVersion(): Promise<string> {
-    if (isTauri()) {
-      try {
-        const { getVersion } = await import("@tauri-apps/api/app");
-        return await getVersion();
-      } catch {
-        return "0.1.8";
-      }
+    if (!isTauri()) {
+      return "";
     }
-    return "0.1.8";
+    try {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      return await getVersion();
+    } catch {
+      return "";
+    }
   },
 
   async onStatusChange(callback: (status: StatusView) => void): Promise<() => void> {
@@ -88,5 +94,22 @@ export const tauriBridge = {
     return await listen<StatusView>("status-changed", (event) => {
       callback(event.payload);
     });
+  },
+
+  async openExternalUrl(url: string): Promise<void> {
+    if (!url) return;
+    if (isTauri()) {
+      try {
+        await invokeDesktop<void>("open_external_url", { url });
+        return;
+      } catch (err) {
+        console.warn("invokeDesktop open_external_url failed, falling back to window.open", err);
+      }
+    }
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      // ignore
+    }
   },
 };
