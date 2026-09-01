@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   Dialog,
   DialogContent,
@@ -21,8 +21,9 @@ import {
   BrowserSessionDetail,
   BrowserSessionItem,
 } from "@/types/browser-activity";
-import { formatDate, formatDuration } from "@/lib/utils";
-import { Activity, AlertTriangle, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { formatDate, formatDuration, cn } from "@/lib/utils";
+import { Activity, AlertTriangle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 
 interface SessionDetailModalProps {
   open: boolean;
@@ -30,6 +31,7 @@ interface SessionDetailModalProps {
   /** 列表里那一行。地址明细要另外拉，这里先用它把摘要画出来。 */
   session: BrowserSessionItem | null;
   onLoadDetail: (id: number) => Promise<BrowserSessionDetail>;
+  onRefreshSessions?: () => void;
 }
 
 const PAGE_SIZE = 10;
@@ -118,9 +120,11 @@ export function SessionDetailModal({
   onOpenChange,
   session,
   onLoadDetail,
+  onRefreshSessions,
 }: SessionDetailModalProps) {
   const [detail, setDetail] = useState<BrowserSessionDetail | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
@@ -129,6 +133,34 @@ export function SessionDetailModal({
   loadRef.current = onLoadDetail;
 
   const sessionId = session?.id ?? null;
+
+  const fetchDetail = useCallback(async (isManual = false) => {
+    if (sessionId === null) return;
+    if (isManual) {
+      setIsRefreshing(true);
+    } else {
+      setIsLoading(true);
+    }
+    setError(null);
+    try {
+      const loaded = await loadRef.current(sessionId);
+      setDetail(loaded);
+      if (isManual) {
+        if (onRefreshSessions) {
+          onRefreshSessions();
+        }
+        toast.success("会话明细与数据已刷新");
+      }
+    } catch (err: any) {
+      setError(err?.message || "读取地址明细失败");
+      if (isManual) {
+        toast.error("刷新失败", { description: err?.message || "请稍后重试" });
+      }
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  }, [sessionId, onRefreshSessions]);
 
   useEffect(() => {
     if (!open || sessionId === null) return;
@@ -171,7 +203,7 @@ export function SessionDetailModal({
     });
   }, [rawPages]);
 
-  // 分页：一页固定 5 条
+  // 分页：一页固定 10 条
   const totalPages = Math.ceil(sortedPages.length / PAGE_SIZE) || 1;
   const paginatedPages = useMemo(() => {
     const start = (page - 1) * PAGE_SIZE;
@@ -183,12 +215,25 @@ export function SessionDetailModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-5xl md:max-w-6xl w-[94vw] h-[85vh] max-h-[85vh] flex flex-col p-6 overflow-hidden">
-        <DialogHeader className="shrink-0 mb-1">
-          <div className="flex items-center gap-2 mb-1">
-            <Activity className="h-5 w-5 text-primary" />
-            <DialogTitle>浏览器会话详情 #{session.id}</DialogTitle>
+        <DialogHeader className="shrink-0 mb-2">
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-primary" />
+              <DialogTitle className="text-base font-semibold">浏览器会话详情 #{session.id}</DialogTitle>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => fetchDetail(true)}
+              disabled={isLoading || isRefreshing}
+              className="h-7 text-xs gap-1.5 px-2.5 text-muted-foreground hover:text-foreground border border-border/60 hover:bg-muted/60 rounded-md shadow-none font-normal"
+              title="点击刷新会话明细并同步刷新外部列表"
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", (isLoading || isRefreshing) && "animate-spin text-primary")} />
+              <span>{isRefreshing ? "刷新中…" : "刷新"}</span>
+            </Button>
           </div>
-          <DialogDescription className="text-xs">
+          <DialogDescription className="text-xs text-muted-foreground">
             桌面端上报的会话汇总与访问地址明细，地址只保留路径、不含查询参数
           </DialogDescription>
         </DialogHeader>
@@ -196,11 +241,20 @@ export function SessionDetailModal({
         <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1 text-xs">
           {/* 概要 */}
           <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {summary.directMode ? (
-                <Badge variant="warning" className="text-xs">直连模式</Badge>
+                <Badge variant="warning" className="text-xs">直连</Badge>
               ) : (
-                <Badge variant="success" className="text-xs">走上游代理</Badge>
+                <Badge variant="success" className="text-xs">代理</Badge>
+              )}
+              {summary.clientVersion ? (
+                <Badge variant="outline" className="text-xs font-mono text-primary bg-primary/5 border-primary/30">
+                  客户端 v{summary.clientVersion.replace(/^desktop-/, "").replace(/^v/, "")}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-xs font-mono text-muted-foreground border-border/70" title="该历史会话产生于未上报版本的客户端">
+                  客户端 v0.1.8 (历史版本)
+                </Badge>
               )}
               <span className="font-semibold text-foreground text-sm">
                 {summary.username || `#${summary.userId}`}
@@ -214,6 +268,19 @@ export function SessionDetailModal({
 
           {/* 关键字段 */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 rounded-lg border">
+            <div>
+              <span className="text-muted-foreground block mb-0.5">客户端版本</span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono font-semibold text-foreground">
+                  {summary.clientVersion ? `v${summary.clientVersion.replace(/^desktop-/, "").replace(/^v/, "")}` : "v0.1.8"}
+                </span>
+                {!summary.clientVersion && (
+                  <span className="text-[10px] text-muted-foreground font-normal">
+                    (旧版默认)
+                  </span>
+                )}
+              </div>
+            </div>
             <div>
               <span className="text-muted-foreground block mb-0.5">访问地址数</span>
               <span className="font-semibold text-foreground">{summary.pageCount}</span>
@@ -246,10 +313,10 @@ export function SessionDetailModal({
               <span className="text-muted-foreground block mb-0.5">浏览器实例</span>
               <span className="font-mono text-foreground">#{summary.browserId}</span>
             </div>
-            <div>
-              <span className="text-muted-foreground block mb-0.5">会话标识</span>
+            <div className="col-span-2 sm:col-span-4">
+              <span className="text-muted-foreground block mb-0.5">会话唯一标识</span>
               <span
-                className="font-mono text-foreground text-[11px] break-all block select-all"
+                className="font-mono text-foreground text-[11px] break-all block select-all bg-muted/40 p-1.5 rounded border border-border/50"
                 title={summary.sessionKey}
               >
                 {summary.sessionKey}

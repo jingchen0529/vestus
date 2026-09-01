@@ -24,6 +24,7 @@ import {
   FileSpreadsheet,
   ChevronLeft,
   ChevronRight,
+  RotateCcw,
 } from "lucide-react";
 import { exportToJsonFile, exportToCsvFile } from "@/lib/export-utils";
 import { toast } from "sonner";
@@ -68,6 +69,24 @@ export function ActivityView({
 
   const patchFilters = (patch: Partial<BrowserSessionFilters>) => {
     onFiltersChange({ ...filters, ...patch });
+  };
+
+  const hasActiveFilters =
+    filters.userId !== "ALL" ||
+    filters.platformId !== "ALL" ||
+    filters.connection !== "ALL" ||
+    Boolean(filters.startAt) ||
+    Boolean(filters.endAt);
+
+  const handleResetFilters = () => {
+    onFiltersChange({
+      userId: "ALL",
+      platformId: "ALL",
+      connection: "ALL",
+      startAt: "",
+      endAt: "",
+    });
+    toast.success("已重置所有筛选条件");
   };
 
   const handleExportJson = () => {
@@ -206,13 +225,13 @@ export function ActivityView({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="ALL">全部连接方式</SelectItem>
-                    <SelectItem value="PROXY">走上游代理</SelectItem>
+                    <SelectItem value="PROXY">代理</SelectItem>
                     <SelectItem value="DIRECT">直连</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              <div className="w-32">
+              <div className="w-[140px]">
                 <DatePicker
                   value={filters.startAt}
                   max={filters.endAt || undefined}
@@ -222,7 +241,7 @@ export function ActivityView({
                 />
               </div>
 
-              <div className="w-32">
+              <div className="w-[140px]">
                 <DatePicker
                   value={filters.endAt}
                   min={filters.startAt || undefined}
@@ -231,6 +250,18 @@ export function ActivityView({
                   title="按会话开始时间筛选：结束日期（含当天）"
                 />
               </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleResetFilters}
+                disabled={!hasActiveFilters || isRefreshing}
+                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-muted-foreground hover:text-foreground shadow-none font-normal transition-colors shrink-0 disabled:opacity-40"
+                title="清空所有筛选条件"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>重置</span>
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -279,6 +310,7 @@ export function ActivityView({
         onOpenChange={setDetailOpen}
         session={selectedSession}
         onLoadDetail={onLoadDetail}
+        onRefreshSessions={onRefresh}
       />
     </div>
   );

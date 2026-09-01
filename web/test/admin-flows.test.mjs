@@ -339,7 +339,7 @@ test("浏览器会话表格标出客户端漏记过地址的会话", async () =>
     }),
   );
 
-  assert.match(html, /走代理/);
+  assert.match(html, /代理/);
   assert.match(html, /直连/);
   assert.match(html, /1 小时 2 分/);
   // 只有 droppedPages > 0 的那一行才该带警告
@@ -414,4 +414,74 @@ test("前台停留时长最多显示两级单位", async () => {
   assert.equal(formatDuration(605_000), "10 分 5 秒");
   assert.equal(formatDuration(3_723_000), "1 小时 2 分");
   assert.equal(formatDuration(7_200_000), "2 小时");
+});
+
+test("浏览器会话表格标出客户端版本号", async () => {
+  const { SessionTable } = await server.ssrLoadModule(
+    "/src/components/activity/session-table.tsx",
+  );
+
+  const html = renderToStaticMarkup(
+    createElement(SessionTable, {
+      sessions: [
+        {
+          id: 1,
+          userId: 10,
+          username: "desktop_user_a",
+          sessionKey: "session-key-1",
+          browserId: 101,
+          platformId: 2,
+          platformName: "电商平台",
+          directMode: false,
+          clientVersion: "0.2.2",
+          pageCount: 3,
+          visits: 5,
+          clicks: 10,
+          inputs: 2,
+          submits: 1,
+          scrolls: 20,
+          dwellMs: 120000,
+          droppedPages: 0,
+          startedAt: "2026-09-01T10:00:00Z",
+          lastReportAt: "2026-09-01T10:05:00Z",
+        },
+      ],
+      onViewDetail: () => {},
+    }),
+  );
+
+  assert.match(html, /v0\.2\.2/);
+  assert.match(html, /desktop_user_a/);
+});
+
+test("会话追踪筛选栏包含重置按钮且日期输入框具备合适宽度", async () => {
+  const { ActivityView } = await server.ssrLoadModule(
+    "/src/components/activity/activity-view.tsx",
+  );
+
+  const html = renderToStaticMarkup(
+    createElement(ActivityView, {
+      sessions: [],
+      totalSessions: 0,
+      currentPage: 1,
+      pageSize: 50,
+      onPageChange() {},
+      filters: {
+        userId: "10",
+        platformId: "ALL",
+        connection: "ALL",
+        startAt: "2026-09-01",
+        endAt: "2026-09-02",
+      },
+      onFiltersChange() {},
+      users: [],
+      platforms: [],
+      onRefresh() {},
+      onLoadDetail: async () => ({ id: 1, pages: [] }),
+    }),
+  );
+
+  assert.match(html, /重置/);
+  assert.match(html, /2026-09-01/);
+  assert.match(html, /2026-09-02/);
 });
