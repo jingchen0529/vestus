@@ -5,8 +5,17 @@ import { UserLogItem } from "@/types/log";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
-import { RefreshCw, FileJson, FileSpreadsheet, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  RefreshCw,
+  FileJson,
+  FileSpreadsheet,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+} from "lucide-react";
 import { exportToJsonFile, exportToCsvFile } from "@/lib/export-utils";
+import { getPageItems } from "@/lib/pagination";
 import { toast } from "sonner";
 
 interface LogsViewProps {
@@ -142,32 +151,84 @@ export function LogsView({
       />
 
       {/* Pagination Footer */}
-      <div className="flex items-center justify-between px-2 text-xs text-muted-foreground">
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-2 text-xs text-muted-foreground">
         <div>
-          共 <strong className="text-foreground">{totalLogs}</strong> 条审计记录 · 当前第 {currentPage} / {totalPages} 页
+          第 <strong className="text-foreground">{currentPage}</strong> 页，共 <strong className="text-foreground">{totalPages}</strong> 页 · 共 <strong className="text-foreground">{totalLogs}</strong> 条记录
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onPageChange(1)}
+            disabled={currentPage <= 1 || isRefreshing}
+            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
+            title="第一页"
+          >
+            <ChevronsLeft className="h-3.5 w-3.5" />
+          </Button>
+
           <Button
             variant="outline"
             size="sm"
             onClick={() => onPageChange(currentPage - 1)}
             disabled={currentPage <= 1 || isRefreshing}
-            className="h-8 gap-1 text-xs px-2.5"
+            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
+            title="上一页"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
-            <span>上一页</span>
           </Button>
+
+          {getPageItems(currentPage, totalPages).map((item, idx) => {
+            if (typeof item === "string") {
+              return (
+                <span
+                  key={`ellipsis-${idx}`}
+                  className="px-1 text-xs text-muted-foreground/80 select-none flex items-center justify-center min-w-[1.25rem]"
+                >
+                  ...
+                </span>
+              );
+            }
+            const isCurrent = item === currentPage;
+            return (
+              <Button
+                key={item}
+                variant={isCurrent ? "default" : "outline"}
+                size="sm"
+                onClick={() => onPageChange(item)}
+                disabled={isRefreshing}
+                className={`h-8 min-w-[2rem] px-2 text-xs rounded-md ${
+                  isCurrent
+                    ? "bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 font-semibold shadow-xs"
+                    : "border-border/60 bg-background/80 hover:bg-muted text-foreground font-normal"
+                }`}
+              >
+                {item}
+              </Button>
+            );
+          })}
 
           <Button
             variant="outline"
             size="sm"
             onClick={() => onPageChange(currentPage + 1)}
             disabled={currentPage >= totalPages || isRefreshing}
-            className="h-8 gap-1 text-xs px-2.5"
+            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
+            title="下一页"
           >
-            <span>下一页</span>
             <ChevronRight className="h-3.5 w-3.5" />
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onPageChange(totalPages)}
+            disabled={currentPage >= totalPages || isRefreshing}
+            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
+            title="最后一页"
+          >
+            <ChevronsRight className="h-3.5 w-3.5" />
           </Button>
         </div>
       </div>

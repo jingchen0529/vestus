@@ -485,3 +485,54 @@ test("会话追踪筛选栏包含重置按钮且日期输入框具备合适宽�
   assert.match(html, /2026-09-01/);
   assert.match(html, /2026-09-02/);
 });
+
+test("页码条只留当前页附近三页，两端补首末页", async () => {
+  const { getPageItems } = await server.ssrLoadModule("/src/lib/pagination.ts");
+
+  // 五页以内全列出来，没有省略号。
+  assert.deepEqual(getPageItems(1, 3), [1, 2, 3]);
+  assert.deepEqual(getPageItems(3, 5), [1, 2, 3, 4, 5]);
+
+  assert.deepEqual(getPageItems(1, 9), [1, 2, 3, "ellipsis-end", 9]);
+  assert.deepEqual(getPageItems(5, 9), [1, "ellipsis-start", 4, 5, 6, "ellipsis-end", 9]);
+  assert.deepEqual(getPageItems(9, 9), [1, "ellipsis-start", 7, 8, 9]);
+
+  // 挨着首页/末页时不插省略号：那个位置放「...」比写出被它挡住的那一页还宽。
+  assert.deepEqual(getPageItems(3, 6), [1, 2, 3, 4, "ellipsis-end", 6]);
+  assert.deepEqual(getPageItems(4, 6), [1, "ellipsis-start", 3, 4, 5, 6]);
+});
+
+test("会话追踪与审计日志的页码条渲染出可点的页码按钮", async () => {
+  const { ActivityView } = await server.ssrLoadModule(
+    "/src/components/activity/activity-view.tsx",
+  );
+
+  const html = renderToStaticMarkup(
+    createElement(ActivityView, {
+      sessions: [],
+      totalSessions: 96,
+      currentPage: 5,
+      pageSize: 10,
+      onPageChange() {},
+      filters: {
+        userId: "ALL",
+        platformId: "ALL",
+        connection: "ALL",
+        startAt: "",
+        endAt: "",
+      },
+      onFiltersChange() {},
+      users: [],
+      platforms: [],
+      onRefresh() {},
+      onLoadDetail: async () => ({ id: 1, pages: [] }),
+    }),
+  );
+
+  assert.match(html, /第一页/);
+  assert.match(html, /最后一页/);
+  assert.match(html, />4</);
+  assert.match(html, />6</);
+  assert.match(html, /\.\.\./);
+  assert.match(html, /共 <strong[^>]*>96<\/strong> 条记录/);
+});
