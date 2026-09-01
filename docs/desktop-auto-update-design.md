@@ -340,6 +340,15 @@ app_handle.state::<ActivityCollector>().shutdown();
 一次上报）。在 Windows 上还有第二个理由：Chromium 进程占着 `resources/chromium/` 里的文件，
 NSIS 安装器会因文件占用直接失败。
 
+macOS 上同一个原因的后果更隐蔽，因为它不报错。覆盖安装会成功，但内核记下的代码签名此后与
+`resources/chromium/` 里的新内容对不上，那个路径上的 Chromium **从此每次启动都被直接
+SIGKILL**（崩溃报告里是 `SIGKILL (Code Signature Invalid)`，且重启机器不解决——文件内容、
+签名、bundle 结构全都验得过，把同样的字节复制到另一个路径就能跑）。恢复只能靠删掉目录重铺，
+而用户手上没有 `prepare-chromium.mjs`，只能重装。
+
+所以这条约束在 macOS 上不止约束应用内更新：**手工拖拽覆盖安装 dmg 也会踩**，而那条路径根本
+不经过上面的 `shutdown()`。发布 macOS 更新时必须在提示里写明「安装前请先关掉所有浏览器窗口」。
+
 ### 8.3 前端交互
 
 `desktop/src/` 里新增一个更新卡片，触发时机分两处：
