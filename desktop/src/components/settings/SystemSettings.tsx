@@ -5,6 +5,13 @@ import {
   Check,
   SunMoon,
   Palette,
+  Sparkles,
+  ExternalLink,
+  Download,
+  AlertCircle,
+  CheckCircle2,
+  FileCode,
+  Layers,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -20,6 +27,11 @@ import {
 } from "@/components/settings/proxyIpDisplay";
 import { UserAccount } from "@/services/authService";
 import { tauriBridge, DesktopConfigView, StatusView } from "@/services/tauriBridge";
+import {
+  versionService,
+  VersionCheckResult,
+  DEFAULT_CURRENT_VERSION,
+} from "@/services/versionService";
 
 interface SystemSettingsProps {
   productName: string;
@@ -47,6 +59,34 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
   const { accentColor, setAccentColor } = useTheme();
   const [directIp, setDirectIp] = React.useState<string | null>(null);
   const [directIpLoading, setDirectIpLoading] = React.useState(false);
+
+  // Version check state
+  const [currentVersion, setCurrentVersion] = React.useState(DEFAULT_CURRENT_VERSION);
+  const [versionInfo, setVersionInfo] = React.useState<VersionCheckResult | null>(null);
+  const [checkingVersion, setCheckingVersion] = React.useState(false);
+  const [versionError, setVersionError] = React.useState<string | null>(null);
+  const [showNotes, setShowNotes] = React.useState(false);
+
+  const fetchVersion = React.useCallback(async () => {
+    setCheckingVersion(true);
+    setVersionError(null);
+    try {
+      const cur = await versionService.getCurrentVersion();
+      setCurrentVersion(cur);
+      const res = await versionService.checkGithubRelease();
+      setVersionInfo(res);
+      setCurrentVersion(res.currentVersion);
+    } catch (err: any) {
+      setVersionError(err?.message || "检查更新失败");
+    } finally {
+      setCheckingVersion(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    versionService.getCurrentVersion().then(setCurrentVersion);
+    fetchVersion();
+  }, [fetchVersion]);
 
   React.useEffect(() => {
     if (!proxyEnabled) {
@@ -121,6 +161,12 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
   };
 
   const directIpFailed = !directIpLoading && directIp === "获取失败";
+
+  const formatFileSize = (bytes: number) => {
+    if (!bytes) return "";
+    const mb = bytes / (1024 * 1024);
+    return `${mb.toFixed(1)} MB`;
+  };
 
   return (
     <section className="mx-auto w-full max-w-3xl space-y-4">
@@ -298,7 +344,199 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
         </CardContent>
       </Card>
 
+      {/* 3. 软件版本与在线更新 */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-primary" />
+              <CardTitle className="text-sm">软件版本与更新检测</CardTitle>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1.5 px-2.5"
+              onClick={fetchVersion}
+              disabled={checkingVersion}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${checkingVersion ? "animate-spin" : ""}`} />
+              <span>{checkingVersion ? "检测中…" : "检查 GitHub 更新"}</span>
+            </Button>
+          </div>
+          <CardDescription className="text-xs">
+            桌面客户端当前安装版本信息及 GitHub Release 远程发布检测
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-0 text-xs">
+          {/* 版本概览网格 */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="p-3 rounded-lg bg-muted/40 border border-border/60 flex flex-col justify-between">
+              <span className="text-muted-foreground text-[11px]">当前安装版本</span>
+              <div className="mt-1.5 flex items-center gap-2">
+                <span className="font-mono font-bold text-foreground text-sm">
+                  v{currentVersion}
+                </span>
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-medium">
+                  本机版本
+                </Badge>
+              </div>
+            </div>
 
+            <div className="p-3 rounded-lg bg-muted/40 border border-border/60 flex flex-col justify-between">
+              <span className="text-muted-foreground text-[11px]">GitHub 最新发布</span>
+              <div className="mt-1.5 flex items-center gap-2">
+                {checkingVersion ? (
+                  <span className="text-muted-foreground text-xs">正在查询 GitHub…</span>
+                ) : versionInfo ? (
+                  <>
+                    <span className="font-mono font-bold text-foreground text-sm">
+                      v{versionInfo.latestVersion}
+                    </span>
+                    {versionInfo.hasUpdate ? (
+                      <Badge variant="success" pulse className="text-[10px] px-1.5 py-0 font-semibold gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        <span>可升级</span>
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-emerald-600 border-emerald-500/30">
+                        最新
+                      </Badge>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-muted-foreground text-xs">
+                    {versionError ? "检测失败" : "暂未检测"}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-muted/40 border border-border/60 flex flex-col justify-between">
+              <span className="text-muted-foreground text-[11px]">版本发布时间</span>
+              <div className="mt-1.5">
+                <span className="font-mono text-muted-foreground text-xs">
+                  {versionInfo?.publishedAt
+                    ? new Date(versionInfo.publishedAt).toLocaleDateString()
+                    : "—"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* 新版本提醒 Banner */}
+          {versionInfo?.hasUpdate && (
+            <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                <div>
+                  <p className="font-semibold text-foreground">
+                    发现新版本 v{versionInfo.latestVersion} 可用！
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    最新版本已在 GitHub Release 发布，点击右侧链接可快速查看与下载更新包。
+                  </p>
+                </div>
+              </div>
+              <a
+                href={versionInfo.htmlUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-1.5 h-7 px-3 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 transition-colors shrink-0 shadow-xs"
+              >
+                <span>前往 GitHub 下载</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
+
+          {/* 已是最新版本提示 */}
+          {!checkingVersion && versionInfo && !versionInfo.hasUpdate && (
+            <div className="p-2.5 rounded-lg border border-border/60 bg-muted/30 flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                <span>当前客户端已是 GitHub 发布的最新版本 (v{currentVersion})。</span>
+              </div>
+              <a
+                href={versionInfo.htmlUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline inline-flex items-center gap-1 text-[11px]"
+              >
+                <span>Release 记录</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
+
+          {/* 出错提示 */}
+          {versionError && (
+            <div className="p-2.5 rounded-lg border border-destructive/20 bg-destructive/10 text-destructive flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{versionError}</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={fetchVersion}
+                className="h-6 text-xs px-2 text-destructive hover:bg-destructive/10"
+              >
+                重试
+              </Button>
+            </div>
+          )}
+
+          {/* 安装包下载列表 (当有 assets 时展示) */}
+          {versionInfo && versionInfo.assets.length > 0 && (
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+              <div className="flex items-center justify-between text-muted-foreground text-[11px] font-medium">
+                <div className="flex items-center gap-1.5">
+                  <Download className="w-3.5 h-3.5" />
+                  <span>各操作系统原生安装包（GitHub 下载源）：</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowNotes(!showNotes)}
+                  className="text-primary hover:underline text-[11px]"
+                >
+                  {showNotes ? "收起更新日志" : "查看更新日志"}
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {versionInfo.assets.map((asset) => (
+                  <a
+                    key={asset.name}
+                    href={asset.downloadUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between p-2 rounded-md border border-border/60 bg-card hover:bg-muted/60 hover:border-primary/40 transition-colors text-xs group"
+                  >
+                    <div className="flex items-center gap-2 truncate mr-2">
+                      <FileCode className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary shrink-0" />
+                      <span className="font-medium text-foreground truncate" title={asset.name}>
+                        {asset.platform}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 text-muted-foreground text-[11px]">
+                      {asset.size > 0 && <span>{formatFileSize(asset.size)}</span>}
+                      <Download className="w-3 h-3 group-hover:text-primary" />
+                    </div>
+                  </a>
+                ))}
+              </div>
+
+              {showNotes && versionInfo.body && (
+                <div className="mt-2.5 pt-2.5 border-t border-border/60">
+                  <p className="text-[11px] font-semibold text-foreground mb-1">更新说明：</p>
+                  <pre className="p-2 rounded bg-muted/60 text-[11px] font-mono text-muted-foreground whitespace-pre-wrap break-all leading-relaxed max-h-48 overflow-y-auto">
+                    {versionInfo.body}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </section>
   );
 };

@@ -68,6 +68,18 @@ export const tauriBridge = {
     return await invokeDesktop<StatusView>("get_status");
   },
 
+  async getAppVersion(): Promise<string> {
+    if (isTauri()) {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        return await getVersion();
+      } catch {
+        return "0.1.8";
+      }
+    }
+    return "0.1.8";
+  },
+
   async onStatusChange(callback: (status: StatusView) => void): Promise<() => void> {
     if (!isTauri()) {
       throw new Error("该功能仅可在 Vestus 桌面客户端中使用");

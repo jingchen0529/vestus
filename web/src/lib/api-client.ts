@@ -375,6 +375,11 @@ export const api = {
     });
   },
 
+  async getGithubLatestRelease(repo?: string): Promise<GithubReleaseInfo> {
+    const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+    return request<GithubReleaseInfo>(`/api/admin/settings/github-release${query}`);
+  },
+
   async uploadFile(file: File): Promise<{
     url: string;
     path: string;
@@ -397,4 +402,24 @@ export interface SystemSettingsData {
   adminTitle?: string;
   adminLogoUrl?: string;
   adminThemeColor?: string;
+  desktopVersion?: string;
+  githubRepo?: string;
+}
+
+export interface GithubReleaseAsset {
+  name: string;
+  downloadUrl: string;
+  size: number;
+  platform: string;
+}
+
+export interface GithubReleaseInfo {
+  repo: string;
+  tagName: string;
+  version: string;
+  name: string;
+  publishedAt: string;
+  htmlUrl: string;
+  body: string;
+  assets: GithubReleaseAsset[];
 }

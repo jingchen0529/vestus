@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test scripts/*.test.mjs src/theme/*.test.mjs src/components/settings/*.test.mjs",
+    "test": "node --test scripts/*.test.mjs src/theme/*.test.mjs src/components/settings/*.test.mjs src/services/*.test.mjs",
     "build": "tsc && vite build",
     "tauri": "node scripts/tauri-with-api.mjs",
     "desktop:dev": "node scripts/tauri-with-api.mjs dev",

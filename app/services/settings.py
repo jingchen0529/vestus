@@ -21,12 +21,16 @@ from app.services.uploads import validated_image_reference
 
 DEFAULT_ADMIN_TITLE = "Vestus Admin"
 DEFAULT_ADMIN_THEME_COLOR = "blue"
+DEFAULT_DESKTOP_VERSION = "0.2.2"
+DEFAULT_GITHUB_REPO = "jingchen0529/vestus"
 
 PRODUCT_NAME_KEY = "product_name"
 PRODUCT_LOGO_KEY = "product_logo"
 ADMIN_TITLE_KEY = "admin_title"
 ADMIN_LOGO_KEY = "admin_logo"
 ADMIN_THEME_COLOR_KEY = "admin_theme_color"
+DESKTOP_VERSION_KEY = "desktop_version"
+GITHUB_REPO_KEY = "github_repo"
 
 
 def _read_branding(session: Session) -> Dict[str, str]:
@@ -45,6 +49,12 @@ def _read_branding(session: Session) -> Dict[str, str]:
     admin_theme_color = settings_repo.get_value(
         session, ADMIN_THEME_COLOR_KEY, DEFAULT_ADMIN_THEME_COLOR
     )
+    desktop_version = settings_repo.get_value(
+        session, DESKTOP_VERSION_KEY, DEFAULT_DESKTOP_VERSION
+    )
+    github_repo = settings_repo.get_value(
+        session, GITHUB_REPO_KEY, DEFAULT_GITHUB_REPO
+    )
     uploaded_files = uploads_repo.map_by_paths(session, (logo, admin_logo))
     return {
         "productName": name if name else env_product,
@@ -52,6 +62,8 @@ def _read_branding(session: Session) -> Dict[str, str]:
         "adminTitle": admin_title if admin_title else DEFAULT_ADMIN_TITLE,
         "adminLogoUrl": safe_image_reference(admin_logo, uploaded_files.get(admin_logo)),
         "adminThemeColor": admin_theme_color if admin_theme_color else DEFAULT_ADMIN_THEME_COLOR,
+        "desktopVersion": desktop_version if desktop_version else DEFAULT_DESKTOP_VERSION,
+        "githubRepo": github_repo if github_repo else DEFAULT_GITHUB_REPO,
     }
 
 
@@ -72,6 +84,8 @@ def set_branding(
     admin_title: Optional[str] = None,
     admin_logo_url: Optional[str] = None,
     admin_theme_color: Optional[str] = None,
+    desktop_version: Optional[str] = None,
+    github_repo: Optional[str] = None,
     *,
     audit: Optional[AuditContext] = None,
 ) -> Dict[str, str]:
@@ -101,6 +115,10 @@ def set_branding(
             settings_repo.upsert(session, ADMIN_LOGO_KEY, normalized_admin_logo or "")
         if admin_theme_color is not None:
             settings_repo.upsert(session, ADMIN_THEME_COLOR_KEY, admin_theme_color.strip())
+        if desktop_version is not None:
+            settings_repo.upsert(session, DESKTOP_VERSION_KEY, desktop_version.strip())
+        if github_repo is not None:
+            settings_repo.upsert(session, GITHUB_REPO_KEY, github_repo.strip())
 
         # ``autoflush`` is off, so the inserts must reach the database before
         # the payload is read back through a SELECT.
@@ -111,7 +129,7 @@ def set_branding(
             audit,
             "SYSTEM_SETTINGS_UPDATE",
             f"更新系统配置：桌面端产品名称为 {branding['productName']}，"
-            f"管理端名称为 {branding['adminTitle']}",
+            f"管理端名称为 {branding['adminTitle']}，版本为 {branding.get('desktopVersion', '')}",
             target_type="system",
             target_name="branding",
         )

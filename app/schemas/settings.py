@@ -19,6 +19,8 @@ class SettingsUpdate(BaseModel):
         alias="adminThemeColor",
         pattern="^(blue|indigo|purple|emerald|amber|rose|cyan)$",
     )
+    desktop_version: Optional[str] = Field(default=None, alias="desktopVersion")
+    github_repo: Optional[str] = Field(default=None, alias="githubRepo")
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     @field_validator("logo_url", "admin_logo_url")
