@@ -5,6 +5,11 @@
     "targets": ["nsis"],
     "resources": {
       "resources/chromium/": "chromium/"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
     }
   }
 }

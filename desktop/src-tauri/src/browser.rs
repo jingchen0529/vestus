@@ -31,6 +31,23 @@
 //! 帧上（表现为内容区灰屏、刷新才恢复）。读不到显示器几何时用 [`FALLBACK_WINDOW`]
 //! 兜底，而不是把这个开关加回来——恰恰是读不到显示器的那批机器（远程桌面、虚拟
 //! 显卡）最容易踩上面那个竞态。
+//!
+//! # Windows：随包 Chromium 的沙箱权限
+//!
+//! Windows 上启动前必须确认 chromium 目录对沙箱 SID 可读可执行，见
+//! [`ensure_sandbox_access`]。少了这个权限的表现极具误导性：浏览器窗口正常打开，
+//! 进程也活着，但网络服务（跑在 LPAC 沙箱里）读不到自己的 chrome.exe 起不来，于是
+//! **任何导航都提交不了**，窗口停在 about:blank——没有标题，也没有地址。
+//!
+//! 这个故障没有自证能力：我们这边拿不到任何错误，日志干净，代理和 CDP 全都正常，
+//! 现场只能看到「白屏很久然后一个空窗口」。2026-09 排查过一次，从代理、CDP 采集、
+//! 窗口几何一路查下去全是好的，最后靠隔离启动 Chromium 才看到
+//! `Sandbox cannot access executable ... 拒绝访问 (0x5)`。
+//!
+//! 触发条件是安装目录继承不到那几个 SID：`C:\Program Files` 的默认 ACL 自带它们
+//! （所以系统装的 Edge/Chrome 一切正常），而用户自选的目录——尤其是建在盘根下的
+//! `D:\Vestus`——继承不到。安装器（`installer-hooks.nsh`）在装完时补一次，这里在
+//! 每次启动前再补一次，覆盖「装的是老版本」和「目录被整体搬走」。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -534,6 +551,78 @@ fn create_profile_dir<R: Runtime>(
     Ok(profile_dir)
 }
 
+/// 该给哪个目录补沙箱权限：随包的那份返回 chromium 目录，其他情况返回 `None`。
+///
+/// 返回的是 chromium 目录整棵树，而不是可执行文件所在的那一层——macOS 上后者是
+/// `<浏览器>.app/Contents/MacOS`，深了三层，补在那里对沙箱没用。
+///
+/// dev 里回退到的系统 Chrome 装在 Program Files（或 /Applications）下，权限本来
+/// 就是对的，去改它既没必要也越界，所以必须先确认这个可执行文件真的在我们自己
+/// 铺的资源目录里。
+fn sandbox_fixup_root<'a>(executable: &Path, bundled_root: &'a Path) -> Option<&'a Path> {
+    executable.starts_with(bundled_root).then_some(bundled_root)
+}
+
+/// 给随包 Chromium 目录补齐沙箱要的读取执行权限，每个进程只做一次。
+///
+/// 正常情况下这件事由安装器（`installer-hooks.nsh`）做完了，这里是第二道：
+///
+/// * 安装器那次 `icacls` 失败过（权限不够、目录被占用）；
+/// * 用户把安装目录整个搬到了别的盘，ACL 没跟着走；
+/// * 装的是加这个 hook 之前的版本，重装之前一直是坏的。
+///
+/// 少了这些权限的后果不是「浏览器打不开」而是**打得开但导航永远提交不了**：
+/// Chromium 的网络服务跑在 LPAC 沙箱里，读不到自己的 chrome.exe 就起不来
+/// （`Sandbox cannot access executable` / `拒绝访问 (0x5)`），窗口停在
+/// about:blank，没有标题也没有地址。浏览器进程活着，所以这边完全看不出异常。
+///
+/// 失败**不阻止**启动：多数机器上权限本来就是对的，这里报错更可能是我们判断错了
+/// 而不是浏览器真的不能用。SID 用数字写法，中文 Windows 上按名字授权会失败。
+#[cfg(target_os = "windows")]
+fn ensure_sandbox_access(chromium_dir: &Path) {
+    use std::os::windows::process::CommandExt;
+    use std::sync::Once;
+
+    /// 不要让 icacls 闪出一个控制台窗口。
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    static ONCE: Once = Once::new();
+
+    ONCE.call_once(|| {
+        // S-1-15-2-1 ALL APPLICATION PACKAGES（普通 AppContainer 令牌带它）
+        // S-1-15-2-2 ALL RESTRICTED APPLICATION PACKAGES（LPAC 令牌带它，且**不**带
+        //            S-1-15-2-1，所以两个都要给）
+        // S-1-5-12   RESTRICTED（渲染器受限令牌的 restricting SID）
+        // 只给 RX：沙箱进程要读自己的程序文件，不需要写它。
+        //
+        // 用绝对路径而不是裸 "icacls"：CreateProcess 的搜索顺序把**当前进程所在
+        // 目录**排在系统目录前面，安装目录里放一个 icacls.exe 就能劫持这次调用。
+        // 这个目录恰恰是普通用户可写的（currentUser 安装模式）。
+        let icacls = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32")
+            .join("icacls.exe");
+        let _ = Command::new(icacls)
+            .arg(chromium_dir)
+            .args([
+                "/grant",
+                "*S-1-15-2-1:(OI)(CI)RX",
+                "*S-1-15-2-2:(OI)(CI)RX",
+                "*S-1-5-12:(OI)(CI)RX",
+                "/T",
+                "/C",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_sandbox_access(_chromium_dir: &Path) {}
+
 fn resolve_chromium_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, BrowserError> {
     #[cfg(any(debug_assertions, test))]
     {
@@ -576,10 +665,16 @@ fn resolve_chromium_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf
         }
     }
 
-    candidates
+    let executable = candidates
         .into_iter()
         .find(|candidate| candidate.is_file())
-        .ok_or(BrowserError::ChromiumMissing)
+        .ok_or(BrowserError::ChromiumMissing)?;
+
+    let bundled_root = resources.join("chromium");
+    if let Some(root) = sandbox_fixup_root(&executable, &bundled_root) {
+        ensure_sandbox_access(root);
+    }
+    Ok(executable)
 }
 
 /// 随包 macOS 浏览器的候选可执行文件。
@@ -1052,6 +1147,52 @@ mod tests {
         ));
         assert!(!rejected_profile.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // 补 ACL 是个副作用，只能落在我们自己铺的资源目录上。dev 会回退到系统装的
+    // Chrome，去改 Program Files / /Applications 的权限属于越界。
+    #[test]
+    fn sandbox_fixup_only_targets_the_bundled_copy() {
+        let bundled_root = Path::new("/opt/vestus/resources/chromium");
+
+        // Windows 布局：chromium/chrome.exe，补的是 chromium 目录本身。
+        assert_eq!(
+            sandbox_fixup_root(&bundled_root.join("chrome.exe"), bundled_root),
+            Some(bundled_root)
+        );
+
+        // macOS 布局：可执行文件深在 .app/Contents/MacOS 里，补的仍然是整棵树，
+        // 而不是它所在的那一层。
+        let nested = bundled_root
+            .join("Google Chrome for Testing.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("Google Chrome for Testing");
+        assert_eq!(
+            sandbox_fixup_root(&nested, bundled_root),
+            Some(bundled_root)
+        );
+
+        // dev 回退到的系统浏览器：一个都不能碰。
+        for outside in [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        ] {
+            assert_eq!(
+                sandbox_fixup_root(Path::new(outside), bundled_root),
+                None,
+                "系统装的浏览器不该被改权限：{outside}"
+            );
+        }
+
+        // 前缀相近但不是同一个目录，不能因为字符串前缀就命中。
+        assert_eq!(
+            sandbox_fixup_root(
+                Path::new("/opt/vestus/resources/chromium-backup/chrome.exe"),
+                bundled_root
+            ),
+            None
+        );
     }
 
     // 随包浏览器的 bundle 名字由 Playwright 决定，会随版本变；解析必须靠扫描，
