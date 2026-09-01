@@ -71,17 +71,17 @@ export const LoginCard: React.FC<LoginCardProps> = ({
       <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] bg-indigo-600/10 dark:bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute top-[40%] left-[60%] w-[350px] h-[350px] bg-emerald-600/5 dark:bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
 
-      <div className="w-full max-w-[340px] relative z-10">
-        <Card className="border-border bg-card/95 backdrop-blur-xl shadow-xl">
-          <CardHeader className="pb-3 pt-5 flex flex-col items-center justify-center text-center">
-            <div className="flex flex-col items-center justify-center gap-2.5 w-full">
+      <div className="w-full max-w-[360px] relative z-10">
+        <Card className="border-border bg-card/95 backdrop-blur-xl shadow-xl rounded-2xl">
+          <CardHeader className="pb-3 pt-6 flex flex-col items-center justify-center text-center">
+            <div className="flex flex-col items-center justify-center gap-3 w-full">
               <img
                 src={displayLogo}
                 alt={productName || "Logo"}
-                className="w-10 h-10 object-contain rounded-xl border border-border/60 bg-background shadow-xs shrink-0"
+                className="w-12 h-12 object-contain rounded-2xl border border-border/60 bg-background shadow-xs shrink-0"
               />
               <div className="min-w-0 max-w-full">
-                <CardTitle className="text-sm font-semibold text-foreground text-center truncate">
+                <CardTitle className="text-base font-semibold text-foreground text-center truncate">
                   {productName || "Vestus"}
                 </CardTitle>
               </div>
@@ -89,7 +89,7 @@ export const LoginCard: React.FC<LoginCardProps> = ({
           </CardHeader>
 
           <form onSubmit={handleSubmit}>
-            <CardContent className="space-y-3 pb-5">
+            <CardContent className="space-y-4 pb-6 px-6">
               {errMsg && (
                 <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-300 text-xs flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-rose-500 dark:bg-rose-400 shrink-0" />
@@ -97,8 +97,8 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                 </div>
               )}
 
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-muted-foreground flex items-center justify-between">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground/80 flex items-center justify-between">
                   <span>登录账号</span>
                 </label>
                 <Input
@@ -106,15 +106,19 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                   placeholder="请输入登录账号"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  icon={<User className="w-3.5 h-3.5" />}
-                  className="h-8.5 text-xs"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="username"
+                  icon={<User className="w-4 h-4 text-muted-foreground/70" />}
+                  className="h-10 text-sm rounded-xl"
                   autoFocus
                   disabled={loading}
                 />
               </div>
 
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-muted-foreground flex items-center justify-between">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground/80 flex items-center justify-between">
                   <span>登录密码</span>
                 </label>
                 <Input
@@ -122,20 +126,24 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                   placeholder="请输入登录密码"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  icon={<Lock className="w-3.5 h-3.5" />}
-                  className="h-8.5 text-xs"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="current-password"
+                  icon={<Lock className="w-4 h-4 text-muted-foreground/70" />}
+                  className="h-10 text-sm rounded-xl"
                   rightElement={
                     <button
                       type="button"
                       tabIndex={-1}
                       onClick={() => setShowPassword(!showPassword)}
-                      className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded focus:outline-none"
+                      className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded focus:outline-none"
                       title={showPassword ? "隐藏密码" : "显示密码"}
                     >
                       {showPassword ? (
-                        <EyeOff className="w-3.5 h-3.5" />
+                        <EyeOff className="w-4 h-4 text-muted-foreground/70" />
                       ) : (
-                        <Eye className="w-3.5 h-3.5" />
+                        <Eye className="w-4 h-4 text-muted-foreground/70" />
                       )}
                     </button>
                   }
@@ -145,11 +153,11 @@ export const LoginCard: React.FC<LoginCardProps> = ({
 
               <Button
                 type="submit"
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium shadow-md shadow-blue-500/20 h-8.5 text-xs mt-1"
+                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium shadow-md shadow-blue-500/25 h-10 text-sm rounded-xl mt-2 transition-all active:scale-[0.99]"
                 disabled={loading}
               >
                 {loading ? "正在验证身份…" : "立即登录系统"}
-                <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+                <ArrowRight className="w-4 h-4 ml-1.5" />
               </Button>
             </CardContent>
           </form>
