@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { chromiumExecutable } from "./chromium-resource.mjs";
+
 const DEFAULT_DEV_API_BASE_URL = "http://127.0.0.1:8000";
 
 function isLoopbackHost(hostname) {
@@ -68,6 +70,27 @@ export function buildTauriArguments(args, rawBase, options) {
   ];
 }
 
+/**
+ * dev 时让 Rust 直接启动 resources/chromium/ 里那份 Chromium。
+ *
+ * `tauri dev` 会把 resources/ 复制进 target/debug/，而那次复制是原地覆盖：如果
+ * 复制发生时上一个会话的 Chromium 还在从 target/debug/chromium/ 跑，内核就记下
+ * 了和新内容对不上的代码签名，之后每次启动那个路径都被直接 SIGKILL
+ * （崩溃报告里是 `SIGKILL (Code Signature Invalid)`），删掉重铺才能恢复。
+ *
+ * 指到 resources/ 这个**复制源**上就不会踩：它只被 prepare-chromium.mjs 写，而
+ * 那个脚本是先删目录再 ditto，删除换来的是新 vnode，不会污染签名。
+ *
+ * 只在 dev 生效：VESTUS_CHROMIUM_PATH 本身只在 debug/test 下编译进 Rust
+ * （browser.rs:CHROMIUM_PATH_ENV）。还没跑过 prepare-chromium.mjs 就不设，让
+ * Rust 侧回退到系统装的 Chrome，而不是拿一个不存在的路径去报错。
+ */
+export function devChromiumOverride(command, environment, locate = chromiumExecutable) {
+  if (command !== "dev" || environment.VESTUS_CHROMIUM_PATH) return {};
+  const executable = locate();
+  return executable ? { VESTUS_CHROMIUM_PATH: executable } : {};
+}
+
 function run() {
   const inputArgs = process.argv.slice(2);
   const rawBase =
@@ -84,6 +107,7 @@ function run() {
     env: {
       ...process.env,
       TAURI_BUNDLER_DMG_IGNORE_CI: process.env.TAURI_BUNDLER_DMG_IGNORE_CI || "true",
+      ...devChromiumOverride(inputArgs[0], process.env),
     },
     stdio: "inherit",
   });

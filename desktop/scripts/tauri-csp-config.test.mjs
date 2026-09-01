@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildTauriArguments,
   buildTauriConfigForApi,
+  devChromiumOverride,
 } from "./tauri-with-api.mjs";
 
 function directives(csp) {
@@ -137,4 +138,35 @@ test("release workflow cannot bypass the API-pinned Tauri wrapper", () => {
     /http:\/\/\*\)[\s\S]{0,500}if \[ "\$release" = true \]; then[\s\S]{0,500}exit 1[\s\S]{0,500}VESTUS_ALLOW_INSECURE_API=1/,
     "只有非标签的手工 HTTP 构建可以显式开启不安全 API"
   );
+});
+
+// dev 只能用 resources/chromium/ 那份：target/debug/ 里的副本是 tauri 原地覆盖
+// 出来的，覆盖到正在运行的 Chromium 会让那个路径永久 SIGKILL。
+test("dev points Rust at the copy source, never at tauri's target/debug copy", () => {
+  const locate = () => "/abs/resources/chromium/Chromium.app/Contents/MacOS/Chromium";
+
+  assert.deepEqual(devChromiumOverride("dev", {}, locate), {
+    VESTUS_CHROMIUM_PATH: "/abs/resources/chromium/Chromium.app/Contents/MacOS/Chromium",
+  });
+});
+
+test("packaging never gets the dev Chromium override", () => {
+  const locate = () => "/abs/resources/chromium/chrome";
+
+  assert.deepEqual(devChromiumOverride("build", {}, locate), {});
+});
+
+test("an explicit VESTUS_CHROMIUM_PATH wins over the dev default", () => {
+  const locate = () => "/abs/resources/chromium/chrome";
+
+  assert.deepEqual(
+    devChromiumOverride("dev", { VESTUS_CHROMIUM_PATH: "/my/own/chrome" }, locate),
+    {}
+  );
+});
+
+// 没铺过 Chromium 时不设，Rust 侧才能回退到系统装的 Chrome；设一个不存在的
+// 路径会让它直接报 InvalidOverride。
+test("dev leaves the override unset when no Chromium has been staged", () => {
+  assert.deepEqual(devChromiumOverride("dev", {}, () => null), {});
 });

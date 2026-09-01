@@ -65,14 +65,22 @@ python3 scripts/init_db.py
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-再构建并运行桌面端。开发模式会使用 `VESTUS_CHROMIUM_PATH` 指定的 Chromium；macOS
-开发环境未设置时会尝试系统 Chrome：
+再构建并运行桌面端。`npm run desktop:dev` 会自动把 `VESTUS_CHROMIUM_PATH` 指向
+`desktop/src-tauri/resources/chromium/` 里那份随包 Chromium（先跑一次
+`node scripts/prepare-chromium.mjs` 铺好它）；显式设了这个变量就用你指定的，两者都没有时
+macOS 会回退到系统装的 Chrome：
 
 ```bash
 cd desktop
 npm install
-VESTUS_CHROMIUM_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run desktop:dev
+node scripts/prepare-chromium.mjs
+npm run desktop:dev
 ```
+
+dev 刻意指向 `resources/` 这个复制源，而不是 `tauri dev` 复制到 `target/debug/chromium/`
+的那份副本：那次复制是原地覆盖，覆盖到正在运行的 Chromium 会让内核记下对不上的代码签名，
+之后那个路径每次启动都被 `SIGKILL (Code Signature Invalid)` 直接杀掉，只能删掉目录重铺。
+理由写在 `scripts/tauri-with-api.mjs:devChromiumOverride`。
 
 本地开发默认连接 `http://127.0.0.1:8000`。生产打包必须把后端地址设为 HTTPS，例如：
 

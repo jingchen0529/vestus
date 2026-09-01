@@ -24,12 +24,14 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { chromiumExecutable, chromiumResourceDir } from "./chromium-resource.mjs";
+
 // 与 CI 产物一一对应的锁定版本；升级时同时更新 README 的说明。
 const PLAYWRIGHT_VERSION = "1.62.1";
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const browserCache = join(desktopRoot, ".cache", "ms-playwright");
-const destination = join(desktopRoot, "src-tauri", "resources", "chromium");
+const destination = chromiumResourceDir;
 
 // 各平台：Playwright 解压目录的前缀（新版带架构后缀，如 chrome-mac-arm64、
 // chrome-win64、chrome-linux64），以及复制方式。
@@ -138,13 +140,9 @@ function restoreExecutableBits(executable) {
 
 // 返回 browser.rs 会真正拿去启动的那个可执行文件路径。
 function locateExecutable() {
-  if (!layout.bundled) return join(destination, layout.executable);
-  const bundle = appBundles(destination)[0];
-  if (!bundle) throw new Error(`${destination} 下没有 .app`);
-  const macosDir = join(bundle, "Contents", "MacOS");
-  const files = readdirSync(macosDir, { withFileTypes: true }).filter((entry) => entry.isFile());
-  if (files.length === 0) throw new Error(`${macosDir} 下没有可执行文件`);
-  return join(macosDir, files[0].name);
+  const executable = chromiumExecutable(destination);
+  if (!executable) throw new Error(`${destination} 下没有可执行的 Chromium`);
+  return executable;
 }
 
 download();
