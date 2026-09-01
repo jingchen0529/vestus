@@ -27,7 +27,7 @@
 //! 注入脚本在文档最前面运行，拿到 binding 的函数引用后立刻 `delete` 掉那个全局
 //! 属性。于是页面自己的脚本既看不见这个通道，也没法伪造上报。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -510,9 +510,16 @@ struct Collector {
     next_id: i64,
     /// `Target.getTargets` 的请求 id，用来认出那一条回执。
     get_targets_id: i64,
-    /// 已经装好采集的 page 级 sessionId。既用于去重，也用于确认 `bindingCalled`
-    /// 来自我们自己附上的页面。
-    sessions: HashSet<String>,
+    /// 已经装好采集的 page 级 session → 它所在的 targetId。
+    ///
+    /// 键用于确认事件来自我们自己装过的 session；值用于**按 target 去重**。
+    ///
+    /// 必须按 target 去重，不能只按 session 去重：同一个页面会从两条路各附一次
+    /// （`setAutoAttach` 一次、`getTargets` 后的显式 `attachToTarget` 又一次），
+    /// 两次拿到的是**两个不同的 sessionId**，只看 sessionId 认不出这是同一个页面。
+    /// 装两遍的后果是这个页面的每个事件都被算两遍：`Runtime.bindingCalled` 双份，
+    /// `Page.frameNavigated` 双份，于是管理台看到的点击数和访问数都是虚高的。
+    sessions: HashMap<String, String>,
 }
 
 impl Collector {
@@ -627,7 +634,10 @@ impl Collector {
                 }
             }
             // 整文档跳转。只认主框架：iframe 的导航不是「用户访问了一个页面」。
-            "Page.frameNavigated" => {
+            //
+            // 也只认自己装过的 session。Chromium 把 Page 事件发给该 target 上**每一条**
+            // 附着的 session，所以不认 session 就等于「同一个页面附了几条就记几次」。
+            "Page.frameNavigated" if self.is_installed_session(session_id) => {
                 let frame = params.get("frame").unwrap_or(&Value::Null);
                 if frame.get("parentId").is_none() {
                     if let Some(url) = frame.get("url").and_then(Value::as_str) {
@@ -640,7 +650,7 @@ impl Collector {
             }
             // pushState/replaceState。没有新文档，注入脚本不会重跑，所以 SPA 的
             // 路由切换只有这个事件能看见。
-            "Page.navigatedWithinDocument" => {
+            "Page.navigatedWithinDocument" if self.is_installed_session(session_id) => {
                 if let Some(url) = params.get("url").and_then(Value::as_str) {
                     out.reports.extend(
                         normalize_page_url(url)
@@ -650,7 +660,7 @@ impl Collector {
             }
             "Runtime.bindingCalled" => {
                 let is_ours = params.get("name").and_then(Value::as_str) == Some(BINDING_NAME)
-                    && session_id.is_some_and(|id| self.sessions.contains(id));
+                    && self.is_installed_session(session_id);
                 if is_ours {
                     let payload = params.get("payload").and_then(Value::as_str).unwrap_or("");
                     out.reports.extend(parse_payload(payload));
@@ -672,9 +682,20 @@ impl Collector {
             out.commands.extend(self.resume_and_detach(&session_id));
             return;
         }
-        if !self.sessions.insert(session_id.clone()) {
+        // 同一条 session 被重复播报：什么都不做。这个 session 已经装好了，放行过了，
+        // 断开它反而会把正在采集的页面弄丢。
+        if self.sessions.contains_key(&session_id) {
             return;
         }
+        let target_id = target.get("targetId").and_then(Value::as_str).unwrap_or("");
+        // 这个页面已经有一条装好的 session 了，这是第二条通往同一个 target 的路。
+        // 放行并断开它：留着会让这个页面的每个事件都被算两遍。
+        if self.is_installed_target(target_id) {
+            out.commands.extend(self.resume_and_detach(&session_id));
+            return;
+        }
+        self.sessions
+            .insert(session_id.clone(), target_id.to_string());
         // 已经附上的页面不会再补一条 frameNavigated，所以它当前的地址只能从这里
         // 拿。新建的 target 这里通常是 about:blank，被 normalize_url 过滤掉。
         if let Some(url) = target.get("url").and_then(Value::as_str) {
@@ -684,6 +705,19 @@ impl Collector {
             );
         }
         out.commands.extend(self.install(&session_id));
+    }
+
+    /// 这条事件是否来自我们自己装过采集的 page session。
+    fn is_installed_session(&self, session_id: Option<&str>) -> bool {
+        session_id.is_some_and(|id| self.sessions.contains_key(id))
+    }
+
+    /// 这个 target 上是否已经有一条装好的 session。
+    ///
+    /// 空 targetId 一律当作「没装过」：宁可漏掉一次去重，也不能让两个都缺 targetId
+    /// 的页面因为空字符串相等而被认成同一个。
+    fn is_installed_target(&self, target_id: &str) -> bool {
+        !target_id.is_empty() && self.sessions.values().any(|known| known == target_id)
     }
 
     /// 连接建立之前就存在的 page target，逐个显式附上。
@@ -738,6 +772,20 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    /// 已经装好一条 page session（`S1` / `T1`）的采集器。
+    ///
+    /// 导航事件只认自己装过的 session，所以凡是直接喂导航事件的用例都得先走一遍附着。
+    fn collector_with_page() -> Collector {
+        let mut collector = Collector::default();
+        collector.opening_commands();
+        // about:blank 不算一次访问，用例可以直接断言自己那一条
+        assert!(collector
+            .handle(&attached("S1", "page", "about:blank"))
+            .reports
+            .is_empty());
+        collector
     }
 
     /// 必须是 browser 级的 autoAttach，且必须 `flatten` + 停在调试器上：前者让
@@ -867,10 +915,50 @@ mod tests {
         assert!(collector.handle(&call).reports.is_empty());
     }
 
+    /// 同一个页面会被附两次：`setAutoAttach` 一次，`getTargets` 之后的显式
+    /// `attachToTarget` 又一次——两次拿到的是**两个不同的 sessionId**，只看 sessionId
+    /// 认不出这是同一个页面。第二条必须放行再断开，否则这个页面的每个事件都被算两遍，
+    /// 管理台看到的点击数和访问数直接翻倍。
+    #[test]
+    fn a_second_session_on_the_same_page_is_dropped_instead_of_double_counted() {
+        let mut collector = collector_with_page();
+
+        // 同一个 target（T1），另一条 session
+        let handled = collector.handle(&attached("S9", "page", "https://shop.example.test/cart"));
+
+        let methods: Vec<String> = handled.commands.iter().map(|c| method_of(c)).collect();
+        assert_eq!(
+            methods,
+            vec!["Runtime.runIfWaitingForDebugger", "Target.detachFromTarget"]
+        );
+        // 既不重复记一次访问，也不进 session 表
+        assert!(handled.reports.is_empty());
+        assert_eq!(collector.sessions.len(), 1);
+    }
+
+    /// 页面级事件会发给该 target 上**每一条**附着的 session，所以不认 session 就等于
+    /// 「同一个页面附了几条就记几次」。这是翻倍的另一半。
+    #[test]
+    fn events_from_a_session_we_never_installed_are_ignored() {
+        let mut collector = collector_with_page();
+
+        let navigated = |session: &str| {
+            json!({
+                "sessionId": session,
+                "method": "Page.frameNavigated",
+                "params": { "frame": { "id": "F1", "url": "https://shop.example.test/cart" } }
+            })
+            .to_string()
+        };
+
+        assert_eq!(collector.handle(&navigated("S1")).reports.len(), 1);
+        assert!(collector.handle(&navigated("S9")).reports.is_empty());
+    }
+
     /// 主框架跳转算一次访问，iframe 的跳转不算——一个页面里十个广告位不是十次访问。
     #[test]
     fn only_the_main_frame_navigation_counts_as_a_visit() {
-        let mut collector = Collector::default();
+        let mut collector = collector_with_page();
 
         let main = json!({
             "sessionId": "S1",
@@ -900,7 +988,7 @@ mod tests {
     /// SPA 的 pushState 不建新文档，注入脚本不会重跑，所以只有这个事件看得见。
     #[test]
     fn in_document_navigation_counts_as_a_visit() {
-        let mut collector = Collector::default();
+        let mut collector = collector_with_page();
         let event = json!({
             "sessionId": "S1",
             "method": "Page.navigatedWithinDocument",
@@ -919,7 +1007,7 @@ mod tests {
 
     #[test]
     fn navigation_visits_keep_the_redacted_query_parameters() {
-        let mut collector = Collector::default();
+        let mut collector = collector_with_page();
         let event = json!({
             "sessionId": "S1",
             "method": "Page.frameNavigated",
