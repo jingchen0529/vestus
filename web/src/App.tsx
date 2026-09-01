@@ -137,10 +137,12 @@ export function App() {
   const loadSessionDetail = useCallback((id: number) => api.getBrowserSession(id), []);
 
   // Data Fetching Functions
-  const loadUsers = useCallback(async (searchQuery = userSearch, statusQuery = userStatusFilter) => {
+  const loadUsers = useCallback(async (searchQuery?: unknown, statusQuery?: unknown) => {
     try {
-      const filter = statusQuery === "ALL" ? undefined : statusQuery;
-      const data = await api.listUsers(searchQuery.trim() || undefined, filter);
+      const searchVal = typeof searchQuery === "string" ? searchQuery : userSearch;
+      const statusVal = typeof statusQuery === "string" ? statusQuery : userStatusFilter;
+      const filter = statusVal === "ALL" ? undefined : statusVal;
+      const data = await api.listUsers(searchVal.trim() || undefined, filter);
       setUsers(data);
     } catch (err: any) {
       toast.error("加载桌面用户失败", { description: err.message });
@@ -172,11 +174,13 @@ export function App() {
     }
   }, []);
 
-  const loadAdmins = useCallback(async (searchQuery = adminSearch, statusQuery = adminStatusFilter) => {
+  const loadAdmins = useCallback(async (searchQuery?: unknown, statusQuery?: unknown) => {
     if (!isSuperAdmin) return;
     try {
-      const filter = statusQuery === "ALL" ? undefined : statusQuery;
-      const data = await api.listAdmins(searchQuery.trim() || undefined, filter);
+      const searchVal = typeof searchQuery === "string" ? searchQuery : adminSearch;
+      const statusVal = typeof statusQuery === "string" ? statusQuery : adminStatusFilter;
+      const filter = statusVal === "ALL" ? undefined : statusVal;
+      const data = await api.listAdmins(searchVal.trim() || undefined, filter);
       setAdmins(data);
     } catch (err: any) {
       toast.error("加载管理员列表失败", { description: err.message });
@@ -455,7 +459,7 @@ export function App() {
             onSearchChange={setUserSearch}
             statusFilter={userStatusFilter}
             onStatusFilterChange={setUserStatusFilter}
-            onRefresh={loadUsers}
+            onRefresh={() => loadUsers()}
             isRefreshing={isRefreshing}
             onCreateUser={handleCreateUser}
             onUpdateUser={handleUpdateUser}
@@ -469,7 +473,7 @@ export function App() {
         {currentTab === "desktop" && (
           <DesktopConfigView
             proxies={proxies}
-            onRefresh={loadProxies}
+            onRefresh={() => loadProxies()}
             isRefreshing={isRefreshing}
             onCreateProxy={handleCreateProxy}
             onUpdateProxy={handleUpdateProxy}
@@ -482,7 +486,7 @@ export function App() {
         {currentTab === "platforms" && (
           <PlatformsView
             platforms={platforms}
-            onRefresh={loadPlatforms}
+            onRefresh={() => loadPlatforms()}
             isRefreshing={isRefreshing}
             onCreatePlatform={handleCreatePlatform}
             onUpdatePlatform={handleUpdatePlatform}
@@ -499,7 +503,7 @@ export function App() {
             onSearchChange={setAdminSearch}
             statusFilter={adminStatusFilter}
             onStatusFilterChange={setAdminStatusFilter}
-            onRefresh={loadAdmins}
+            onRefresh={() => loadAdmins()}
             isRefreshing={isRefreshing}
             onCreateAdmin={handleCreateAdmin}
             onUpdateAdmin={handleUpdateAdmin}
@@ -521,7 +525,7 @@ export function App() {
             onFiltersChange={handleSessionFiltersChange}
             users={users}
             platforms={platforms}
-            onRefresh={loadSessions}
+            onRefresh={() => loadSessions()}
             isRefreshing={isRefreshing}
             onLoadDetail={loadSessionDetail}
           />
@@ -537,7 +541,7 @@ export function App() {
             onPageChange={setLogPage}
             statusFilter={logStatusFilter}
             onStatusFilterChange={setLogStatusFilter}
-            onRefresh={loadLogs}
+            onRefresh={() => loadLogs()}
             isRefreshing={isRefreshing}
           />
         )}
