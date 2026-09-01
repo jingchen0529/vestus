@@ -80,7 +80,7 @@ for (const method of [
 // 换来的收敛措施必须一条不少，否则这个端点就从「本机同用户可达」变成谁都可达。
 // 只看 chromium_arguments 的函数体，且参数名带引号匹配：同一段的注释和下面的单元
 // 测试都提到了这两个参数名——那是在说明为什么不传。
-const rustBrowser = read("src-tauri/src/browser.rs");
+const rustBrowser = read("src-tauri/src/browser.rs").replace(/\r\n?/g, "\n");
 const argumentsStart = rustBrowser.indexOf("fn chromium_arguments(");
 const chromiumArguments = rustBrowser.slice(
   argumentsStart,

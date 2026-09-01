@@ -102,6 +102,7 @@ test("desktop build package command enforces API pinning before invoking Tauri",
   const result = spawnSync(npm, ["run", "desktop:build", "--", "--help"], {
     cwd: fileURLToPath(new URL("../", import.meta.url)),
     encoding: "utf8",
+    shell: process.platform === "win32",
     env: {
       ...process.env,
       VESTUS_API_BASE_URL: "http://api.example.test",
@@ -125,7 +126,11 @@ test("release workflow cannot bypass the API-pinned Tauri wrapper", () => {
     workflow,
     /npm run desktop:build -- --target "?\$\{\{ matrix\.rust_target \}\}"?/
   );
-  assert.match(workflow, /npm test/);
+  assert.match(
+    workflow,
+    /npm test && npm run build && npm run check:surfaces/,
+    "前端验证命令必须短路，任一命令失败都要让矩阵任务失败"
+  );
   assert.doesNotMatch(workflow, /npx tauri build/);
   assert.match(
     workflow,

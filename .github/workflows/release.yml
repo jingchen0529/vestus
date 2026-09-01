@@ -147,10 +147,7 @@ jobs:
 
       - name: Build frontend and verify boundaries
         working-directory: desktop
-        run: |
-          npm test
-          npm run build
-          npm run check:surfaces
+        run: npm test && npm run build && npm run check:surfaces
 
       - name: Test Rust core
         working-directory: desktop/src-tauri
