@@ -134,7 +134,9 @@ export function SettingsView() {
   // Desktop configuration state
   const [productName, setProductName] = useState("Vestus");
   const [desktopLogoUrl, setDesktopLogoUrl] = useState("");
-  const [desktopVersion, setDesktopVersion] = useState("0.2.2");
+  // 版本号留空是有效状态：服务端不知道桌面端发了哪个版本，写死一个默认值只会在
+  // 下次发版后变成过期的数字。下面的「填入 GitHub 最新版」正是用来补上它的。
+  const [desktopVersion, setDesktopVersion] = useState("");
   const [githubRepo, setGithubRepo] = useState("jingchen0529/vestus");
 
   // GitHub Release state
@@ -173,7 +175,7 @@ export function SettingsView() {
       setDesktopLogoUrl(data.logoUrl || "");
       setAdminTitle(data.adminTitle || "Vestus Admin");
       setAdminLogoUrl(data.adminLogoUrl || "");
-      const ver = data.desktopVersion || "0.2.2";
+      const ver = data.desktopVersion || "";
       const repo = data.githubRepo || "jingchen0529/vestus";
       setDesktopVersion(ver);
       setGithubRepo(repo);
@@ -473,12 +475,12 @@ export function SettingsView() {
                     id="desktopVersion"
                     value={desktopVersion}
                     onChange={(e) => setDesktopVersion(e.target.value)}
-                    placeholder="例如：0.2.2"
+                    placeholder="留空表示未设置，例如：0.2.2"
                     disabled={saving}
                     className="font-mono text-xs"
                   />
                   <p className="text-[11px] text-muted-foreground">
-                    用于桌面端版本展示及会话追踪版本标识匹配。
+                    用于桌面端版本展示及会话追踪版本标识匹配；留空即不对外声明版本。
                   </p>
                 </div>
 

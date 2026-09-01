@@ -21,7 +21,12 @@ from app.services.uploads import validated_image_reference
 
 DEFAULT_ADMIN_TITLE = "Vestus Admin"
 DEFAULT_ADMIN_THEME_COLOR = "blue"
-DEFAULT_DESKTOP_VERSION = "0.2.2"
+#: Deliberately empty.  The server has no way to know which desktop build is
+#: current -- the number lives in ``desktop/src-tauri/tauri.conf.json`` and is
+#: stamped from the release tag -- so a default here could only be a guess that
+#: goes stale on the next release.  Unset reads back as "" and the settings page
+#: offers to fill it from the newest GitHub tag.
+DEFAULT_DESKTOP_VERSION = ""
 DEFAULT_GITHUB_REPO = "jingchen0529/vestus"
 
 PRODUCT_NAME_KEY = "product_name"
@@ -62,7 +67,7 @@ def _read_branding(session: Session) -> Dict[str, str]:
         "adminTitle": admin_title if admin_title else DEFAULT_ADMIN_TITLE,
         "adminLogoUrl": safe_image_reference(admin_logo, uploaded_files.get(admin_logo)),
         "adminThemeColor": admin_theme_color if admin_theme_color else DEFAULT_ADMIN_THEME_COLOR,
-        "desktopVersion": desktop_version if desktop_version else DEFAULT_DESKTOP_VERSION,
+        "desktopVersion": desktop_version,
         "githubRepo": github_repo if github_repo else DEFAULT_GITHUB_REPO,
     }
 
@@ -124,12 +129,19 @@ def set_branding(
         # the payload is read back through a SELECT.
         session.flush()
         branding = _read_branding(session)
+        detail = (
+            f"更新系统配置：桌面端产品名称为 {branding['productName']}，"
+            f"管理端名称为 {branding['adminTitle']}"
+        )
+        # Only mentioned when set: the version is optional, and "版本为 " with
+        # nothing after it reads like the update cleared something.
+        if branding.get("desktopVersion"):
+            detail += f"，桌面端版本为 {branding['desktopVersion']}"
         record(
             session,
             audit,
             "SYSTEM_SETTINGS_UPDATE",
-            f"更新系统配置：桌面端产品名称为 {branding['productName']}，"
-            f"管理端名称为 {branding['adminTitle']}，版本为 {branding.get('desktopVersion', '')}",
+            detail,
             target_type="system",
             target_name="branding",
         )
