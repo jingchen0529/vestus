@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.api.deps import admin_auth, audit_context, get_db
 from app.api.envelope import EnvelopeRoute
 from app.db.session import Database
-from app.schemas.settings import SettingsUpdate
+from app.schemas.settings import MAX_REPO_LENGTH, REPO_PATTERN, SettingsUpdate
 from app.services import settings as settings_service
 
 MAX_TITLE_LENGTH = 100
@@ -44,6 +44,19 @@ def _classify_asset_platform(filename: str) -> str:
     if ".deb" in name_lower:
         return "Linux (Debian / Ubuntu)"
     return "通用安装包"
+
+
+def _release_version(tag_name: str) -> str:
+    """Strip the release-tag decoration, leaving the bare version number.
+
+    Prefix-anchored on purpose: a blanket ``replace("v", "")`` also eats the
+    ``v`` inside a tag such as ``v1.0-preview``.
+    """
+    version = tag_name.strip()
+    for prefix in ("desktop-", "v"):
+        if version.startswith(prefix):
+            version = version[len(prefix) :]
+    return version
 
 
 @router.get("/api/admin/settings", tags=["system"])
@@ -84,9 +97,9 @@ def get_github_latest_release(
 ) -> Dict[str, Any]:
     """Fetch the latest release information and installable assets from GitHub."""
     branding = settings_service.get_branding(db)
-    target_repo = (repo or branding.get("githubRepo") or "jingchen0529/vestus").strip()
+    target_repo = (repo or branding.get("githubRepo") or settings_service.DEFAULT_GITHUB_REPO).strip()
 
-    if "/" not in target_repo or len(target_repo) > 100:
+    if len(target_repo) > MAX_REPO_LENGTH or ".." in target_repo or not REPO_PATTERN.match(target_repo):
         raise HTTPException(status_code=400, detail="GitHub 仓库名称格式无效，应为 owner/repo 格式")
 
     headers = {
@@ -113,6 +126,10 @@ def get_github_latest_release(
                     if not releases:
                         raise HTTPException(status_code=404, detail="未在 GitHub 找到此仓库的任何发布版本")
                     data = releases[0]
+            except HTTPException:
+                # Already carries the precise reason; a broad re-wrap below would
+                # replace it with the vaguer message.
+                raise
             except Exception as fallback_err:
                 raise HTTPException(status_code=404, detail="未在 GitHub 找到此仓库的 Release 版本") from fallback_err
         elif exc.code == 403:
@@ -123,7 +140,7 @@ def get_github_latest_release(
         raise HTTPException(status_code=504, detail=f"连接 GitHub 失败或网络超时: {str(exc)}") from exc
 
     tag_name = data.get("tag_name", "")
-    clean_version = tag_name.replace("desktop-", "").replace("v", "")
+    clean_version = _release_version(tag_name)
     assets = [
         {
             "name": asset.get("name", ""),
