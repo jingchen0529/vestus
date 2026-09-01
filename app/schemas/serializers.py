@@ -241,12 +241,17 @@ def browser_page_visit_dict(item: BrowserPageVisit) -> Dict[str, Any]:
     return {
         "id": item.id,
         "url": item.url,
+        "urlParams": item.url_params,
         "visits": item.visits,
         "clicks": item.clicks,
         "inputs": item.inputs,
         "submits": item.submits,
         "scrolls": item.scrolls,
         "dwellMs": item.dwell_ms,
+        "inputSnapshot": item.input_snapshot,
+        "inputSnapshotAt": iso_datetime(item.input_snapshot_at),
+        "submitSnapshot": item.submit_snapshot,
+        "submitSnapshotAt": iso_datetime(item.submit_snapshot_at),
         "firstSeenAt": iso_datetime(item.first_seen_at),
         "lastSeenAt": iso_datetime(item.last_seen_at),
     }

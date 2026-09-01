@@ -8,13 +8,43 @@ report is rejected before it reaches a session.
 
 from __future__ import annotations
 
-from typing import List
-from urllib.parse import urlsplit
+import json
+import re
+from typing import Dict, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 #: Longest URL we store, matching ``browser_page_visit.url``.
 MAX_URL_LENGTH = 500
+
+#: Query data travels separately from the address so the admin UI can show it
+#: without turning the URL column into an unreadable (and unbounded) string.
+MAX_URL_PARAMS_LENGTH = 4096
+
+#: Snapshot limits are enforced again on the server.  The page process is not a
+#: trusted input even though the desktop collector applies the same caps first.
+MAX_SNAPSHOT_FIELDS = 50
+MAX_SNAPSHOT_KEY_BYTES = 128
+MAX_SNAPSHOT_VALUES_PER_FIELD = 20
+MAX_SNAPSHOT_VALUE_BYTES = 512
+MAX_SNAPSHOT_BYTES = 32 * 1024
+
+REDACTED_VALUE = "[REDACTED]"
+_SENSITIVE_NAME_PARTS = (
+    "password",
+    "passwd",
+    "pwd",
+    "token",
+    "secret",
+    "authorization",
+    "cookie",
+    "session",
+    "otp",
+    "captcha",
+    "cvv",
+    "cvc",
+)
 
 #: Most addresses one report may carry.  This is the desktop's own aggregate cap
 #: (``MAX_TRACKED_PAGES`` in ``activity.rs``): a full flush sends the whole table
@@ -53,10 +83,92 @@ def normalize_reported_url(value: str) -> str:
     return normalized
 
 
+def _normalized_field_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def is_sensitive_field_name(value: str) -> bool:
+    """Whether a query/form key is too risky to persist."""
+
+    normalized = _normalized_field_name(value)
+    return any(part in normalized for part in _SENSITIVE_NAME_PARTS)
+
+
+def sanitize_url_params(value: Optional[str]) -> Optional[str]:
+    """Canonicalize query data and redact values carried by sensitive keys."""
+
+    if value is None:
+        return None
+    raw = value.strip().removeprefix("?")
+    if not raw:
+        return None
+    if len(raw.encode("utf-8")) > MAX_URL_PARAMS_LENGTH:
+        raise ValueError("URL parameters are too long")
+    try:
+        pairs = parse_qsl(raw, keep_blank_values=True, max_num_fields=200)
+    except ValueError as error:
+        raise ValueError("URL parameters are invalid") from error
+    sanitized = [
+        (name, REDACTED_VALUE if is_sensitive_field_name(name) else item_value)
+        for name, item_value in pairs
+    ]
+    encoded = urlencode(sanitized, doseq=True)
+    if len(encoded.encode("utf-8")) > MAX_URL_PARAMS_LENGTH:
+        raise ValueError("URL parameters are too long")
+    return encoded or None
+
+
+def _truncate_utf8(value: str, limit: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    return encoded[:limit].decode("utf-8", errors="ignore")
+
+
+def _snapshot_size(value: Dict[str, List[str]]) -> int:
+    return len(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def sanitize_snapshot(value: Optional[Dict[str, List[str]]]) -> Optional[Dict[str, List[str]]]:
+    """Keep a bounded latest-value snapshot while dropping sensitive fields."""
+
+    if not value:
+        return None
+    result: Dict[str, List[str]] = {}
+    for raw_key, raw_values in value.items():
+        stripped_key = raw_key.strip()
+        if not stripped_key or is_sensitive_field_name(stripped_key):
+            continue
+        key = _truncate_utf8(stripped_key, MAX_SNAPSHOT_KEY_BYTES)
+        if key in result:
+            # Two distinct long names may share the same retained prefix.  The
+            # first wins; merging their values would corrupt the snapshot.
+            continue
+        if len(result) >= MAX_SNAPSHOT_FIELDS:
+            break
+        values: List[str] = []
+        for raw_value in raw_values[:MAX_SNAPSHOT_VALUES_PER_FIELD]:
+            candidate = _truncate_utf8(raw_value, MAX_SNAPSHOT_VALUE_BYTES)
+            tentative = {**result, key: [*values, candidate]}
+            if _snapshot_size(tentative) > MAX_SNAPSHOT_BYTES:
+                break
+            values.append(candidate)
+        if values:
+            result[key] = values
+        if _snapshot_size(result) >= MAX_SNAPSHOT_BYTES:
+            break
+    return result or None
+
+
 class BrowserPageReport(BaseModel):
     """One address's counters, as a delta since the previous report."""
 
     url: str = Field(min_length=1, max_length=2048)
+    url_params: Optional[str] = Field(
+        default=None, alias="urlParams", max_length=MAX_URL_PARAMS_LENGTH
+    )
     visits: int = Field(default=0, ge=0, le=MAX_COUNT_PER_PAGE)
     clicks: int = Field(default=0, ge=0, le=MAX_COUNT_PER_PAGE)
     inputs: int = Field(default=0, ge=0, le=MAX_COUNT_PER_PAGE)
@@ -65,12 +177,40 @@ class BrowserPageReport(BaseModel):
     dwell_ms: int = Field(default=0, alias="dwellMs", ge=0, le=MAX_DWELL_MS_PER_PAGE)
     first_seen_at_ms: int = Field(default=0, alias="firstSeenAtMs", ge=0)
     last_seen_at_ms: int = Field(default=0, alias="lastSeenAtMs", ge=0)
+    input_snapshot: Optional[Dict[str, List[str]]] = Field(
+        default=None, alias="inputSnapshot"
+    )
+    input_snapshot_at_ms: int = Field(default=0, alias="inputSnapshotAtMs", ge=0)
+    submit_snapshot: Optional[Dict[str, List[str]]] = Field(
+        default=None, alias="submitSnapshot"
+    )
+    submit_snapshot_at_ms: int = Field(default=0, alias="submitSnapshotAtMs", ge=0)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     @field_validator("url")
     @classmethod
     def validate_url(cls, value: str) -> str:
         return normalize_reported_url(value)
+
+    @field_validator("url_params")
+    @classmethod
+    def validate_url_params(cls, value: Optional[str]) -> Optional[str]:
+        return sanitize_url_params(value)
+
+    @field_validator("input_snapshot", "submit_snapshot")
+    @classmethod
+    def validate_snapshot(
+        cls, value: Optional[Dict[str, List[str]]]
+    ) -> Optional[Dict[str, List[str]]]:
+        return sanitize_snapshot(value)
+
+    @model_validator(mode="after")
+    def validate_snapshot_timestamps(self) -> "BrowserPageReport":
+        if self.input_snapshot is not None and self.input_snapshot_at_ms <= 0:
+            raise ValueError("inputSnapshotAtMs is required with inputSnapshot")
+        if self.submit_snapshot is not None and self.submit_snapshot_at_ms <= 0:
+            raise ValueError("submitSnapshotAtMs is required with submitSnapshot")
+        return self
 
 
 class BrowserActivityReport(BaseModel):
@@ -93,8 +233,13 @@ __all__ = [
     "MAX_COUNT_PER_PAGE",
     "MAX_DWELL_MS_PER_PAGE",
     "MAX_PAGES_PER_REPORT",
+    "MAX_SNAPSHOT_BYTES",
     "MAX_URL_LENGTH",
+    "MAX_URL_PARAMS_LENGTH",
     "BrowserActivityReport",
     "BrowserPageReport",
+    "is_sensitive_field_name",
     "normalize_reported_url",
+    "sanitize_snapshot",
+    "sanitize_url_params",
 ]

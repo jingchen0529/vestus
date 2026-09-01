@@ -365,6 +365,54 @@ def test_upload_body_limit_honors_root_path(
     assert downstream_bytes < len(body)
 
 
+def test_body_limit_never_sends_a_second_response_start_after_early_downstream_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.middleware import UploadBodyLimitMiddleware
+
+    monkeypatch.setenv("VESTUS_UPLOAD_MAX_BYTES", "4")
+    receive_messages = [
+        {"type": "http.request", "body": b"x" * 35_000, "more_body": True},
+        {"type": "http.request", "body": b"x" * 35_000, "more_body": False},
+    ]
+    sent_messages = []
+
+    async def downstream(_scope, receive, send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await receive()
+        await receive()
+
+    async def invoke() -> None:
+        async def receive():
+            return receive_messages.pop(0)
+
+        async def send(message):
+            sent_messages.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/admin/uploads",
+            "raw_path": b"/api/admin/uploads",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        }
+        await UploadBodyLimitMiddleware(downstream)(scope, receive, send)
+
+    asyncio.run(invoke())
+    response_starts = [
+        message for message in sent_messages if message["type"] == "http.response.start"
+    ]
+    assert len(response_starts) == 1
+    assert response_starts[0]["status"] == 413
+
+
 def test_upload_requires_exactly_one_file_and_no_extra_fields(api) -> None:
     client, _module = api
     token = _login_admin(client)

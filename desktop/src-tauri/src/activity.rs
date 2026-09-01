@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 
 use crate::auth::DesktopAuthState;
 use crate::browser::DevToolsEndpoint;
-use crate::cdp::{self, PageReport};
+use crate::cdp::{self, FormSnapshot, PageReport};
 use crate::rt;
 
 /// 攒够一批就发的间隔。太短会把一次正常浏览打成几十个请求，太长则退出时丢得多。
@@ -38,6 +38,10 @@ const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(300);
 /// `app/schemas/browser_activity.py` 里的 `MAX_PAGES_PER_REPORT` 相等，否则上报会
 /// 被服务端整批拒掉。
 const MAX_TRACKED_PAGES: usize = 500;
+
+/// 后端 `BrowserActivityReport` 请求体的最大字节数（4 MiB）。快照大小会让同样
+/// 页数的 JSON 体积相差几个数量级，因此每批按实际序列化长度分割。
+const MAX_ACTIVITY_REPORT_BYTES: usize = 4 * 1024 * 1024;
 
 /// 关应用时等各会话把最后一批发完的上限。等不到就放弃，不能让用户卡在退出上。
 const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -93,6 +97,7 @@ struct ActivityReport {
 #[serde(rename_all = "camelCase")]
 struct PageRow {
     url: String,
+    url_params: Option<String>,
     visits: u32,
     clicks: u32,
     inputs: u32,
@@ -101,6 +106,10 @@ struct PageRow {
     dwell_ms: u64,
     first_seen_at_ms: u64,
     last_seen_at_ms: u64,
+    input_snapshot: Option<FormSnapshot>,
+    input_snapshot_at_ms: u64,
+    submit_snapshot: Option<FormSnapshot>,
+    submit_snapshot_at_ms: u64,
 }
 
 /// 按地址合并的待上报增量。
@@ -108,41 +117,70 @@ struct PageRow {
 /// 用 `BTreeMap` 而不是 `HashMap`：顺序稳定，于是上报体是确定的，测试也好断言。
 #[derive(Debug, Default)]
 struct Aggregate {
-    pages: BTreeMap<String, PageRow>,
+    pages: BTreeMap<(String, Option<String>), PageRow>,
     /// 因为到了 [`MAX_TRACKED_PAGES`] 而被丢掉的地址数，只用于判断表是否溢出过。
     dropped: u64,
 }
 
 impl Aggregate {
     fn absorb(&mut self, report: PageReport, now_ms: u64) {
-        let row = match self.pages.get_mut(&report.url) {
+        let PageReport {
+            url,
+            url_params,
+            visits,
+            clicks,
+            inputs,
+            submits,
+            scrolls,
+            dwell_ms,
+            input_snapshot,
+            submit_snapshot,
+            ..
+        } = report;
+        let key = (url.clone(), url_params.clone());
+        let row = match self.pages.get_mut(&key) {
             Some(row) => row,
             None => {
                 if self.pages.len() >= MAX_TRACKED_PAGES {
                     self.dropped = self.dropped.saturating_add(1);
                     return;
                 }
-                self.pages
-                    .entry(report.url.clone())
-                    .or_insert_with(|| PageRow {
-                        url: report.url.clone(),
-                        visits: 0,
-                        clicks: 0,
-                        inputs: 0,
-                        submits: 0,
-                        scrolls: 0,
-                        dwell_ms: 0,
-                        first_seen_at_ms: now_ms,
-                        last_seen_at_ms: now_ms,
-                    })
+                self.pages.entry(key).or_insert_with(|| PageRow {
+                    url,
+                    url_params,
+                    visits: 0,
+                    clicks: 0,
+                    inputs: 0,
+                    submits: 0,
+                    scrolls: 0,
+                    dwell_ms: 0,
+                    first_seen_at_ms: now_ms,
+                    last_seen_at_ms: now_ms,
+                    input_snapshot: None,
+                    input_snapshot_at_ms: 0,
+                    submit_snapshot: None,
+                    submit_snapshot_at_ms: 0,
+                })
             }
         };
-        row.visits = row.visits.saturating_add(report.visits);
-        row.clicks = row.clicks.saturating_add(report.clicks);
-        row.inputs = row.inputs.saturating_add(report.inputs);
-        row.submits = row.submits.saturating_add(report.submits);
-        row.scrolls = row.scrolls.saturating_add(report.scrolls);
-        row.dwell_ms = row.dwell_ms.saturating_add(report.dwell_ms);
+        row.visits = row.visits.saturating_add(visits);
+        row.clicks = row.clicks.saturating_add(clicks);
+        row.inputs = row.inputs.saturating_add(inputs);
+        row.submits = row.submits.saturating_add(submits);
+        row.scrolls = row.scrolls.saturating_add(scrolls);
+        row.dwell_ms = row.dwell_ms.saturating_add(dwell_ms);
+        if input_snapshot.is_some()
+            && (row.input_snapshot.is_none() || now_ms > row.input_snapshot_at_ms)
+        {
+            row.input_snapshot = input_snapshot;
+            row.input_snapshot_at_ms = now_ms;
+        }
+        if submit_snapshot.is_some()
+            && (row.submit_snapshot.is_none() || now_ms > row.submit_snapshot_at_ms)
+        {
+            row.submit_snapshot = submit_snapshot;
+            row.submit_snapshot_at_ms = now_ms;
+        }
         row.last_seen_at_ms = now_ms;
     }
 
@@ -161,7 +199,8 @@ impl Aggregate {
     fn merge_back(&mut self, rows: Vec<PageRow>) {
         for row in rows {
             let full = self.pages.len() >= MAX_TRACKED_PAGES;
-            match self.pages.get_mut(&row.url) {
+            let key = (row.url.clone(), row.url_params.clone());
+            match self.pages.get_mut(&key) {
                 Some(existing) => {
                     existing.visits = existing.visits.saturating_add(row.visits);
                     existing.clicks = existing.clicks.saturating_add(row.clicks);
@@ -171,10 +210,24 @@ impl Aggregate {
                     existing.dwell_ms = existing.dwell_ms.saturating_add(row.dwell_ms);
                     existing.first_seen_at_ms = existing.first_seen_at_ms.min(row.first_seen_at_ms);
                     existing.last_seen_at_ms = existing.last_seen_at_ms.max(row.last_seen_at_ms);
+                    if row.input_snapshot.is_some()
+                        && (existing.input_snapshot.is_none()
+                            || row.input_snapshot_at_ms > existing.input_snapshot_at_ms)
+                    {
+                        existing.input_snapshot = row.input_snapshot;
+                        existing.input_snapshot_at_ms = row.input_snapshot_at_ms;
+                    }
+                    if row.submit_snapshot.is_some()
+                        && (existing.submit_snapshot.is_none()
+                            || row.submit_snapshot_at_ms > existing.submit_snapshot_at_ms)
+                    {
+                        existing.submit_snapshot = row.submit_snapshot;
+                        existing.submit_snapshot_at_ms = row.submit_snapshot_at_ms;
+                    }
                 }
                 None if full => self.dropped = self.dropped.saturating_add(1),
                 None => {
-                    self.pages.insert(row.url.clone(), row);
+                    self.pages.insert(key, row);
                 }
             }
         }
@@ -296,23 +349,141 @@ async fn flush(
     if aggregate.is_empty() {
         return;
     }
-    let report = ActivityReport {
+    let reports = match split_activity_reports(
+        key,
+        session_key,
+        now_ms(),
+        aggregate.dropped,
+        aggregate.take(),
+    ) {
+        Ok(reports) => reports,
+        Err(rows) => {
+            *failures = failures.saturating_add(1);
+            aggregate.merge_back(rows);
+            return;
+        }
+    };
+    // 采集失败不进用户界面：这个 crate 没有日志设施，而把后台上报的网络错误弹给
+    // 正在浏览的用户只会造成困扰。数据不会丢——失败的那一批合回聚合表继续重试。
+    let mut reports = reports.into_iter();
+    while let Some(report) = reports.next() {
+        if auth.report_browser_activity(&report).await.is_err() {
+            *failures = failures.saturating_add(1);
+            merge_unsent_reports(aggregate, report, reports);
+            return;
+        }
+    }
+    *failures = 0;
+}
+
+fn split_activity_reports(
+    key: &SessionKey,
+    session_key: &str,
+    reported_at_ms: u64,
+    dropped_pages: u64,
+    rows: Vec<PageRow>,
+) -> Result<Vec<ActivityReport>, Vec<PageRow>> {
+    let base_len = serde_json::to_vec(&activity_report(
+        key,
+        session_key,
+        reported_at_ms,
+        dropped_pages,
+        Vec::new(),
+    ))
+    .expect("ActivityReport 必须可序列化")
+    .len();
+    let mut reports = Vec::new();
+    let mut pages = Vec::new();
+    let mut page_bytes = 0;
+    let mut rows = rows.into_iter();
+    while let Some(row) = rows.next() {
+        let row_len = serde_json::to_vec(&row)
+            .expect("PageRow 必须可序列化")
+            .len();
+        let candidate_len = wire_len(base_len, page_bytes, pages.len(), row_len);
+        if candidate_len <= MAX_ACTIVITY_REPORT_BYTES {
+            page_bytes = if pages.is_empty() {
+                row_len
+            } else {
+                page_bytes + 1 + row_len
+            };
+            pages.push(row);
+            continue;
+        }
+        if pages.is_empty() {
+            return Err(restore_rows(reports, pages, row, rows));
+        }
+        reports.push(activity_report(
+            key,
+            session_key,
+            reported_at_ms,
+            dropped_pages,
+            std::mem::take(&mut pages),
+        ));
+        if wire_len(base_len, 0, 0, row_len) > MAX_ACTIVITY_REPORT_BYTES {
+            return Err(restore_rows(reports, pages, row, rows));
+        }
+        page_bytes = row_len;
+        pages.push(row);
+    }
+    if !pages.is_empty() {
+        reports.push(activity_report(
+            key,
+            session_key,
+            reported_at_ms,
+            dropped_pages,
+            pages,
+        ));
+    }
+    Ok(reports)
+}
+
+fn wire_len(base_len: usize, page_bytes: usize, page_count: usize, next_row_len: usize) -> usize {
+    base_len + page_bytes + usize::from(page_count > 0) + next_row_len
+}
+
+fn restore_rows(
+    reports: Vec<ActivityReport>,
+    mut pages: Vec<PageRow>,
+    row: PageRow,
+    remaining: impl Iterator<Item = PageRow>,
+) -> Vec<PageRow> {
+    let mut restored = reports
+        .into_iter()
+        .flat_map(|report| report.pages)
+        .collect::<Vec<_>>();
+    restored.append(&mut pages);
+    restored.push(row);
+    restored.extend(remaining);
+    restored
+}
+
+fn activity_report(
+    key: &SessionKey,
+    session_key: &str,
+    reported_at_ms: u64,
+    dropped_pages: u64,
+    pages: Vec<PageRow>,
+) -> ActivityReport {
+    ActivityReport {
         session_key: session_key.to_string(),
         browser_id: key.browser_id,
         platform_id: key.platform_id,
         direct_mode: key.direct_mode,
-        reported_at_ms: now_ms(),
-        dropped_pages: aggregate.dropped,
-        pages: aggregate.take(),
-    };
-    // 采集失败不进用户界面：这个 crate 没有日志设施，而把后台上报的网络错误弹给
-    // 正在浏览的用户只会造成困扰。数据不会丢——失败的那一批合回聚合表继续重试。
-    match auth.report_browser_activity(&report).await {
-        Ok(()) => *failures = 0,
-        Err(_) => {
-            *failures = failures.saturating_add(1);
-            aggregate.merge_back(report.pages);
-        }
+        reported_at_ms,
+        dropped_pages,
+        pages,
+    }
+}
+
+fn merge_unsent_reports(
+    aggregate: &mut Aggregate,
+    failed: ActivityReport,
+    unsent: impl IntoIterator<Item = ActivityReport>,
+) {
+    aggregate.merge_back(failed.pages);
+    for report in unsent {
+        aggregate.merge_back(report.pages);
     }
 }
 
@@ -343,6 +514,110 @@ mod tests {
             dwell_ms,
             ..PageReport::default()
         }
+    }
+
+    fn wire_rows(rows: Vec<PageRow>) -> serde_json::Value {
+        serde_json::to_value(ActivityReport {
+            session_key: "session".into(),
+            browser_id: 1,
+            platform_id: 2,
+            direct_mode: false,
+            reported_at_ms: 3,
+            dropped_pages: 0,
+            pages: rows,
+        })
+        .unwrap()
+    }
+
+    fn large_row(index: usize) -> PageRow {
+        PageRow {
+            url: format!("https://a.test/{index}"),
+            url_params: None,
+            visits: 1,
+            clicks: 0,
+            inputs: 0,
+            submits: 0,
+            scrolls: 0,
+            dwell_ms: 0,
+            first_seen_at_ms: 1,
+            last_seen_at_ms: 1,
+            input_snapshot: Some(FormSnapshot::from([(
+                "note".into(),
+                vec!["x".repeat(512); 20],
+            )])),
+            input_snapshot_at_ms: 1,
+            submit_snapshot: None,
+            submit_snapshot_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn wire_batches_never_exceed_the_backend_four_mebibyte_cap() {
+        let reports = split_activity_reports(
+            &SessionKey {
+                browser_id: 1,
+                platform_id: 2,
+                direct_mode: false,
+            },
+            "session",
+            3,
+            7,
+            (0..MAX_TRACKED_PAGES).map(large_row).collect(),
+        )
+        .expect("each valid page fits below the backend cap");
+
+        assert!(
+            reports.len() > 1,
+            "the fixture must require more than one request"
+        );
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report.pages.len())
+                .sum::<usize>(),
+            MAX_TRACKED_PAGES
+        );
+        assert!(reports.iter().all(|report| {
+            serde_json::to_vec(report).unwrap().len() <= MAX_ACTIVITY_REPORT_BYTES
+        }));
+        assert!(reports.iter().all(|report| report.dropped_pages == 7));
+    }
+
+    #[test]
+    fn merging_failed_and_unsent_wire_batches_never_replays_successful_pages() {
+        let key = SessionKey {
+            browser_id: 1,
+            platform_id: 2,
+            direct_mode: false,
+        };
+        let mut reports = split_activity_reports(
+            &key,
+            "session",
+            3,
+            0,
+            (0..MAX_TRACKED_PAGES).map(large_row).collect(),
+        )
+        .expect("each valid page fits below the backend cap");
+        let successful = reports.remove(0);
+        let failed = reports.remove(0);
+        let expected_unsent = failed.pages.len()
+            + reports
+                .iter()
+                .map(|report| report.pages.len())
+                .sum::<usize>();
+
+        let mut aggregate = Aggregate::default();
+        merge_unsent_reports(&mut aggregate, failed, reports);
+
+        assert_eq!(aggregate.pages.len(), expected_unsent);
+        assert!(aggregate
+            .pages
+            .keys()
+            .all(|(url, _)| !successful.pages.iter().any(|row| &row.url == url)));
+        assert_eq!(
+            aggregate.pages.values().map(|row| row.visits).sum::<u32>(),
+            expected_unsent as u32
+        );
     }
 
     /// 同一个地址的多条上报累加，而不是互相覆盖：导航事件和注入脚本是两个来源，
@@ -385,6 +660,67 @@ mod tests {
         assert_eq!(rows[0].last_seen_at_ms, 5_000);
     }
 
+    #[test]
+    fn distinct_url_parameters_remain_distinct_rows_on_the_wire() {
+        let mut aggregate = Aggregate::default();
+        aggregate.absorb(
+            cdp::parse_payload(
+                &serde_json::json!({ "url": "https://a.test/p?order=1" }).to_string(),
+            )
+            .unwrap(),
+            1_000,
+        );
+        aggregate.absorb(
+            cdp::parse_payload(
+                &serde_json::json!({ "url": "https://a.test/p?order=2" }).to_string(),
+            )
+            .unwrap(),
+            2_000,
+        );
+
+        let json = wire_rows(aggregate.take());
+        assert_eq!(json["pages"].as_array().unwrap().len(), 2);
+        assert_eq!(json["pages"][0]["url"], "https://a.test/p");
+        assert_eq!(json["pages"][0]["urlParams"], "order=1");
+        assert_eq!(json["pages"][1]["urlParams"], "order=2");
+    }
+
+    #[test]
+    fn merging_a_failed_batch_keeps_the_newer_pending_snapshot() {
+        let mut aggregate = Aggregate::default();
+        aggregate.absorb(
+            cdp::parse_payload(
+                &serde_json::json!({
+                    "url": "https://a.test/p",
+                    "inputSnapshot": { "email": ["old@example.test"] },
+                })
+                .to_string(),
+            )
+            .unwrap(),
+            1_000,
+        );
+        let failed = aggregate.take();
+        aggregate.absorb(
+            cdp::parse_payload(
+                &serde_json::json!({
+                    "url": "https://a.test/p",
+                    "inputSnapshot": { "email": ["new@example.test"] },
+                })
+                .to_string(),
+            )
+            .unwrap(),
+            5_000,
+        );
+        aggregate.merge_back(failed);
+
+        let json = wire_rows(aggregate.take());
+        assert_eq!(
+            json["pages"][0]["inputSnapshot"]["email"][0],
+            "new@example.test"
+        );
+        assert_eq!(json["pages"][0]["inputSnapshotAtMs"], 5_000);
+    }
+
     /// 合回来的地址在期间已经被清空过时，整行原样放回去。
     #[test]
     fn merging_a_failed_batch_back_restores_unseen_urls() {
@@ -411,7 +747,10 @@ mod tests {
         assert_eq!(aggregate.dropped, 50);
 
         aggregate.absorb(clicks("https://a.test/0", 2, 0), 2_000);
-        assert_eq!(aggregate.pages["https://a.test/0"].clicks, 2);
+        assert_eq!(
+            aggregate.pages[&(String::from("https://a.test/0"), None)].clicks,
+            2
+        );
     }
 
     /// 空表不发请求：没有增量就没有必要打扰服务端。
@@ -441,6 +780,7 @@ mod tests {
             dropped_pages: 0,
             pages: vec![PageRow {
                 url: "https://a.test/p".into(),
+                url_params: Some("order=42".into()),
                 visits: 1,
                 clicks: 2,
                 inputs: 3,
@@ -449,6 +789,13 @@ mod tests {
                 dwell_ms: 6,
                 first_seen_at_ms: 1_700_000_000_000,
                 last_seen_at_ms: 1_700_000_000_001,
+                input_snapshot: Some(FormSnapshot::from([(
+                    "email".into(),
+                    vec!["buyer@example.test".into()],
+                )])),
+                input_snapshot_at_ms: 1_700_000_000_000,
+                submit_snapshot: None,
+                submit_snapshot_at_ms: 0,
             }],
         };
 
@@ -460,6 +807,14 @@ mod tests {
         assert_eq!(json["reportedAtMs"], 1_700_000_000_000_u64);
         assert_eq!(json["droppedPages"], 0);
         assert_eq!(json["pages"][0]["dwellMs"], 6);
+        assert_eq!(json["pages"][0]["urlParams"], "order=42");
+        assert_eq!(
+            json["pages"][0]["inputSnapshot"]["email"][0],
+            "buyer@example.test"
+        );
+        assert_eq!(json["pages"][0]["inputSnapshotAtMs"], 1_700_000_000_000_u64);
+        assert_eq!(json["pages"][0]["submitSnapshot"], serde_json::Value::Null);
+        assert_eq!(json["pages"][0]["submitSnapshotAtMs"], 0);
         assert_eq!(json["pages"][0]["firstSeenAtMs"], 1_700_000_000_000_u64);
         assert_eq!(json["pages"][0]["lastSeenAtMs"], 1_700_000_000_001_u64);
     }

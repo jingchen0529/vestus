@@ -22,10 +22,15 @@ from app.db.models import BrowserPageVisit, BrowserSession
 _COUNTERS = ("visits", "clicks", "inputs", "submits", "scrolls", "dwell_ms")
 
 
-def url_hash(url: str) -> str:
-    """The digest the per-session uniqueness constraint rides on."""
+def url_hash(url: str, url_params: Optional[str] = None) -> str:
+    """The digest the per-session address-plus-parameters uniqueness rides on.
 
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+    Keeping the historic digest for an address without parameters means an
+    upgraded deployment continues merging into its pre-migration rows.
+    """
+
+    identity = url if not url_params else f"{url}?{url_params}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def get_session_by_key(session: Session, *, user_id: int, session_key: str) -> Optional[BrowserSession]:
@@ -90,13 +95,18 @@ def merge_page(
     *,
     session_id: int,
     url: str,
+    url_params: Optional[str],
     deltas: dict,
     first_seen_at: datetime,
     last_seen_at: datetime,
+    input_snapshot: Optional[dict],
+    input_snapshot_at: Optional[datetime],
+    submit_snapshot: Optional[dict],
+    submit_snapshot_at: Optional[datetime],
 ) -> bool:
     """Add one address's deltas.  Returns whether the address was new."""
 
-    digest = url_hash(url)
+    digest = url_hash(url, url_params)
     stmt = select(BrowserPageVisit).where(
         BrowserPageVisit.session_id == session_id, BrowserPageVisit.url_hash == digest
     )
@@ -106,7 +116,20 @@ def merge_page(
             BrowserPageVisit(
                 session_id=session_id,
                 url=url,
+                url_params=url_params,
                 url_hash=digest,
+                input_snapshot=(
+                    input_snapshot if input_snapshot_at is not None else None
+                ),
+                input_snapshot_at=(
+                    input_snapshot_at if input_snapshot is not None else None
+                ),
+                submit_snapshot=(
+                    submit_snapshot if submit_snapshot_at is not None else None
+                ),
+                submit_snapshot_at=(
+                    submit_snapshot_at if submit_snapshot is not None else None
+                ),
                 first_seen_at=first_seen_at,
                 last_seen_at=last_seen_at,
                 **{name: int(deltas.get(name, 0)) for name in _COUNTERS},
@@ -117,6 +140,16 @@ def merge_page(
         setattr(item, name, int(getattr(item, name) or 0) + int(deltas.get(name, 0)))
     item.first_seen_at = min(item.first_seen_at, first_seen_at)
     item.last_seen_at = max(item.last_seen_at, last_seen_at)
+    if input_snapshot is not None and input_snapshot_at is not None and (
+        item.input_snapshot_at is None or input_snapshot_at > item.input_snapshot_at
+    ):
+        item.input_snapshot = input_snapshot
+        item.input_snapshot_at = input_snapshot_at
+    if submit_snapshot is not None and submit_snapshot_at is not None and (
+        item.submit_snapshot_at is None or submit_snapshot_at > item.submit_snapshot_at
+    ):
+        item.submit_snapshot = submit_snapshot
+        item.submit_snapshot_at = submit_snapshot_at
     return False
 
 

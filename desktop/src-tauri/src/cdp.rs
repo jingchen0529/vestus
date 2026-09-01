@@ -18,16 +18,16 @@
 //!
 //! # 采集边界
 //!
-//! 只上报「规范化后的 URL + 各类操作次数 + 停留时长」。不采页面标题、不采表单
-//! 内容、不采点了哪个元素、不采按了哪个键，也不采 query——[`normalize_url`] 在进
-//! 内存之前就剥掉 query 和 fragment，它们经常带 token、session id 和搜索词。
+//! 只上报「规范化后的 URL + 各类操作次数 + 停留时长」。不采页面标题、不采点了哪
+//! 个元素、不采按了哪个键；query 会在进内存前逐项脱敏后单独保存，fragment 与凭据
+//! 仍会丢弃。
 //!
 //! # 与页面脚本的隔离
 //!
 //! 注入脚本在文档最前面运行，拿到 binding 的函数引用后立刻 `delete` 掉那个全局
 //! 属性。于是页面自己的脚本既看不见这个通道，也没法伪造上报。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -56,10 +56,24 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// 而完整保留会让内存和数据库列被一条病态路径占住。
 const MAX_URL_BYTES: usize = 500;
 
+/// 经过脱敏后的 query 最大字节数，给单页聚合键和上报体留出硬上限。
+const MAX_URL_PARAMS_BYTES: usize = 4096;
+const MAX_URL_PARAM_PAIRS: usize = 200;
+
+/// 页面提交的快照在进入聚合前的第二道边界。
+const MAX_SNAPSHOT_FIELDS: usize = 50;
+const MAX_SNAPSHOT_KEY_BYTES: usize = 128;
+const MAX_SNAPSHOT_VALUES_PER_FIELD: usize = 20;
+const MAX_SNAPSHOT_VALUE_BYTES: usize = 512;
+const MAX_SNAPSHOT_TOTAL_BYTES: usize = 32 * 1024;
+
+/// 一次表单交互中允许上报的、已过滤的字段快照。
+pub type FormSnapshot = BTreeMap<String, Vec<String>>;
+
 /// 注入到每个新文档最前面的采集脚本。
 ///
-/// 只数事件个数，不看事件内容：没有 `event.target`、没有键值、没有表单值。滚动
-/// 按 500ms 合并，否则一次拖动就是几十条。
+/// 只采经字段类型和敏感键过滤、再受严格大小限制的表单值；不采页面标题、点击元素、
+/// 按键、Cookie 或文件内容。滚动按 500ms 合并，否则一次拖动就是几十条。
 ///
 /// 每次上报的 `dwellMs` 是**自上次上报以来**的增量，不是累计值：于是宿主侧只需要
 /// 相加，同一个地址被访问两次也能算对。页面转到后台时先结账再停表，所以隐藏期间
@@ -75,15 +89,68 @@ const COLLECTOR_SCRIPT: &str = r#"(() => {
   const FLUSH_DELAY = 1000;
   const SCROLL_COALESCE = 500;
   const HEARTBEAT = 60000;
+  const MAX_SNAPSHOT_FIELDS = 50;
+  const MAX_SNAPSHOT_KEY_BYTES = 128;
+  const MAX_SNAPSHOT_VALUES_PER_FIELD = 20;
+  const MAX_SNAPSHOT_VALUE_BYTES = 512;
+  const MAX_SNAPSHOT_TOTAL_BYTES = 32 * 1024;
+  const textEncoder = new TextEncoder();
   let pending = null;
   let timer = 0;
   let lastScroll = -SCROLL_COALESCE;
   let dwellBase = performance.now();
+  const isSensitiveKey = (key) => {
+    const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+    return /password|passwd|pwd|token|secret|authorization|cookie|session|otp|captcha|cvv|cvc/.test(normalized);
+  };
+  const jsonBytes = (value) => textEncoder.encode(JSON.stringify(value)).length;
+  const snapshotFor = (target) => {
+    const form = target instanceof Element ? target.closest('form') : null;
+    const scope = form || document;
+    const snapshot = Object.create(null);
+    let fieldCount = 0;
+    // `{}` itself occupies two bytes. Maintain the exact JSON byte count so an
+    // untrusted page cannot make this binding payload grow before Rust trims it.
+    let snapshotBytes = 2;
+    for (const field of scope.querySelectorAll('input, textarea, select')) {
+      if (field.disabled) continue;
+      const key = field.getAttribute('name') || field.id || field.getAttribute('aria-label');
+      if (!key || isSensitiveKey(key)) continue;
+      if (textEncoder.encode(key).length > MAX_SNAPSHOT_KEY_BYTES) continue;
+      const type = field instanceof HTMLInputElement ? field.type.toLowerCase() : '';
+      if (type === 'password' || type === 'hidden' || type === 'file') continue;
+      let values;
+      if (type === 'checkbox' || type === 'radio') values = [String(field.checked)];
+      else if (field instanceof HTMLSelectElement && field.multiple) {
+        values = Array.from(field.selectedOptions, option => option.value);
+      } else values = [field.value];
+      const hasField = () => Object.prototype.hasOwnProperty.call(snapshot, key);
+      if (!hasField() && fieldCount >= MAX_SNAPSHOT_FIELDS) return snapshot;
+      for (const value of values) {
+        if ((hasField() ? snapshot[key] : []).length >= MAX_SNAPSHOT_VALUES_PER_FIELD) break;
+        if (textEncoder.encode(value).length > MAX_SNAPSHOT_VALUE_BYTES) continue;
+        const isNewField = !hasField();
+        const addedBytes = jsonBytes(value)
+          + (isNewField ? jsonBytes(key) + 3 + (fieldCount ? 1 : 0) : (snapshot[key].length ? 1 : 0));
+        if (snapshotBytes + addedBytes > MAX_SNAPSHOT_TOTAL_BYTES) return snapshot;
+        if (isNewField) { snapshot[key] = []; fieldCount += 1; }
+        snapshot[key].push(value);
+        snapshotBytes += addedBytes;
+      }
+    }
+    return snapshot;
+  };
+  let pendingInputSnapshot = null;
+  let pendingSubmitSnapshot = null;
 
   const send = () => {
     if (timer) { clearTimeout(timer); timer = 0; }
     const counts = pending;
     pending = null;
+    const inputSnapshot = pendingInputSnapshot;
+    pendingInputSnapshot = null;
+    const submitSnapshot = pendingSubmitSnapshot;
+    pendingSubmitSnapshot = null;
     const now = performance.now();
     const elapsed = Math.round(now - dwellBase);
     dwellBase = now;
@@ -92,6 +159,8 @@ const COLLECTOR_SCRIPT: &str = r#"(() => {
         url: location.href,
         dwellMs: elapsed,
         counts: counts || {},
+        inputSnapshot,
+        submitSnapshot,
       }));
     } catch (error) {}
   };
@@ -102,9 +171,18 @@ const COLLECTOR_SCRIPT: &str = r#"(() => {
   };
 
   addEventListener('click', () => bump('click'), true);
-  addEventListener('submit', () => bump('submit'), true);
-  addEventListener('input', () => bump('input'), true);
-  addEventListener('change', () => bump('input'), true);
+  addEventListener('submit', (event) => {
+    pendingSubmitSnapshot = snapshotFor(event.target);
+    bump('submit');
+  }, true);
+  addEventListener('input', (event) => {
+    pendingInputSnapshot = snapshotFor(event.target);
+    bump('input');
+  }, true);
+  addEventListener('change', (event) => {
+    pendingInputSnapshot = snapshotFor(event.target);
+    bump('input');
+  }, true);
   addEventListener('scroll', () => {
     const now = performance.now();
     if (now - lastScroll < SCROLL_COALESCE) return;
@@ -130,6 +208,8 @@ const COLLECTOR_SCRIPT: &str = r#"(() => {
 pub struct PageReport {
     /// 已经剥掉 query 和 fragment 的地址。
     pub url: String,
+    /// 已在浏览器侧脱敏的 query（不含 `?`）。
+    pub url_params: Option<String>,
     pub visits: u32,
     pub clicks: u32,
     pub inputs: u32,
@@ -138,12 +218,21 @@ pub struct PageReport {
     /// 自上一次上报以来的停留毫秒数（增量，不含页面在后台的时间）。因为是增量，
     /// 聚合时直接相加即可，同一个地址被访问两次也不会互相覆盖。
     pub dwell_ms: u64,
+    /// 自上次 flush 后最新的一份 input/change 表单快照。
+    pub input_snapshot: Option<FormSnapshot>,
+    /// 由聚合器赋值的 input 快照接收时间；页面侧永远传 0。
+    pub input_snapshot_at_ms: u64,
+    /// 自上次 flush 后最新的一份 submit 表单快照。
+    pub submit_snapshot: Option<FormSnapshot>,
+    /// 由聚合器赋值的 submit 快照接收时间；页面侧永远传 0。
+    pub submit_snapshot_at_ms: u64,
 }
 
 impl PageReport {
-    fn visit(url: String) -> Self {
+    fn visit_parts(url: String, url_params: Option<String>) -> Self {
         Self {
             url,
+            url_params,
             visits: 1,
             ..Self::default()
         }
@@ -226,9 +315,9 @@ const MAX_COUNT_PER_REPORT: u64 = 10_000;
 const MAX_DWELL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// 把注入脚本回传的 JSON 翻成一条报告。
-fn parse_payload(payload: &str) -> Option<PageReport> {
+pub(crate) fn parse_payload(payload: &str) -> Option<PageReport> {
     let value: Value = serde_json::from_str(payload).ok()?;
-    let url = normalize_url(value.get("url").and_then(Value::as_str)?)?;
+    let (url, url_params) = normalize_page_url(value.get("url").and_then(Value::as_str)?)?;
     let counts = value.get("counts").unwrap_or(&Value::Null);
     let count = |kind: &str| -> u32 {
         counts
@@ -239,6 +328,7 @@ fn parse_payload(payload: &str) -> Option<PageReport> {
     };
     Some(PageReport {
         url,
+        url_params,
         visits: 0,
         clicks: count("click"),
         inputs: count("input"),
@@ -249,27 +339,162 @@ fn parse_payload(payload: &str) -> Option<PageReport> {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             .min(MAX_DWELL_MS),
+        input_snapshot: sanitize_snapshot(value.get("inputSnapshot")),
+        input_snapshot_at_ms: 0,
+        submit_snapshot: sanitize_snapshot(value.get("submitSnapshot")),
+        submit_snapshot_at_ms: 0,
     })
+}
+
+fn sanitize_snapshot(value: Option<&Value>) -> Option<FormSnapshot> {
+    let fields = value?.as_object()?;
+    let mut snapshot = FormSnapshot::new();
+    // Do not make the retained prefix depend on serde_json's optional
+    // preserve_order feature or on the order a hostile page chose for keys.
+    let mut ordered_fields = fields.iter().collect::<Vec<_>>();
+    ordered_fields.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    for (key, values) in ordered_fields {
+        if !snapshot.contains_key(key) && snapshot.len() >= MAX_SNAPSHOT_FIELDS {
+            break;
+        }
+        if key.len() > MAX_SNAPSHOT_KEY_BYTES || is_sensitive_key(key) {
+            continue;
+        }
+        let Some(values) = values.as_array() else {
+            continue;
+        };
+        for value in values.iter().filter_map(Value::as_str) {
+            if value.len() > MAX_SNAPSHOT_VALUE_BYTES {
+                continue;
+            }
+            if snapshot
+                .get(key)
+                .is_some_and(|existing| existing.len() >= MAX_SNAPSHOT_VALUES_PER_FIELD)
+            {
+                break;
+            }
+            let mut candidate = snapshot.clone();
+            candidate
+                .entry(key.clone())
+                .or_default()
+                .push(value.to_string());
+            // Measure the actual wire value, including JSON escaping and punctuation.
+            // The source map is ordered, so stopping at this boundary is deterministic.
+            if serde_json::to_vec(&candidate)
+                .map_or(true, |encoded| encoded.len() > MAX_SNAPSHOT_TOTAL_BYTES)
+            {
+                return (!snapshot.is_empty()).then_some(snapshot);
+            }
+            snapshot = candidate;
+        }
+    }
+    (!snapshot.is_empty()).then_some(snapshot)
 }
 
 /// 只留 scheme + host + port + path，别的一概不要。
 ///
-/// query 和 fragment 是明确的采集边界：它们经常带 token、session id 和搜索词，
-/// 剥在这里意味着它们连内存都进不去。凭据一起去掉——`Url` 会把它们序列化回
-/// host 前面。非 http(s) 的地址（`about:blank`、`chrome://`、`devtools://`）
-/// 不是「访问了一个页面」，直接丢。
+/// `url` 只保留 scheme + host + port + path；query 单独脱敏后写入 `url_params`，
+/// fragment 与凭据一起丢弃。非 http(s) 的地址（`about:blank`、`chrome://`、
+/// `devtools://`）不是「访问了一个页面」，直接丢。
+#[allow(dead_code)]
 pub fn normalize_url(raw: &str) -> Option<String> {
+    normalize_page_url(raw).map(|(url, _)| url)
+}
+
+/// 规范化地址并在剥离 URL 前单独保留安全的 query。
+fn normalize_page_url(raw: &str) -> Option<(String, Option<String>)> {
     let mut url = Url::parse(raw).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return None;
     }
+    let url_params = url
+        .query()
+        .filter(|query| !query.is_empty())
+        .and_then(redact_query);
     url.set_query(None);
     url.set_fragment(None);
     url.set_username("").ok()?;
     url.set_password(None).ok()?;
-    let normalized = url.into();
+    let normalized: String = url.into();
     // 剥完还超长的只能是病态路径：截断会造出一个并不存在的地址，所以宁可不记。
-    Some(normalized).filter(|value: &String| value.len() <= MAX_URL_BYTES)
+    Some((normalized, url_params)).filter(|(url, _)| url.len() <= MAX_URL_BYTES)
+}
+
+fn redact_query(query: &str) -> Option<String> {
+    let mut rendered = String::new();
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()).take(MAX_URL_PARAM_PAIRS) {
+        let value = if is_sensitive_key(&key) {
+            "[REDACTED]"
+        } else {
+            value.as_ref()
+        };
+        let pair = backend_urlencode_pair(&key, value);
+        let extra_bytes = pair.len() + usize::from(!rendered.is_empty());
+        // A pair is all-or-nothing: never truncate in the middle of `%HH` or a
+        // UTF-8 sequence, and retain the canonical form the server will parse.
+        if rendered.len().saturating_add(extra_bytes) > MAX_URL_PARAMS_BYTES {
+            continue;
+        }
+        if !rendered.is_empty() {
+            rendered.push('&');
+        }
+        rendered.push_str(&pair);
+    }
+    (!rendered.is_empty()).then_some(rendered)
+}
+
+/// Match Python's ``urllib.parse.urlencode`` byte-for-byte. The WHATWG form
+/// serializer used by `url` disagrees specifically on `*` and `~`; letting the
+/// server re-encode those near the limit could turn a valid 4096-byte value into
+/// a rejected one.
+fn backend_urlencode_pair(key: &str, value: &str) -> String {
+    let mut encoded = backend_quote_plus(key);
+    encoded.push('=');
+    encoded.push_str(&backend_quote_plus(value));
+    encoded
+}
+
+fn backend_quote_plus(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte))
+            }
+            b' ' => encoded.push('+'),
+            _ => {
+                encoded.push('%');
+                encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+                encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+        }
+    }
+    encoded
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let key = key
+        .to_lowercase()
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>();
+    [
+        "password",
+        "passwd",
+        "pwd",
+        "token",
+        "secret",
+        "authorization",
+        "cookie",
+        "session",
+        "otp",
+        "captcha",
+        "cvv",
+        "cvc",
+    ]
+    .iter()
+    .any(|needle| key.contains(needle))
 }
 
 /// 一条消息处理完之后要做的两件事。
@@ -406,8 +631,10 @@ impl Collector {
                 let frame = params.get("frame").unwrap_or(&Value::Null);
                 if frame.get("parentId").is_none() {
                     if let Some(url) = frame.get("url").and_then(Value::as_str) {
-                        out.reports
-                            .extend(normalize_url(url).map(PageReport::visit));
+                        out.reports.extend(
+                            normalize_page_url(url)
+                                .map(|(url, url_params)| PageReport::visit_parts(url, url_params)),
+                        );
                     }
                 }
             }
@@ -415,8 +642,10 @@ impl Collector {
             // 路由切换只有这个事件能看见。
             "Page.navigatedWithinDocument" => {
                 if let Some(url) = params.get("url").and_then(Value::as_str) {
-                    out.reports
-                        .extend(normalize_url(url).map(PageReport::visit));
+                    out.reports.extend(
+                        normalize_page_url(url)
+                            .map(|(url, url_params)| PageReport::visit_parts(url, url_params)),
+                    );
                 }
             }
             "Runtime.bindingCalled" => {
@@ -449,8 +678,10 @@ impl Collector {
         // 已经附上的页面不会再补一条 frameNavigated，所以它当前的地址只能从这里
         // 拿。新建的 target 这里通常是 about:blank，被 normalize_url 过滤掉。
         if let Some(url) = target.get("url").and_then(Value::as_str) {
-            out.reports
-                .extend(normalize_url(url).map(PageReport::visit));
+            out.reports.extend(
+                normalize_page_url(url)
+                    .map(|(url, url_params)| PageReport::visit_parts(url, url_params)),
+            );
         }
         out.commands.extend(self.install(&session_id));
     }
@@ -563,7 +794,10 @@ mod tests {
         let handled = collector.handle(&attached("S1", "page", "https://shop.example.test/orders"));
         assert_eq!(
             handled.reports,
-            vec![PageReport::visit("https://shop.example.test/orders".into())]
+            vec![PageReport::visit_parts(
+                "https://shop.example.test/orders".into(),
+                None,
+            )]
         );
     }
 
@@ -646,7 +880,10 @@ mod tests {
         .to_string();
         assert_eq!(
             collector.handle(&main).reports,
-            vec![PageReport::visit("https://shop.example.test/cart".into())]
+            vec![PageReport::visit_parts(
+                "https://shop.example.test/cart".into(),
+                None,
+            )]
         );
 
         let iframe = json!({
@@ -673,9 +910,32 @@ mod tests {
 
         assert_eq!(
             collector.handle(&event).reports,
-            vec![PageReport::visit(
-                "https://shop.example.test/orders/1".into()
+            vec![PageReport::visit_parts(
+                "https://shop.example.test/orders/1".into(),
+                None,
             )]
+        );
+    }
+
+    #[test]
+    fn navigation_visits_keep_the_redacted_query_parameters() {
+        let mut collector = Collector::default();
+        let event = json!({
+            "sessionId": "S1",
+            "method": "Page.frameNavigated",
+            "params": { "frame": {
+                "id": "F1",
+                "url": "https://shop.example.test/orders?order=42&sessionId=private"
+            }}
+        })
+        .to_string();
+
+        let reports = collector.handle(&event).reports;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].url, "https://shop.example.test/orders");
+        assert_eq!(
+            reports[0].url_params.as_deref(),
+            Some("order=42&sessionId=%5BREDACTED%5D")
         );
     }
 
@@ -707,12 +967,14 @@ mod tests {
             collector.handle(&call("S1", BINDING_NAME)).reports,
             vec![PageReport {
                 url: "https://shop.example.test/cart".into(),
+                url_params: Some("token=%5BREDACTED%5D".into()),
                 visits: 0,
                 clicks: 3,
                 inputs: 2,
                 submits: 1,
                 scrolls: 7,
                 dwell_ms: 4200,
+                ..PageReport::default()
             }]
         );
         assert!(collector
@@ -872,16 +1134,177 @@ mod tests {
         assert_eq!(absurd.scrolls, 0);
     }
 
-    /// 注入脚本必须只在顶层文档跑、必须先摘掉全局属性、且不许碰事件内容。
     #[test]
-    fn the_injected_script_stays_within_the_collection_boundary() {
+    fn payload_splits_and_redacts_query_parameters_before_aggregation() {
+        let report = parse_payload(
+            &json!({
+                "url": "https://shop.example.test/cart?order=42&TOKEN=secret&empty=&order=43#top",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(report.url, "https://shop.example.test/cart");
+        assert!(format!("{report:?}")
+            .contains("url_params: Some(\"order=42&TOKEN=%5BREDACTED%5D&empty=&order=43\")"));
+    }
+
+    #[test]
+    fn sensitive_keys_ignore_case_and_non_alphanumerics_in_every_spelling() {
+        for key in [
+            "pass-word",
+            "api_token",
+            "sess-ion",
+            "OTP code",
+            "Cvv.Number",
+        ] {
+            assert!(is_sensitive_key(key), "{key}");
+        }
+        assert!(!is_sensitive_key("customer-email"));
+    }
+
+    #[test]
+    fn query_redaction_keeps_only_complete_canonical_pairs_within_the_cap() {
+        let huge_pair = "%E7%95%8C".repeat(2_000);
+        let (_url, params) = normalize_page_url(&format!(
+            "https://shop.example.test/p?emoji=%F0%9F%9A%80&huge={huge_pair}&tail=ok"
+        ))
+        .unwrap();
+        let params = params.unwrap();
+        assert!(params.len() <= MAX_URL_PARAMS_BYTES);
+
+        let reparsed = url::form_urlencoded::parse(params.as_bytes()).collect::<Vec<_>>();
+        assert_eq!(
+            reparsed,
+            vec![("emoji".into(), "🚀".into()), ("tail".into(), "ok".into())]
+        );
+        let mut canonical = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in &reparsed {
+            canonical.append_pair(key, value);
+        }
+        assert_eq!(params, canonical.finish());
+    }
+
+    #[test]
+    fn query_encoding_matches_the_backend_python_urlencode_contract() {
+        let (_url, params) =
+            normalize_page_url("https://shop.example.test/p?star=*&tilde=~&space=hello%20world")
+                .unwrap();
+
+        assert_eq!(
+            params.as_deref(),
+            Some("star=%2A&tilde=~&space=hello+world")
+        );
+    }
+
+    #[test]
+    fn query_redaction_limits_the_number_of_complete_pairs() {
+        let query = (0..201)
+            .map(|index| format!("p{index}=v{index}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let (_url, params) =
+            normalize_page_url(&format!("https://shop.example.test/p?{query}")).unwrap();
+        let params = params.unwrap();
+        let pairs = url::form_urlencoded::parse(params.as_bytes()).collect::<Vec<_>>();
+        assert_eq!(pairs.len(), 200);
+        assert_eq!(pairs.first(), Some(&("p0".into(), "v0".into())));
+        assert_eq!(pairs.last(), Some(&("p199".into(), "v199".into())));
+    }
+
+    #[test]
+    fn payload_rejects_sensitive_and_oversized_snapshot_values() {
+        let long_value = "x".repeat(513);
+        let payload = json!({
+            "url": "https://shop.example.test/cart",
+            "inputSnapshot": {
+                "email": ["buyer@example.test"],
+                "password": ["do-not-collect"],
+                "tooLong": [long_value],
+            },
+            "submitSnapshot": { "quantity": ["2"] },
+        })
+        .to_string();
+
+        let report = parse_payload(&payload).unwrap();
+        let debug = format!("{report:?}");
+        assert!(debug.contains("input_snapshot: Some({\"email\": [\"buyer@example.test\"]})"));
+        assert!(debug.contains("submit_snapshot: Some({\"quantity\": [\"2\"]})"));
+        assert!(!debug.contains("do-not-collect"));
+        assert!(!debug.contains("tooLong"));
+    }
+
+    #[test]
+    fn snapshot_sanitizing_enforces_utf8_and_total_byte_boundaries() {
+        let accepted_key = "界".repeat(42); // 126 UTF-8 bytes
+        let rejected_key = "界".repeat(43); // 129 UTF-8 bytes
+        let accepted_value = "🚀".repeat(128); // 512 UTF-8 bytes
+        let rejected_value = "🚀".repeat(129); // 516 UTF-8 bytes
+        let mut fields = serde_json::Map::new();
+        fields.insert(accepted_key.clone(), json!([accepted_value]));
+        fields.insert(rejected_key.clone(), json!(["ignored"]));
+        fields.insert("too-large".into(), json!([rejected_value]));
+        let snapshot = sanitize_snapshot(Some(&Value::Object(fields))).unwrap();
+        assert!(snapshot.contains_key(&accepted_key));
+        assert!(!snapshot.contains_key(&rejected_key));
+        assert!(!snapshot.contains_key("too-large"));
+
+        let mut large_fields = serde_json::Map::new();
+        for index in 0..50 {
+            large_fields.insert(
+                format!("field-{index:02}"),
+                json!(vec!["x".repeat(512); 20]),
+            );
+        }
+        let snapshot = sanitize_snapshot(Some(&Value::Object(large_fields))).unwrap();
+        assert!(serde_json::to_vec(&snapshot).unwrap().len() <= MAX_SNAPSHOT_TOTAL_BYTES);
+        assert!(snapshot.len() <= MAX_SNAPSHOT_FIELDS);
+        assert!(snapshot
+            .values()
+            .all(|values| values.len() <= MAX_SNAPSHOT_VALUES_PER_FIELD));
+    }
+
+    #[test]
+    fn payload_leaves_snapshot_timestamps_for_the_aggregate_to_assign() {
+        let report = parse_payload(
+            &json!({
+                "url": "https://a.test/p",
+                "inputSnapshot": { "email": ["buyer@example.test"] },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let debug = format!("{report:?}");
+        assert!(debug.contains("input_snapshot_at_ms: 0"));
+        assert!(debug.contains("submit_snapshot_at_ms: 0"));
+    }
+
+    /// 注入脚本必须只在顶层文档跑、必须先摘掉全局属性，只读取经白名单过滤的表单值。
+    #[test]
+    fn the_injected_script_collects_only_safe_form_snapshots() {
         assert!(COLLECTOR_SCRIPT.contains("if (window.top !== window) return;"));
         assert!(COLLECTOR_SCRIPT.contains(&format!("delete window.{BINDING_NAME}")));
         assert!(COLLECTOR_SCRIPT.contains(&format!("window.{BINDING_NAME}")));
-        // 只数个数：不读元素、不读键、不读表单值
+        assert!(COLLECTOR_SCRIPT.contains("inputSnapshot"));
+        assert!(COLLECTOR_SCRIPT.contains("submitSnapshot"));
+        assert!(COLLECTOR_SCRIPT.contains("input, textarea, select"));
+        assert!(COLLECTOR_SCRIPT.contains("type === 'password'"));
+        assert!(COLLECTOR_SCRIPT.contains("type === 'hidden'"));
+        assert!(COLLECTOR_SCRIPT.contains("type === 'file'"));
+        assert!(COLLECTOR_SCRIPT.contains("selectedOptions"));
+        assert!(COLLECTOR_SCRIPT.contains("checked"));
+        assert!(COLLECTOR_SCRIPT.contains("MAX_SNAPSHOT_FIELDS = 50"));
+        assert!(COLLECTOR_SCRIPT.contains("MAX_SNAPSHOT_VALUES_PER_FIELD = 20"));
+        assert!(COLLECTOR_SCRIPT.contains("MAX_SNAPSHOT_KEY_BYTES = 128"));
+        assert!(COLLECTOR_SCRIPT.contains("MAX_SNAPSHOT_VALUE_BYTES = 512"));
+        assert!(COLLECTOR_SCRIPT.contains("MAX_SNAPSHOT_TOTAL_BYTES = 32 * 1024"));
+        assert!(COLLECTOR_SCRIPT.contains("return snapshot"));
+        assert!(COLLECTOR_SCRIPT.contains("Object.create(null)"));
+        assert!(COLLECTOR_SCRIPT.contains("Object.prototype.hasOwnProperty.call(snapshot, key)"));
+        assert!(COLLECTOR_SCRIPT.contains("replace(/[^a-z0-9]/g, '')"));
+        // 不读取页面其它敏感内容。
         for forbidden in [
-            "event.target",
-            ".value",
             "textContent",
             "innerText",
             "outerHTML",

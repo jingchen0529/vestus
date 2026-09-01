@@ -13,18 +13,17 @@ batch cannot rewrite history.  ``session_key`` is what ties the batches of one
 browser run together; it is unique per user, not globally, which is all the
 client can cheaply guarantee.
 
-What is *not* here is as much of the design as what is: no page titles, no form
-contents, no clicked element, no keystrokes and no query string.  The desktop
-side strips the query before reporting and the service layer strips it again --
-see :mod:`app.services.browser_activity`.
+Page titles, clicked elements, keystrokes, credentials and sensitive form fields
+remain outside the collection boundary.  Query data is stored separately from
+the base address, and only the latest bounded input/submit snapshots are kept.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Dict, List, Optional
 
-from sqlalchemy import BigInteger, Boolean, LargeBinary, String, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import TABLE_ARGS, Base, DateTime6, IdType, utc_now
@@ -90,9 +89,12 @@ class BrowserPageVisit(Base):
     id: Mapped[int] = mapped_column(IdType, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(IdType, nullable=False, index=True)
     url: Mapped[str] = mapped_column(String(500), nullable=False)
-    #: SHA-256 of ``url``, hex.  The uniqueness we want is on the address, but a
-    #: 500-character utf8mb4 column is 2000 bytes and blows past InnoDB's index
-    #: key limit, so the constraint rides on the digest instead.
+    #: Sanitized query string without the leading ``?``.  It is separate so the
+    #: address remains readable in the admin detail view.
+    url_params: Mapped[Optional[str]] = mapped_column(String(4096), nullable=True)
+    #: SHA-256 of ``url`` plus sanitized ``url_params``, hex.  The identity can
+    #: be much wider than InnoDB's index key limit, so uniqueness rides on the
+    #: digest instead.
     url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     visits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
@@ -103,6 +105,22 @@ class BrowserPageVisit(Base):
     #: Foreground time only; the injected collector stops the clock when the tab
     #: is hidden, so this is attention rather than wall time.
     dwell_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    #: Only the newest bounded snapshots are retained. The client excludes
+    #: hidden/file controls and both sides independently remove sensitive-name
+    #: fields before persistence.
+    input_snapshot: Mapped[Optional[Dict[str, List[str]]]] = mapped_column(
+        JSON, nullable=True
+    )
+    input_snapshot_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime6, nullable=True
+    )
+    submit_snapshot: Mapped[Optional[Dict[str, List[str]]]] = mapped_column(
+        JSON, nullable=True
+    )
+    submit_snapshot_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime6, nullable=True
+    )
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)
     last_seen_at: Mapped[datetime] = mapped_column(

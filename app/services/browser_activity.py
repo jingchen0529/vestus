@@ -10,9 +10,9 @@ The recording side has three jobs beyond the obvious write:
   machine we do not control.  They are only used to order and to date rows
   *within* a plausible window; anything outside it collapses to server time, and
   the audit columns are server time unconditionally.
-* **Strip the address again.**  :func:`~app.schemas.browser_activity.normalize_reported_url`
-  already ran in the request model; the URL that reaches the database has no
-  query, no fragment and no credentials regardless of what the client sent.
+* **Re-apply the collection boundary.**  The request model keeps the base URL
+  free of query/fragment/credentials, redacts sensitive query values and drops
+  sensitive or oversized snapshot fields without trusting the desktop client.
 """
 
 from __future__ import annotations
@@ -54,6 +54,27 @@ def _server_time(value_ms: int, now: datetime) -> datetime:
         return now
     if moment > now + MAX_CLOCK_SKEW_FUTURE or moment < now - MAX_CLOCK_SKEW_PAST:
         return now
+    return moment
+
+
+def _snapshot_time(value_ms: int, now: datetime) -> Optional[datetime]:
+    """Return a trustworthy ordering timestamp, never a server-time fallback.
+
+    Falling back to ``now`` is correct for visit/audit dates, but unsafe for a
+    last-value-wins snapshot: a delayed old batch would become newest merely by
+    arriving later.
+    """
+
+    if value_ms <= 0:
+        return None
+    try:
+        moment = datetime.fromtimestamp(value_ms / 1000.0, tz=timezone.utc).replace(
+            tzinfo=None
+        )
+    except (OverflowError, OSError, ValueError):
+        return None
+    if moment > now + MAX_CLOCK_SKEW_FUTURE or moment < now - MAX_CLOCK_SKEW_PAST:
+        return None
     return moment
 
 
@@ -133,13 +154,20 @@ def record_activity(
                 totals[name] += deltas[name]
             first_seen = _server_time(page.first_seen_at_ms, now)
             last_seen = max(first_seen, _server_time(page.last_seen_at_ms, now))
+            input_snapshot_at = _snapshot_time(page.input_snapshot_at_ms, now)
+            submit_snapshot_at = _snapshot_time(page.submit_snapshot_at_ms, now)
             if activity_repo.merge_page(
                 session,
                 session_id=item.id,
                 url=page.url,
+                url_params=page.url_params,
                 deltas=deltas,
                 first_seen_at=first_seen,
                 last_seen_at=last_seen,
+                input_snapshot=(page.input_snapshot if input_snapshot_at is not None else None),
+                input_snapshot_at=input_snapshot_at,
+                submit_snapshot=(page.submit_snapshot if submit_snapshot_at is not None else None),
+                submit_snapshot_at=submit_snapshot_at,
             ):
                 new_pages += 1
         activity_repo.add_session_totals(

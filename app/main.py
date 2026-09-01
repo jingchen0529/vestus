@@ -90,7 +90,7 @@ def create_app(database: Database | None = None) -> FastAPI:
 
     # Registration order is load bearing: Starlette makes the most recently
     # added middleware the outermost layer, so this yields
-    # RequestId -> SecurityHeaders -> UploadBodyLimit -> CORS -> router.  The
+    # RequestId -> SecurityHeaders -> route body limits -> CORS -> router.  The
     # inner three keep the pre-refactor order; RequestId goes outside all of
     # them because the id must exist before anything can log or return it.
     app.add_middleware(

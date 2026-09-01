@@ -304,6 +304,64 @@ test("浏览器会话表格标出客户端漏记过地址的会话", async () =>
   assert.equal(html.match(/不完整/g).length, 1);
 });
 
+test("浏览器会话地址明细独立展示参数且折叠快照不预渲染", async () => {
+  const { PageActivityMeta, PageAddress } = await server.ssrLoadModule(
+    "/src/components/activity/session-detail-modal.tsx",
+  );
+  const { formatDate } = await server.ssrLoadModule("/src/lib/utils.ts");
+
+  assert.equal(typeof PageActivityMeta, "function");
+  assert.equal(typeof PageAddress, "function");
+  const withSnapshots = renderToStaticMarkup(
+    createElement(PageAddress, {
+      pageItem: {
+        id: 1,
+        url: "https://shop.example.test/orders",
+        visits: 1,
+        clicks: 0,
+        inputs: 1,
+        submits: 1,
+        scrolls: 0,
+        dwellMs: 0,
+        urlParams: "customer=<script>alert('x')</script>&source=campaign",
+        inputSnapshot: { name: ["snapshot-only-marker"] },
+        inputSnapshotAt: "2026-09-01T10:00:00Z",
+        submitSnapshot: { orderId: ["A-100"] },
+        submitSnapshotAt: "2026-09-01T10:01:00Z",
+      },
+    }),
+  );
+  const emptyMeta = renderToStaticMarkup(
+    createElement(PageActivityMeta, {
+      pageItem: {
+        id: 2,
+        url: "https://shop.example.test/orders",
+        visits: 1,
+        clicks: 0,
+        inputs: 0,
+        submits: 0,
+        scrolls: 0,
+        dwellMs: 0,
+        urlParams: "   ",
+        inputSnapshot: { blank: [] },
+        submitSnapshot: {},
+      },
+    }),
+  );
+
+  assert.match(withSnapshots, />https:\/\/shop\.example\.test\/orders</);
+  assert.doesNotMatch(withSnapshots, /orders\?/);
+  assert.match(withSnapshots, /地址参数/);
+  assert.match(withSnapshots, /customer=&lt;script&gt;alert/);
+  assert.doesNotMatch(withSnapshots, /<script>alert/);
+  assert.match(withSnapshots, /客户输入快照/);
+  assert.match(withSnapshots, /提交内容快照/);
+  assert.ok(withSnapshots.includes(formatDate("2026-09-01T10:00:00Z")));
+  assert.ok(withSnapshots.includes(formatDate("2026-09-01T10:01:00Z")));
+  assert.doesNotMatch(withSnapshots, /snapshot-only-marker/);
+  assert.doesNotMatch(emptyMeta, /地址参数|客户输入快照|提交内容快照/);
+});
+
 test("前台停留时长最多显示两级单位", async () => {
   const { formatDuration } = await server.ssrLoadModule("/src/lib/utils.ts");
 

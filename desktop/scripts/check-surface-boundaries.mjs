@@ -41,19 +41,61 @@ const rustCommands = read("src-tauri/src/lib.rs");
 assert(!rustCommands.includes("commands::close_browser"), "Rust 仍注册多余的关闭浏览器 IPC");
 assert(!rustCommands.includes("commands::stop_proxy"), "Rust 仍注册多余的停止代理 IPC");
 
-// 页面自动化已移除：不得再参与编译，也不得再开调试端点。
-for (const removed of ["mod page;", "mod cdp;"]) {
-  assert(!rustCommands.includes(removed), `页面自动化模块又参与编译了：${removed}`);
-}
+// 页面自动化已移除：不得替用户操作浏览器。
+assert(!rustCommands.includes("mod page;"), "页面自动化模块又参与编译了：mod page;");
 assert(
   !rustCommands.includes("commands::run_page_script"),
   "Rust 仍注册页面自动化 IPC：run_page_script"
 );
+
+// 采集通道的权限下限，和上面那条是两件事：记录用户自己的操作是产品要求，但采集
+// 只需要「读」，那就不该顺手拿到「写」。cdp.rs 可以订阅事件、可以注入那个固定的
+// 计数脚本，不可以发驱动页面的命令——多出来的能力迟早会被当成现成的工具用。
+// 注入脚本自身读了什么（不读 event.target、textContent、document.title……）由
+// cdp.rs 的单元测试守，这里只管能力面。
+const rustCdp = read("src-tauri/src/cdp.rs");
+// 带前导引号匹配 CDP 方法名，才不会把 Page.navigatedWithinDocument 这类事件名
+// 当成 Page.navigate 命令。
+for (const method of [
+  '"Page.navigate"',
+  '"Page.goBack',
+  '"Page.goForward',
+  '"Page.reload',
+  '"Page.captureScreenshot',
+  '"Page.printToPDF',
+  '"Runtime.evaluate',
+  '"Runtime.callFunctionOn',
+  '"Target.createTarget',
+  '"Input.',
+  '"DOM.',
+  '"Storage.',
+  '"Emulation.',
+  '"Fetch.',
+  '"Network.enable',
+]) {
+  assert(!rustCdp.includes(method), `采集通道拿到了只读采集用不着的能力：${method}`);
+}
+
+// 调试端点是活动采集的唯一通道，所以它开着（见 browser.rs 的「调试端点」一节）。
+// 换来的收敛措施必须一条不少，否则这个端点就从「本机同用户可达」变成谁都可达。
+// 只看 chromium_arguments 的函数体，且参数名带引号匹配：同一段的注释和下面的单元
+// 测试都提到了这两个参数名——那是在说明为什么不传。
 const rustBrowser = read("src-tauri/src/browser.rs");
-assert(
-  !rustBrowser.includes('OsString::from("--remote-debugging-port'),
-  "浏览器又开了 DevTools 调试端点，页面自动化已移除，不需要本地控制通道"
+const argumentsStart = rustBrowser.indexOf("fn chromium_arguments(");
+const chromiumArguments = rustBrowser.slice(
+  argumentsStart,
+  rustBrowser.indexOf("\n}\n", argumentsStart)
 );
+assert(
+  chromiumArguments.includes('"--remote-debugging-port=0"'),
+  "DevTools 端口必须传 0 交给内核分配，写死端口就成了可预测的入口"
+);
+for (const forbidden of ["--remote-debugging-address", "--remote-allow-origins"]) {
+  assert(
+    !chromiumArguments.includes(`"${forbidden}`),
+    `DevTools 端点放宽了 ${forbidden}，被打开的网页或别的机器就能连上采集通道`
+  );
+}
 
 // 直连只有适配器一个执行点，其余模块不得绕开路由决策自行出站。
 const rustSrcDir = new URL("src-tauri/src/", root);

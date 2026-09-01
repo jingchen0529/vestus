@@ -4,13 +4,15 @@ The three properties worth locking down here are the ones a future change is mos
 likely to break by accident:
 
 * batches **add**, so a retried or duplicated upload cannot rewrite history;
-* the stored address never carries a query string, a fragment or credentials,
-  whatever the client sends;
+* the stored base address never carries a query string, fragment or credentials;
+  query data stays in a separately sanitized field;
+* only bounded, non-sensitive latest input/submit snapshots are retained;
 * a report only ever touches the reporting user's own session row.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -177,6 +179,251 @@ def test_the_stored_address_keeps_the_path_and_drops_everything_else(api: Any) -
     assert detail["pages"][0]["url"] == "https://shop.example.test/orders/42"
 
 
+def test_address_params_and_latest_content_snapshots_round_trip_separately(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    first = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/orders", inputs=1, submits=1),
+                "urlParams": "campaign=autumn&token=raw-secret&api_token=raw-secret-too",
+                "inputSnapshot": {
+                    "customerName": ["Alice"],
+                    "password": ["must-not-be-stored"],
+                    "apiToken": ["must-not-be-stored"],
+                },
+                "inputSnapshotAtMs": now_ms - 2_000,
+                "submitSnapshot": {"customerName": ["Alice"], "quantity": ["1"]},
+                "submitSnapshotAtMs": now_ms - 1_000,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms,
+        ),
+    )
+    assert first.status_code == 200, first.text
+
+    latest = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/orders", inputs=1, submits=1),
+                "urlParams": "campaign=autumn&token=another-secret&api_token=another-secret-too",
+                "inputSnapshot": {
+                    "customerName": ["Alice Chen"],
+                    "note": ["call <later>"],
+                    "pass-word": ["must-not-be-stored"],
+                },
+                "inputSnapshotAtMs": now_ms,
+                "submitSnapshot": {
+                    "customerName": ["Alice Chen"],
+                    "quantity": ["2"],
+                    "sessionId": ["must-not-be-stored"],
+                    "sess-ion": ["must-not-be-stored"],
+                },
+                "submitSnapshotAtMs": now_ms + 1_000,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms + 1_000,
+        ),
+    )
+    assert latest.status_code == 200, latest.text
+    assert payload(latest)["newPages"] == 0
+
+    other_params = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/orders", visits=1),
+                "urlParams": "campaign=winter",
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms + 2_000,
+        ),
+    )
+    assert other_params.status_code == 200, other_params.text
+    assert payload(other_params)["newPages"] == 1
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(first)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert detail["pageCount"] == 2
+    by_params = {row["urlParams"]: row for row in detail["pages"]}
+    redacted_params = (
+        "campaign=autumn&token=%5BREDACTED%5D&api_token=%5BREDACTED%5D"
+    )
+    assert set(by_params) == {redacted_params, "campaign=winter"}
+
+    page = by_params[redacted_params]
+    assert page["url"] == "https://shop.example.test/orders"
+    assert page["inputs"] == 2
+    assert page["submits"] == 2
+    assert page["inputSnapshot"] == {
+        "customerName": ["Alice Chen"],
+        "note": ["call <later>"],
+    }
+    assert page["submitSnapshot"] == {
+        "customerName": ["Alice Chen"],
+        "quantity": ["2"],
+    }
+    assert page["inputSnapshotAt"] is not None
+    assert page["submitSnapshotAt"] is not None
+
+
+def test_an_older_snapshot_cannot_overwrite_newer_content(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    newest = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", inputs=1),
+                "inputSnapshot": {"customerName": ["Newest"]},
+                "inputSnapshotAtMs": now_ms,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms,
+        ),
+    )
+    assert newest.status_code == 200, newest.text
+
+    older = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", clicks=3),
+                "inputSnapshot": {"customerName": ["Older"]},
+                "inputSnapshotAtMs": now_ms - 60_000,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms + 1_000,
+        ),
+    )
+    assert older.status_code == 200, older.text
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(newest)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert detail["pages"][0]["inputSnapshot"] == {"customerName": ["Newest"]}
+    assert detail["pages"][0]["clicks"] == 3
+
+
+def test_snapshot_normalization_never_exceeds_the_server_limit() -> None:
+    from app.schemas.browser_activity import MAX_SNAPSHOT_BYTES, sanitize_snapshot
+
+    colliding_prefix = "x" * 128
+    value = "v" * 512
+    snapshot = {colliding_prefix + "-first": [value] * 10}
+    snapshot.update({f"field-{index}": [value] for index in range(45)})
+    snapshot[colliding_prefix + "-second"] = [value] * 10
+
+    sanitized = sanitize_snapshot(snapshot)
+    encoded = json.dumps(
+        sanitized, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    assert len(encoded) <= MAX_SNAPSHOT_BYTES
+
+
+def test_snapshot_checks_sensitive_names_before_truncating_and_skips_collisions() -> None:
+    from app.schemas.browser_activity import sanitize_snapshot
+
+    sensitive = sanitize_snapshot(
+        {"x" * 128 + "password": ["must-not-survive"], "customerName": ["Alice"]}
+    )
+    assert sensitive == {"customerName": ["Alice"]}
+
+    colliding_prefix = "y" * 128
+    collision = sanitize_snapshot(
+        {
+            colliding_prefix + "-first": ["first-value"],
+            colliding_prefix + "-second": ["second-value"],
+        }
+    )
+    assert collision == {colliding_prefix: ["first-value"]}
+
+
+def test_snapshot_content_requires_a_capture_timestamp(api: Any) -> None:
+    client, _module = api
+    _admin_token, user_token, platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", inputs=1),
+                "inputSnapshot": {"customerName": ["Alice"]},
+            },
+            platformId=platform_id,
+        ),
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_equal_or_implausible_snapshot_times_cannot_replace_content(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    first = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", inputs=1),
+                "inputSnapshot": {"customerName": ["First"]},
+                "inputSnapshotAtMs": now_ms,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms,
+        ),
+    )
+    assert first.status_code == 200, first.text
+
+    for name, captured_at in (
+        ("Same millisecond", now_ms),
+        ("Stale", now_ms - int(timedelta(days=8).total_seconds() * 1000)),
+    ):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                {
+                    **_page("https://shop.example.test/order", clicks=1),
+                    "inputSnapshot": {"customerName": [name]},
+                    "inputSnapshotAtMs": captured_at,
+                },
+                platformId=platform_id,
+                reportedAtMs=now_ms + 1_000,
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(first)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert detail["pages"][0]["inputSnapshot"] == {"customerName": ["First"]}
+    assert detail["pages"][0]["clicks"] == 2
+
+
 def test_a_report_is_rejected_when_the_address_is_not_a_web_page(api: Any) -> None:
     client, _module = api
     _admin_token, user_token, platform_id = _setup(client)
@@ -317,6 +564,22 @@ def test_a_report_must_stay_within_the_declared_limits(api: Any) -> None:
         ).status_code
         == 422
     )
+
+
+def test_browser_activity_request_body_has_a_transport_limit(api: Any) -> None:
+    client, _module = api
+    _admin_token, user_token, _platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers={
+            **_bearer(user_token),
+            "Content-Type": "application/json",
+        },
+        content=b'{"padding":"' + (b"x" * (4 * 1024 * 1024)) + b'"}',
+    )
+    assert response.status_code == 413, response.text
+    assert code(response) == 41300
 
 
 def test_a_deleted_platform_leaves_the_recorded_name_intact(api: Any) -> None:

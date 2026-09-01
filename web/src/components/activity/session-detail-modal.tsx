@@ -16,7 +16,11 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { BrowserSessionDetail, BrowserSessionItem } from "@/types/browser-activity";
+import {
+  BrowserPageVisitItem,
+  BrowserSessionDetail,
+  BrowserSessionItem,
+} from "@/types/browser-activity";
 import { formatDate, formatDuration } from "@/lib/utils";
 import { Activity, AlertTriangle, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 
@@ -29,6 +33,85 @@ interface SessionDetailModalProps {
 }
 
 const PAGE_SIZE = 10;
+
+interface PageActivityMetaProps {
+  pageItem: BrowserPageVisitItem;
+}
+
+function hasSnapshotValues(snapshot?: Record<string, string[]> | null) {
+  return Boolean(snapshot && Object.values(snapshot).some((values) => values.length > 0));
+}
+
+function SnapshotBlock({
+  title,
+  snapshot,
+  capturedAt,
+}: {
+  title: string;
+  snapshot?: Record<string, string[]> | null;
+  capturedAt?: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (!hasSnapshotValues(snapshot)) return null;
+
+  return (
+    <details
+      className="mt-1.5 rounded border border-border/70 bg-muted/20 px-2 py-1.5"
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">
+        {title}
+        {capturedAt ? ` · ${formatDate(capturedAt)}` : ""}
+      </summary>
+      {expanded && (
+        <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-foreground">
+          {JSON.stringify(snapshot, null, 2)}
+        </pre>
+      )}
+    </details>
+  );
+}
+
+/** 地址相关的附加数据保持在地址单元格内，避免给会话表增加横向列。 */
+export function PageActivityMeta({ pageItem }: PageActivityMetaProps) {
+  const urlParams = pageItem.urlParams?.trim();
+  const hasParams = Boolean(urlParams);
+  const hasSnapshots = hasSnapshotValues(pageItem.inputSnapshot) || hasSnapshotValues(pageItem.submitSnapshot);
+
+  if (!hasParams && !hasSnapshots) return null;
+
+  return (
+    <div className="mt-1.5 space-y-1.5 text-[10px]">
+      {hasParams && (
+        <div>
+          <span className="text-muted-foreground">地址参数</span>
+          <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-foreground">
+            {urlParams}
+          </pre>
+        </div>
+      )}
+      <SnapshotBlock
+        title="客户输入快照"
+        snapshot={pageItem.inputSnapshot}
+        capturedAt={pageItem.inputSnapshotAt}
+      />
+      <SnapshotBlock
+        title="提交内容快照"
+        snapshot={pageItem.submitSnapshot}
+        capturedAt={pageItem.submitSnapshotAt}
+      />
+    </div>
+  );
+}
+
+export function PageAddress({ pageItem }: PageActivityMetaProps) {
+  return (
+    <>
+      <div>{pageItem.url}</div>
+      <PageActivityMeta pageItem={pageItem} />
+    </>
+  );
+}
 
 export function SessionDetailModal({
   open,
@@ -235,7 +318,7 @@ export function SessionDetailModal({
                           className="font-mono text-foreground break-all py-2.5 leading-relaxed"
                           title={pageItem.url}
                         >
-                          {pageItem.url}
+                          <PageAddress pageItem={pageItem} />
                         </TableCell>
                         <TableCell className="text-right whitespace-nowrap">{pageItem.visits}</TableCell>
                         <TableCell className="text-right whitespace-nowrap">{pageItem.clicks}</TableCell>

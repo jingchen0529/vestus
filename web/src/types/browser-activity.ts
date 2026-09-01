@@ -37,6 +37,14 @@ export interface BrowserPageVisitItem {
   dwellMs: number;
   firstSeenAt?: string;
   lastSeenAt?: string;
+  /** 与基础地址分离保存的查询参数，不拼回 URL。 */
+  urlParams?: string | null;
+  /** 最近一次采集到的客户输入字段快照。 */
+  inputSnapshot?: Record<string, string[]> | null;
+  inputSnapshotAt?: string | null;
+  /** 最近一次表单提交字段快照。 */
+  submitSnapshot?: Record<string, string[]> | null;
+  submitSnapshotAt?: string | null;
 }
 
 export interface BrowserSessionDetail extends BrowserSessionItem {

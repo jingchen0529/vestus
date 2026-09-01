@@ -1,4 +1,4 @@
-"""ASGI middleware: request identity, response hardening headers, upload limit.
+"""ASGI middleware: request identity, response hardening and body limits.
 
 Registration order in ``create_app()`` is load bearing.  Starlette treats the
 most recently added middleware as the outermost layer, so the historic order
@@ -12,6 +12,7 @@ the id has to exist before anything can log or return it, including the 413 that
 from __future__ import annotations
 
 import os
+from contextlib import suppress
 
 from starlette.formparsers import MultiPartException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -24,6 +25,8 @@ from app.core.uploads import upload_max_bytes
 
 UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 UPLOAD_ROUTE_PATH = "/api/admin/uploads"
+ACTIVITY_ROUTE_PATH = "/api/user/browser-activity"
+ACTIVITY_BODY_MAX_BYTES = 4 * 1024 * 1024
 
 REQUEST_ID_HEADER = "X-Request-Id"
 REQUEST_ID_MAX_LENGTH = 36
@@ -89,6 +92,14 @@ class UploadRequestTooLarge(MultiPartException):
     """Stop multipart parsing while letting Starlette close partial uploads."""
 
 
+class ActivityRequestTooLarge(Exception):
+    """Stop JSON parsing before an oversized activity batch is materialized."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def _route_path(scope: Scope) -> str:
     path = scope["path"]
     root_path = scope.get("root_path", "")
@@ -100,24 +111,38 @@ def _route_path(scope: Scope) -> str:
 
 
 class UploadBodyLimitMiddleware:
-    """Bound upload request bytes from ASGI receive messages.
+    """Bound large-route request bytes from ASGI receive messages.
 
     The wrapper deliberately does not pre-read the body. FastAPI can therefore
-    finish authentication before the route asks for multipart data, while the
-    byte count still covers chunked requests without a Content-Length header.
+    resolve dependencies normally, while the byte count still covers chunked
+    requests without a Content-Length header.  The historic class name remains
+    for compatibility; it now protects both uploads and activity batches.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("method") != "POST" or _route_path(scope) != UPLOAD_ROUTE_PATH:
+        if scope["type"] != "http" or scope.get("method") != "POST":
             await self.app(scope, receive, send)
             return
 
-        request_limit = upload_max_bytes() + UPLOAD_MULTIPART_OVERHEAD_BYTES
+        route_path = _route_path(scope)
+        too_large_error: type[Exception]
+        if route_path == UPLOAD_ROUTE_PATH:
+            request_limit = upload_max_bytes() + UPLOAD_MULTIPART_OVERHEAD_BYTES
+            too_large_message = "上传请求体超过大小限制"
+            too_large_error = UploadRequestTooLarge
+        elif route_path == ACTIVITY_ROUTE_PATH:
+            request_limit = ACTIVITY_BODY_MAX_BYTES
+            too_large_message = "浏览器活动请求体超过大小限制"
+            too_large_error = ActivityRequestTooLarge
+        else:
+            await self.app(scope, receive, send)
+            return
         received = 0
         too_large = False
+        buffered_response: list[Message] = []
 
         async def limited_receive() -> Message:
             nonlocal received, too_large
@@ -126,34 +151,41 @@ class UploadBodyLimitMiddleware:
                 received += len(message.get("body", b""))
                 if received > request_limit:
                     too_large = True
-                    raise UploadRequestTooLarge("上传请求体超过大小限制")
+                    raise too_large_error(too_large_message)
             return message
 
         async def limited_send(message: Message) -> None:
-            # Request.form converts MultiPartException to a 400 response after
-            # closing partial files. Preserve that cleanup and correct the
-            # transport-level status here.
-            if too_large and message["type"] == "http.response.start":
-                message = {**message, "status": 413}
-            await send(message)
+            # Request.form / request.json may convert a receive exception into
+            # their own 400 response. Buffer the downstream response until its
+            # request-body reads are complete: an ASGI app is allowed to start
+            # responding before its final receive(), and forwarding that start
+            # would otherwise make a later 413 a second response.
+            if not too_large:
+                buffered_response.append(dict(message))
 
-        try:
+        with suppress(ActivityRequestTooLarge, UploadRequestTooLarge):
             await self.app(scope, limited_receive, limited_send)
-        except UploadRequestTooLarge as exc:
+        if too_large:
             # Written here, outside the exception handlers, so this one response
             # has to assemble the envelope itself.
             response = JSONResponse(
                 status_code=413,
                 content=envelope_body(
                     code=ApiCode.PAYLOAD_TOO_LARGE,
-                    msg=exc.message,
+                    msg=too_large_message,
                     request_id=scope.get("state", {}).get("request_id", ""),
                 ),
             )
             await response(scope, receive, send)
+            return
+
+        for message in buffered_response:
+            await send(message)
 
 
 __all__ = [
+    "ACTIVITY_BODY_MAX_BYTES",
+    "ACTIVITY_ROUTE_PATH",
     "ADMIN_CONTENT_SECURITY_POLICY",
     "REQUEST_ID_HEADER",
     "UPLOAD_MULTIPART_OVERHEAD_BYTES",
