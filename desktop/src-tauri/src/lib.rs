@@ -55,6 +55,7 @@ pub fn run() {
             commands::get_direct_ip,
             commands::get_status,
             commands::open_external_url,
+            commands::check_github_release,
         ])
         .build(tauri::generate_context!())
         .expect("启动 Tauri 应用失败");

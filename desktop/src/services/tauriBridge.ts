@@ -101,6 +101,25 @@ export const tauriBridge = {
     });
   },
 
+  async checkGithubRelease(repo?: string): Promise<{
+    tagName: string;
+    latestVersion: string;
+    publishedAt: string;
+    htmlUrl: string;
+    body: string;
+    assets: {
+      name: string;
+      downloadUrl: string;
+      size: number;
+      platform: string;
+    }[];
+  }> {
+    if (!isTauri()) {
+      throw new Error("该功能仅可在 Vestus 桌面客户端中使用");
+    }
+    return await invokeDesktop("check_github_release", { repo });
+  },
+
   async openExternalUrl(url: string): Promise<void> {
     if (!url) return;
     if (isTauri()) {

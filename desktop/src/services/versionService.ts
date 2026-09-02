@@ -1,4 +1,4 @@
-import { tauriBridge } from "./tauriBridge.ts";
+import { tauriBridge, isTauri } from "./tauriBridge.ts";
 
 export interface GithubReleaseAsset {
   name: string;
@@ -245,6 +245,31 @@ export const versionService = {
   async checkGithubRelease(repo: string = DEFAULT_REPO): Promise<VersionCheckResult> {
     const currentVersion = await this.getCurrentVersion();
     const cleanRepo = repo.trim() || DEFAULT_REPO;
+
+    // 在桌面客户端中通过 Rust 原生端拉取 GitHub Release，彻底规避 WebKit CSP 拦截
+    if (isTauri()) {
+      try {
+        const raw = await tauriBridge.checkGithubRelease(cleanRepo);
+        const hasUpdate = hasNewerVersion(raw.latestVersion, currentVersion);
+        return {
+          currentVersion,
+          latestVersion: raw.latestVersion,
+          tagName: raw.tagName,
+          hasUpdate,
+          publishedAt: raw.publishedAt,
+          htmlUrl: raw.htmlUrl,
+          body: raw.body,
+          assets: (raw.assets || []).map((a) => ({
+            name: a.name,
+            downloadUrl: a.downloadUrl,
+            size: a.size,
+            platform: a.platform || classifyAssetPlatform(a.name),
+          })),
+        };
+      } catch (err: any) {
+        throw new Error(err?.message || "连接 GitHub 失败，请检查网络");
+      }
+    }
 
     let data: any = null;
     try {
