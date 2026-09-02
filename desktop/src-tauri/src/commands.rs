@@ -584,6 +584,9 @@ async fn start_adapter(
 /// 用管理员启用的全局代理启动一个新的外置 Chromium。
 ///
 /// 每次调用都会创建新的临时 profile，同一平台也允许多开。
+// Tauri 注入的 State 参数就占了 5 个，再加平台 ID 与两个本机开关（直连、关沙箱）
+// 必然超过 clippy 的 7 个阈值；这是 IPC 命令的固有形态，不是设计问题。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(rename_all = "camelCase")]
 pub async fn open_browser<R: Runtime>(
     app: AppHandle<R>,
@@ -593,8 +596,12 @@ pub async fn open_browser<R: Runtime>(
     activity: tauri::State<'_, ActivityCollector>,
     platform_id: i64,
     direct_mode: Option<bool>,
+    disable_sandbox: Option<bool>,
 ) -> CmdResult<BrowserHandleView> {
     let direct_mode = direct_mode.unwrap_or(false);
+    // 本机偏好：沙箱拉不起来的机器由用户在「系统配置」里关闭。默认保留沙箱。
+    // 只影响 --no-sandbox，与代理链路正交。
+    let disable_sandbox = disable_sandbox.unwrap_or(false);
     let _lifecycle_guard = state.lock_desktop_sync().await;
     require_desktop_auth(&auth)?;
     let (user_id, profile_key, auth_generation) =
@@ -635,6 +642,7 @@ pub async fn open_browser<R: Runtime>(
         browser_id,
         local_proxy.as_deref(),
         target.as_str(),
+        disable_sandbox,
         move |endpoint| {
             activity_collector.start(activity_key, endpoint, activity_auth);
         },

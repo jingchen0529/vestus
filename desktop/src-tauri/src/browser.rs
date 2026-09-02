@@ -48,6 +48,21 @@
 //! （所以系统装的 Edge/Chrome 一切正常），而用户自选的目录——尤其是建在盘根下的
 //! `D:\Vestus`——继承不到。安装器（`installer-hooks.nsh`）在装完时补一次，这里在
 //! 每次启动前再补一次，覆盖「装的是老版本」和「目录被整体搬走」。
+//!
+//! # 沙箱逃生阀（`--no-sandbox`）
+//!
+//! 上面的 [`ensure_sandbox_access`] 是让沙箱**能用**。但有的机器上沙箱根本拉不
+//! 起来，补权限也白搭：企业组策略禁掉了 AppContainer、安全软件拦截沙箱子进程、
+//! 或者跑在本就不支持沙箱的受限/虚拟化环境里。症状和缺权限时一模一样——窗口开得
+//! 出来，但任何导航都提交不了，停在白屏。
+//!
+//! 给这类机器留一个逃生阀：用户在「系统配置」里关掉沙箱，[`chromium_arguments`]
+//! 就补一个 `--no-sandbox`。这会削弱浏览器的进程隔离，所以默认保留沙箱，只有确实
+//! 打不开的机器才由用户主动关。这个开关是**本机偏好**（前端 localStorage 持久化），
+//! 不随管理员的全局桌面配置下发。
+//!
+//! `--no-sandbox` 与代理正交：它只动沙箱，不碰 `--proxy-server`，关掉沙箱后代理
+//! 链路逐字节不变。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -154,6 +169,9 @@ struct LaunchProcessRequest<'a> {
     local_proxy: Option<&'a str>,
     target_url: &'a str,
     window: Option<WindowGeometry>,
+    /// 关掉浏览器沙箱（追加 `--no-sandbox`）。给沙箱拉不起来的机器留的逃生阀，
+    /// 见模块文档「沙箱逃生阀」。与代理正交。
+    disable_sandbox: bool,
 }
 
 impl Default for BrowserSessionManager {
@@ -180,6 +198,7 @@ impl BrowserSessionManager {
         session_id: u64,
         local_proxy: Option<&str>,
         target_url: &str,
+        disable_sandbox: bool,
         on_ready: G,
         on_exit: F,
     ) -> Result<u64, BrowserError>
@@ -201,6 +220,7 @@ impl BrowserSessionManager {
             local_proxy,
             target_url,
             window,
+            disable_sandbox,
             on_ready,
             on_exit,
         )
@@ -215,6 +235,7 @@ impl BrowserSessionManager {
         local_proxy: Option<&str>,
         target_url: &str,
         window: Option<WindowGeometry>,
+        disable_sandbox: bool,
         on_ready: G,
         on_exit: F,
     ) -> Result<u64, BrowserError>
@@ -230,6 +251,7 @@ impl BrowserSessionManager {
                 local_proxy,
                 target_url,
                 window,
+                disable_sandbox,
             },
             on_ready,
             on_exit,
@@ -256,8 +278,15 @@ impl BrowserSessionManager {
             local_proxy,
             target_url,
             window,
+            disable_sandbox,
         } = request;
-        let arguments = chromium_arguments(&profile_dir, local_proxy, target_url, window);
+        let arguments = chromium_arguments(
+            &profile_dir,
+            local_proxy,
+            target_url,
+            window,
+            disable_sandbox,
+        );
 
         let mut command = Command::new(executable);
         command
@@ -752,6 +781,7 @@ fn chromium_arguments(
     local_proxy: Option<&str>,
     target_url: &str,
     window: Option<WindowGeometry>,
+    disable_sandbox: bool,
 ) -> Vec<OsString> {
     let mut args = vec![OsString::from(format!(
         "--user-data-dir={}",
@@ -762,6 +792,11 @@ fn chromium_arguments(
         args.push(OsString::from("--proxy-bypass-list=<-loopback>"));
     } else {
         args.push(OsString::from("--no-proxy-server"));
+    }
+    // 沙箱逃生阀：仅当用户在「系统配置」里关掉沙箱时追加。与上面的代理开关正交，
+    // 不影响 --proxy-server；见模块文档「沙箱逃生阀」。
+    if disable_sandbox {
+        args.push(OsString::from("--no-sandbox"));
     }
     args.extend(vec![
         // 端口 0 = 由内核分配。实际端口只写进这个 profile 的
@@ -804,6 +839,7 @@ mod tests {
             Some("http://127.0.0.1:51234"),
             "https://platform.example.test/",
             None,
+            false,
         );
         let rendered: Vec<String> = arguments
             .into_iter()
@@ -829,6 +865,53 @@ mod tests {
         assert!(rendered.contains(&"--disable-quic".into()));
         assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
         assert!(!rendered.join(" ").contains("proxy-password"));
+        // 默认保留沙箱：不显式关闭时绝不能出现 --no-sandbox。
+        assert!(!rendered.contains(&"--no-sandbox".into()));
+    }
+
+    /// 关闭沙箱是给「本机沙箱拉不起来」的机器留的逃生阀：追加 --no-sandbox，但**绝不
+    /// 能**顺带动到代理——沙箱和代理是两条正交的开关，客户就是靠代理才成立的。
+    #[test]
+    fn chromium_arguments_disable_sandbox_appends_no_sandbox_and_keeps_proxy() {
+        let rendered: Vec<String> = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            None,
+            true,
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(rendered.contains(&"--no-sandbox".into()));
+        // 代理必须原样保留：这正是「关沙箱但代理照常」的核心保证。
+        assert!(rendered.contains(&"--proxy-server=http://127.0.0.1:51234".into()));
+        assert!(rendered.contains(&"--proxy-bypass-list=<-loopback>".into()));
+        // 起始网址仍然必须是最后一个参数。
+        assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
+    }
+
+    /// 关沙箱也不该改变代理的「关」态：直连（无代理）+ 关沙箱时，--no-proxy-server
+    /// 与 --no-sandbox 两者都在，互不干扰。
+    #[test]
+    fn chromium_arguments_disable_sandbox_is_orthogonal_to_direct_mode() {
+        let rendered: Vec<String> = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            None,
+            "https://platform.example.test/",
+            None,
+            true,
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(rendered.contains(&"--no-sandbox".into()));
+        assert!(rendered.contains(&"--no-proxy-server".into()));
+        assert!(!rendered
+            .iter()
+            .any(|arg| arg.starts_with("--proxy-server=")));
     }
 
     /// 临时环境靠 user-data-dir 加退出清理保证。隐身模式不增加隐私、又会被站点
@@ -840,6 +923,7 @@ mod tests {
             Some("http://127.0.0.1:51234"),
             "https://platform.example.test/",
             None,
+            false,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -864,6 +948,7 @@ mod tests {
             Some("http://127.0.0.1:51234"),
             "https://platform.example.test/",
             Some(geometry),
+            false,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -885,6 +970,7 @@ mod tests {
             None,
             "https://platform.example.test/",
             None,
+            false,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -987,7 +1073,8 @@ mod tests {
     #[test]
     fn chromium_arguments_direct_mode_uses_no_proxy_server() {
         let profile = Path::new("/tmp/vestus-profile-test-direct");
-        let arguments = chromium_arguments(profile, None, "https://platform.example.test/", None);
+        let arguments =
+            chromium_arguments(profile, None, "https://platform.example.test/", None, false);
         let rendered: Vec<String> = arguments
             .into_iter()
             .map(|value| value.to_string_lossy().into_owned())
@@ -1043,6 +1130,7 @@ mod tests {
                     Some("http://127.0.0.1:51234"),
                     "https://platform.example.test/",
                     None,
+                    false,
                     |_| {},
                     move || {
                         callbacks.fetch_add(1, Ordering::SeqCst);
@@ -1104,6 +1192,7 @@ mod tests {
                     local_proxy: Some("http://127.0.0.1:51234"),
                     target_url: "https://platform.example.test/",
                     window: None,
+                    disable_sandbox: false,
                 },
                 |_| {},
                 || {},
@@ -1140,6 +1229,7 @@ mod tests {
                 Some("http://127.0.0.1:51234"),
                 "https://platform.example.test/",
                 None,
+                false,
                 |_| {},
                 || {},
             ),

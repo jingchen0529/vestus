@@ -36,6 +36,15 @@ function MainLayout() {
       return true;
     }
   });
+  // 浏览器沙箱是本机偏好：默认开启；沙箱拉不起来的机器由用户在「系统配置」里关闭。
+  const [sandboxEnabled, setSandboxEnabled] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem("vestus-desktop-sandbox-enabled");
+      return stored !== null ? stored === "true" : true;
+    } catch {
+      return true;
+    }
+  });
 
   const [status, setStatus] = useState<StatusView>({
     phase: "unconfigured",
@@ -236,10 +245,26 @@ function MainLayout() {
     }
   };
 
+  const handleSandboxEnabledChange = (enabled: boolean) => {
+    setSandboxEnabled(enabled);
+    try {
+      localStorage.setItem("vestus-desktop-sandbox-enabled", String(enabled));
+    } catch {}
+    if (enabled) {
+      info("已开启浏览器沙箱", "浏览器将以完整的安全沙箱运行（推荐）");
+    } else {
+      info(
+        "已关闭浏览器沙箱",
+        "仅在浏览器无法打开时使用；代理与网络隔离不受影响"
+      );
+    }
+  };
+
   const handleOpenBrowser = async (platformId: number) => {
     try {
       const directMode = !proxyEnabled;
-      await tauriBridge.openBrowser(platformId, directMode);
+      const disableSandbox = !sandboxEnabled;
+      await tauriBridge.openBrowser(platformId, directMode, disableSandbox);
       if (directMode) {
         success("直连浏览器已启动", "已在新的临时浏览器环境中直接打开平台（本机直连）");
       } else {
@@ -319,6 +344,8 @@ function MainLayout() {
             configLoading={desktopConfigLoading}
             proxyEnabled={proxyEnabled}
             onProxyEnabledChange={handleProxyEnabledChange}
+            sandboxEnabled={sandboxEnabled}
+            onSandboxEnabledChange={handleSandboxEnabledChange}
             onSyncConfig={() => syncDesktopConfig(true)}
           />
         )}

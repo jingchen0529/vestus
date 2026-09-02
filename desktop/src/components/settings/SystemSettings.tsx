@@ -12,6 +12,8 @@ import {
   CheckCircle2,
   FileCode,
   Layers,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -44,6 +46,8 @@ interface SystemSettingsProps {
   configLoading: boolean;
   proxyEnabled?: boolean;
   onProxyEnabledChange?: (enabled: boolean) => void;
+  sandboxEnabled?: boolean;
+  onSandboxEnabledChange?: (enabled: boolean) => void;
   onSyncConfig: () => void;
 }
 
@@ -56,6 +60,8 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
   configLoading,
   proxyEnabled = true,
   onProxyEnabledChange,
+  sandboxEnabled = true,
+  onSandboxEnabledChange,
   onSyncConfig,
 }) => {
   const { accentColor, setAccentColor } = useTheme();
@@ -292,7 +298,61 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
         </CardContent>
       </Card>
 
-      {/* 2. 外观主题设置 */}
+      {/* 2. 浏览器沙箱（兼容性开关） */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-primary" />
+              <CardTitle className="text-sm">浏览器沙箱</CardTitle>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground font-medium select-none">
+                沙箱模式
+              </span>
+              <Switch
+                checked={sandboxEnabled}
+                onCheckedChange={onSandboxEnabledChange}
+                aria-label="浏览器沙箱模式开关"
+              />
+            </div>
+          </div>
+          <CardDescription className="text-xs">
+            浏览器进程的安全隔离。部分 Windows 环境需关闭后才能正常打开浏览器
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div
+            className={cn(
+              "p-3 rounded-lg border text-xs leading-relaxed",
+              sandboxEnabled
+                ? "border-border/60 bg-muted/40 text-muted-foreground"
+                : "border-amber-500/30 bg-amber-500/10 text-foreground"
+            )}
+          >
+            {sandboxEnabled ? (
+              <div className="flex items-start gap-2">
+                <ShieldCheck className="w-3.5 h-3.5 mt-0.5 text-emerald-500 shrink-0" />
+                <span>
+                  沙箱已开启（推荐）。浏览器以完整的安全隔离运行。若在本机始终打不开平台、
+                  一直白屏，可尝试关闭沙箱。
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2">
+                <ShieldAlert className="w-3.5 h-3.5 mt-0.5 text-amber-500 shrink-0" />
+                <span>
+                  沙箱已关闭（<span className="font-mono">--no-sandbox</span>）。仅建议在浏览器无法
+                  打开时使用，这会削弱浏览器的进程隔离。
+                  <span className="font-medium text-foreground">代理与网络隔离不受影响。</span>
+                </span>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 3. 外观主题设置 */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
@@ -352,7 +412,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
         </CardContent>
       </Card>
 
-      {/* 3. 软件版本与在线更新 */}
+      {/* 4. 软件版本与在线更新 */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">

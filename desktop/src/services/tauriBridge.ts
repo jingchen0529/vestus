@@ -53,10 +53,15 @@ export const tauriBridge = {
     return await invokeDesktop<DesktopConfigView>("sync_desktop_config");
   },
 
-  async openBrowser(platformId: number, directMode: boolean = false): Promise<BrowserHandleView> {
+  async openBrowser(
+    platformId: number,
+    directMode: boolean = false,
+    disableSandbox: boolean = false,
+  ): Promise<BrowserHandleView> {
     return await invokeDesktop<BrowserHandleView>("open_browser", {
       platformId,
       directMode,
+      disableSandbox,
     });
   },
 
