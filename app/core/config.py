@@ -32,7 +32,6 @@ DEFAULT_TOKEN_TTL_SECONDS = 900
 DEFAULT_LOGIN_MAX_ATTEMPTS = 5
 DEFAULT_LOGIN_LOCK_MINUTES = 15
 DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-DEFAULT_SQLITE_PATH = REPO_ROOT / "vestus-dev.db"
 DEFAULT_UPLOAD_DIR = REPO_ROOT / "uploads"
 
 MIN_SECRET_LENGTH = 32
@@ -94,8 +93,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VESTUS_", extra="ignore", case_sensitive=False)
 
     database_url: str = ""
-    sqlite_fallback: bool = False
-    sqlite_path: str = ""
 
     secret_key: str = ""
     jwt_secret: str = ""
@@ -123,7 +120,7 @@ class Settings(BaseSettings):
         assert info.field_name is not None
         return _positive_int(value, _TOLERANT_INT_DEFAULTS[info.field_name])
 
-    @field_validator("sqlite_fallback", "cookie_secure", mode="before")
+    @field_validator("cookie_secure", mode="before")
     @classmethod
     def _tolerant_flag(cls, value: Any) -> bool:
         if isinstance(value, bool):
@@ -149,10 +146,6 @@ class Settings(BaseSettings):
         configured = (self.upload_dir or "").strip()
         base = Path(configured).expanduser() if configured else DEFAULT_UPLOAD_DIR
         return base.resolve()
-
-    @property
-    def resolved_sqlite_path(self) -> str:
-        return (self.sqlite_path or "").strip() or str(DEFAULT_SQLITE_PATH)
 
     @property
     def token_signing_secret(self) -> str:
@@ -247,7 +240,6 @@ __all__ = [
     "DEFAULT_CORS_ORIGINS",
     "DEFAULT_MAX_UPLOAD_BYTES",
     "DEFAULT_PRODUCT_NAME",
-    "DEFAULT_SQLITE_PATH",
     "DEFAULT_TOKEN_TTL_SECONDS",
     "REPO_ROOT",
     "Settings",

@@ -8,7 +8,6 @@ and every transaction boundary in :mod:`app.services`.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, cast
 
 from sqlalchemy import CursorResult, create_engine, desc, insert, select, text, update
@@ -18,7 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import DEFAULT_SQLITE_PATH, get_settings
+from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db.base import Base, utc_now
 from app.db.models import Admin, Proxy, SystemSetting
@@ -99,7 +98,6 @@ class Database:
         ``create_all`` stays here as the test/dev bootstrap and as the
         documented fallback for a brand-new empty database.
         """
-        settings = get_settings()
         try:
             Base.metadata.create_all(self.engine)
             self.available = True
@@ -110,17 +108,6 @@ class Database:
         except SQLAlchemyError as exc:
             self.available = False
             self.initialization_error = str(exc)
-            if settings.sqlite_fallback and not self.url.startswith("sqlite"):
-                fallback = settings.resolved_sqlite_path or str(DEFAULT_SQLITE_PATH)
-                self.url = f"sqlite:///{Path(fallback).expanduser()}"
-                self.engine = create_engine(self.url, connect_args={"check_same_thread": False}, future=True)
-                self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False, future=True)
-                Base.metadata.create_all(self.engine)
-                self.available = True
-                self.initialization_error = None
-                self._ensure_global_proxy_lock()
-                self._normalize_active_proxies()
-                self._bootstrap_admin()
 
     def ping(self) -> bool:
         try:

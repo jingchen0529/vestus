@@ -91,7 +91,6 @@ sudo -H -u vestus npm --prefix web run build
 
 ```dotenv
 VESTUS_DATABASE_URL=mysql+pymysql://vestus:URL_ENCODED_PASSWORD@127.0.0.1:3306/vestus?charset=utf8mb4
-VESTUS_SQLITE_FALLBACK=0
 VESTUS_SECRET_KEY=replace-with-a-stable-random-secret
 VESTUS_PROXY_SECRET_KEY=replace-with-another-stable-random-secret
 VESTUS_ACCESS_TOKEN_TTL_SECONDS=900
