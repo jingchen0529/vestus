@@ -117,6 +117,7 @@ export function Sidebar({
       label: "代理管理",
       icon: Server,
       badge: proxiesTotal !== undefined ? `${proxiesTotal}` : null,
+      requiresSuperAdmin: true,
     },
     {
       id: "platforms" as NavTab,
@@ -149,23 +150,27 @@ export function Sidebar({
     },
   ];
 
+  const visibleMainNavItems = mainNavItems.filter(
+    (item) => !item.requiresSuperAdmin || isSuperAdmin
+  );
+  const visibleBottomNavItems = bottomNavItems.filter(
+    (item) => !item.requiresSuperAdmin || isSuperAdmin
+  );
+
   const renderNavButton = (item: (typeof mainNavItems)[0]) => {
     const Icon = item.icon;
     const isActive = currentTab === item.id;
-    const isDisabled = item.requiresSuperAdmin && !isSuperAdmin;
 
     return (
       <button
         key={item.id}
-        onClick={() => !isDisabled && onTabChange(item.id)}
-        disabled={isDisabled}
+        onClick={() => onTabChange(item.id)}
         title={collapsed ? item.label : undefined}
         className={cn(
           "group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all relative",
           isActive
             ? "bg-primary text-primary-foreground shadow-sm shadow-primary/25"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          isDisabled && "opacity-40 cursor-not-allowed hover:bg-transparent hover:text-muted-foreground",
           collapsed && "justify-center px-0"
         )}
       >
@@ -193,9 +198,6 @@ export function Sidebar({
               >
                 {item.badge}
               </Badge>
-            )}
-            {isDisabled && (
-              <Shield className="h-3.5 w-3.5 ml-auto text-muted-foreground" />
             )}
           </div>
         )}
@@ -229,7 +231,7 @@ export function Sidebar({
               <span className="font-bold text-base tracking-tight truncate">
                 {adminTitle || "Vestus Admin"}
               </span>
-              <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
+              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
                 Control Console
               </span>
             </div>
@@ -266,13 +268,15 @@ export function Sidebar({
 
       {/* Main Navigation List */}
       <div className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
-        {mainNavItems.map(renderNavButton)}
+        {visibleMainNavItems.map(renderNavButton)}
       </div>
 
       {/* Bottom Pinned System Settings (directly above user profile) */}
-      <div className="p-2 border-t space-y-1 bg-card/30">
-        {bottomNavItems.map(renderNavButton)}
-      </div>
+      {visibleBottomNavItems.length > 0 && (
+        <div className="p-2 border-t space-y-1 bg-card/30">
+          {visibleBottomNavItems.map(renderNavButton)}
+        </div>
+      )}
 
       {/* Admin Status / Profile at Bottom Left */}
       <div className="p-2 border-t mt-auto bg-card/50">

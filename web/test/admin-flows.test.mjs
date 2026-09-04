@@ -536,3 +536,58 @@ test("会话追踪与审计日志的页码条渲染出可点的页码按钮", as
   assert.match(html, /\.\.\./);
   assert.match(html, /共 <strong[^>]*>96<\/strong> 条记录/);
 });
+
+test("会话追踪页码条提供 10/30/50/100 每页数量选择", async () => {
+  const { ActivityView } = await server.ssrLoadModule(
+    "/src/components/activity/activity-view.tsx",
+  );
+
+  const html = renderToStaticMarkup(
+    createElement(ActivityView, {
+      sessions: [],
+      totalSessions: 96,
+      currentPage: 1,
+      pageSize: 50,
+      onPageChange() {},
+      onPageSizeChange() {},
+      filters: {
+        userId: "ALL",
+        platformId: "ALL",
+        connection: "ALL",
+        startAt: "",
+        endAt: "",
+      },
+      onFiltersChange() {},
+      users: [],
+      platforms: [],
+      onRefresh() {},
+      onLoadDetail: async () => ({ id: 1, pages: [] }),
+    }),
+  );
+
+  assert.match(html, /每页/);
+  assert.match(html, /50 条/);
+});
+
+test("审计日志页码条提供 10/30/50/100 每页数量选择", async () => {
+  const { LogsView } = await server.ssrLoadModule(
+    "/src/components/logs/logs-view.tsx",
+  );
+
+  const html = renderToStaticMarkup(
+    createElement(LogsView, {
+      logs: [],
+      totalLogs: 120,
+      currentPage: 1,
+      pageSize: 10,
+      onPageChange() {},
+      onPageSizeChange() {},
+      statusFilter: "ALL",
+      onStatusFilterChange() {},
+      onRefresh() {},
+    }),
+  );
+
+  assert.match(html, /每页/);
+  assert.match(html, /10 条/);
+});

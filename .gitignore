@@ -51,6 +51,7 @@ htmlcov/
 .hypothesis/
 *.egg-info/
 .venv/
+.workbuddy/*
 venv/
 uploads/
 tmp/

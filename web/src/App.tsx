@@ -97,6 +97,15 @@ export function App() {
     }
   }, [currentTab, user]);
 
+  // Ensure non-superadmin does not stay on super-admin-only tabs
+  useEffect(() => {
+    if (!authLoading && user && !isSuperAdmin) {
+      if (currentTab === "admins" || currentTab === "desktop" || currentTab === "settings") {
+        handleTabChange("dashboard");
+      }
+    }
+  }, [authLoading, user, isSuperAdmin, currentTab, handleTabChange]);
+
   // Data states
   const [users, setUsers] = useState<DesktopUser[]>([]);
   const [userStats, setUserStats] = useState<UserStats | null>(null);
@@ -115,14 +124,14 @@ export function App() {
   const [logs, setLogs] = useState<UserLogItem[]>([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [logPage, setLogPage] = useState(1);
-  const [logPageSize] = useState(10);
+  const [logPageSize, setLogPageSize] = useState(10);
   const [logStatusFilter, setLogStatusFilter] = useState("ALL");
 
   // Browser activity state
   const [sessions, setSessions] = useState<BrowserSessionItem[]>([]);
   const [totalSessions, setTotalSessions] = useState(0);
   const [sessionPage, setSessionPage] = useState(1);
-  const [sessionPageSize] = useState(50);
+  const [sessionPageSize, setSessionPageSize] = useState(50);
   const [sessionFilters, setSessionFilters] = useState<BrowserSessionFilters>(
     EMPTY_BROWSER_SESSION_FILTERS,
   );
@@ -131,6 +140,16 @@ export function App() {
   const handleSessionFiltersChange = useCallback((next: BrowserSessionFilters) => {
     setSessionFilters(next);
     setSessionPage(1);
+  }, []);
+
+  const handleSessionPageSizeChange = useCallback((newSize: number) => {
+    setSessionPageSize(newSize);
+    setSessionPage(1);
+  }, []);
+
+  const handleLogPageSizeChange = useCallback((newSize: number) => {
+    setLogPageSize(newSize);
+    setLogPage(1);
   }, []);
 
   // 详情弹窗的取数函数，保持稳定引用。
@@ -157,13 +176,14 @@ export function App() {
   }, []);
 
   const loadProxies = useCallback(async () => {
+    if (!isSuperAdmin) return;
     try {
       const data = await api.listProxies();
       setProxies(data);
     } catch (err: any) {
       toast.error("加载代理池失败", { description: err.message });
     }
-  }, []);
+  }, [isSuperAdmin]);
 
   const loadPlatforms = useCallback(async () => {
     try {
@@ -273,7 +293,7 @@ export function App() {
       loadLogs(logPage, logStatusFilter);
     }, 250);
     return () => clearTimeout(timer);
-  }, [logPage, logStatusFilter, user]);
+  }, [logPage, logPageSize, logStatusFilter, user]);
 
   // Browser activity filter or page change
   useEffect(() => {
@@ -282,7 +302,7 @@ export function App() {
       loadSessions(sessionPage, sessionFilters);
     }, 250);
     return () => clearTimeout(timer);
-  }, [sessionPage, sessionFilters, user]);
+  }, [sessionPage, sessionPageSize, sessionFilters, user]);
 
   // User Mutators
   const handleCreateUser = async (payload: CreateUserPayload) => {
@@ -469,7 +489,7 @@ export function App() {
         )}
 
         {/* Tab 3: Unified Proxy Management */}
-        {currentTab === "desktop" && (
+        {currentTab === "desktop" && isSuperAdmin && (
           <DesktopConfigView
             proxies={proxies}
             onRefresh={() => loadProxies()}
@@ -495,7 +515,7 @@ export function App() {
         )}
 
         {/* Tab 4: Administrators Management */}
-        {currentTab === "admins" && (
+        {currentTab === "admins" && isSuperAdmin && (
           <AdminsView
             admins={admins}
             search={adminSearch}
@@ -520,6 +540,7 @@ export function App() {
             currentPage={sessionPage}
             pageSize={sessionPageSize}
             onPageChange={setSessionPage}
+            onPageSizeChange={handleSessionPageSizeChange}
             filters={sessionFilters}
             onFiltersChange={handleSessionFiltersChange}
             users={users}
@@ -538,6 +559,7 @@ export function App() {
             currentPage={logPage}
             pageSize={logPageSize}
             onPageChange={setLogPage}
+            onPageSizeChange={handleLogPageSizeChange}
             statusFilter={logStatusFilter}
             onStatusFilterChange={setLogStatusFilter}
             onRefresh={() => loadLogs()}
@@ -546,7 +568,7 @@ export function App() {
         )}
 
         {/* Tab 6: System Configuration (Brand & Theme) */}
-        {currentTab === "settings" && <SettingsView />}
+        {currentTab === "settings" && isSuperAdmin && <SettingsView />}
       </AdminLayout>
 
       <Toaster />

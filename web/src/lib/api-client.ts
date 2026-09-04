@@ -26,8 +26,11 @@ import {
 import { UserLogResponse, UserLogItem } from "@/types/log";
 import {
   BrowserSessionDetail,
+  BrowserSessionFilters,
+  BrowserSessionItem,
   BrowserSessionQuery,
   BrowserSessionResponse,
+  toBrowserSessionQuery,
 } from "@/types/browser-activity";
 import { API_CODE_OK, ApiCollection, ApiEnvelope, SystemHealth } from "@/types/api";
 
@@ -330,6 +333,29 @@ export const api = {
     return request<UserLogResponse>(`/api/admin/user-logs?${searchParams.toString()}`);
   },
 
+  async fetchAllLogs(params: {
+    status?: string;
+    action?: string;
+  } = {}): Promise<UserLogItem[]> {
+    const allItems: UserLogItem[] = [];
+    let page = 1;
+    const pageSize = 200;
+
+    while (true) {
+      const res = await this.listLogs({
+        ...params,
+        page,
+        pageSize,
+      });
+      allItems.push(...res.items);
+      if (allItems.length >= res.total || res.items.length === 0) {
+        break;
+      }
+      page++;
+    }
+    return allItems;
+  },
+
   async getLog(id: number): Promise<UserLogItem> {
     return request<UserLogItem>(`/api/admin/user-logs/${id}`);
   },
@@ -347,6 +373,37 @@ export const api = {
     if (params.endAt) searchParams.append("endAt", params.endAt);
 
     return request<BrowserSessionResponse>(`/api/admin/browser-sessions?${searchParams.toString()}`);
+  },
+
+  async fetchAllBrowserSessions(
+    filtersOrQuery: BrowserSessionFilters | BrowserSessionQuery = {},
+  ): Promise<BrowserSessionItem[]> {
+    let queryBase: BrowserSessionQuery;
+    if ("connection" in filtersOrQuery) {
+      queryBase = toBrowserSessionQuery(filtersOrQuery);
+    } else {
+      queryBase = { ...filtersOrQuery };
+    }
+    delete queryBase.page;
+    delete queryBase.pageSize;
+
+    const allItems: BrowserSessionItem[] = [];
+    let page = 1;
+    const pageSize = 200; // max allowed by backend
+
+    while (true) {
+      const res = await this.listBrowserSessions({
+        ...queryBase,
+        page,
+        pageSize,
+      });
+      allItems.push(...res.items);
+      if (allItems.length >= res.total || res.items.length === 0 || page >= res.pages) {
+        break;
+      }
+      page++;
+    }
+    return allItems;
   },
 
   async getBrowserSession(id: number, pageLimit?: number): Promise<BrowserSessionDetail> {

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { exportToJsonFile, exportToCsvFile } from "@/lib/export-utils";
 import { getPageItems } from "@/lib/pagination";
+import { api } from "@/lib/api-client";
 import { toast } from "sonner";
 
 interface LogsViewProps {
@@ -24,6 +25,7 @@ interface LogsViewProps {
   currentPage: number;
   pageSize: number;
   onPageChange: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
   statusFilter: string;
   onStatusFilterChange: (val: string) => void;
   onRefresh: () => void;
@@ -36,6 +38,7 @@ export function LogsView({
   currentPage,
   pageSize,
   onPageChange,
+  onPageSizeChange,
   statusFilter,
   onStatusFilterChange,
   onRefresh,
@@ -43,40 +46,74 @@ export function LogsView({
 }: LogsViewProps) {
   const [selectedLog, setSelectedLog] = useState<UserLogItem | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [isExportingJson, setIsExportingJson] = useState(false);
 
   const handleViewDetail = (log: UserLogItem) => {
     setSelectedLog(log);
     setDetailOpen(true);
   };
 
-  const handleExportJson = () => {
-    if (logs.length === 0) {
+  const handleExportJson = async () => {
+    if (totalLogs === 0 && logs.length === 0) {
       toast.warning("当前列表无数据可导出");
       return;
     }
-    exportToJsonFile(logs, `vestus-audit-logs-p${currentPage}-${new Date().toISOString().slice(0, 10)}.json`);
-    toast.success(`已导出 ${logs.length} 条审计日志 (JSON)`);
+    try {
+      setIsExportingJson(true);
+      const allLogs =
+        logs.length === totalLogs && currentPage === 1
+          ? logs
+          : await api.fetchAllLogs({ status: statusFilter === "ALL" ? undefined : statusFilter });
+
+      if (allLogs.length === 0) {
+        toast.warning("未检索到可导出的数据");
+        return;
+      }
+      exportToJsonFile(allLogs, `vestus-audit-logs-all-${new Date().toISOString().slice(0, 10)}.json`);
+      toast.success(`已导出全部 ${allLogs.length} 条审计日志 (JSON)`);
+    } catch (err: any) {
+      toast.error("导出 JSON 失败", { description: err.message });
+    } finally {
+      setIsExportingJson(false);
+    }
   };
 
-  const handleExportCsv = () => {
-    if (logs.length === 0) {
+  const handleExportCsv = async () => {
+    if (totalLogs === 0 && logs.length === 0) {
       toast.warning("当前列表无数据可导出");
       return;
     }
-    const headers = [
-      { label: "日志编号", key: "id" },
-      { label: "操作时间", key: "createdAt" },
-      { label: "主体类型", key: "actorType" },
-      { label: "主体账号", key: "actorUsername" },
-      { label: "主体角色", key: "actorRole" },
-      { label: "动作类型", key: "action" },
-      { label: "摘要说明", key: "summary" },
-      { label: "来源IP", key: "ipAddress" },
-      { label: "结果状态", key: "status" },
-      { label: "请求ID", key: "requestId" },
-    ];
-    exportToCsvFile(headers, logs, `vestus-audit-logs-p${currentPage}-${new Date().toISOString().slice(0, 10)}.csv`);
-    toast.success(`已导出 ${logs.length} 条审计日志 (CSV)`);
+    try {
+      setIsExportingCsv(true);
+      const allLogs =
+        logs.length === totalLogs && currentPage === 1
+          ? logs
+          : await api.fetchAllLogs({ status: statusFilter === "ALL" ? undefined : statusFilter });
+
+      if (allLogs.length === 0) {
+        toast.warning("未检索到可导出的数据");
+        return;
+      }
+      const headers = [
+        { label: "日志编号", key: "id" },
+        { label: "操作时间", key: "createdAt" },
+        { label: "主体类型", key: "actorType" },
+        { label: "主体账号", key: "actorUsername" },
+        { label: "主体角色", key: "actorRole" },
+        { label: "动作类型", key: "action" },
+        { label: "摘要说明", key: "summary" },
+        { label: "来源IP", key: "ipAddress" },
+        { label: "结果状态", key: "status" },
+        { label: "请求ID", key: "requestId" },
+      ];
+      exportToCsvFile(headers, allLogs, `vestus-audit-logs-all-${new Date().toISOString().slice(0, 10)}.csv`);
+      toast.success(`已导出全部 ${allLogs.length} 条审计日志 (CSV)`);
+    } catch (err: any) {
+      toast.error("导出 CSV 失败", { description: err.message });
+    } finally {
+      setIsExportingCsv(false);
+    }
   };
 
   const totalPages = Math.ceil(totalLogs / pageSize) || 1;
@@ -104,20 +141,22 @@ export function LogsView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportCsv}
+                disabled={isExportingCsv || isRefreshing}
                 className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
-                <span>导出 CSV</span>
+                <FileSpreadsheet className={`h-3.5 w-3.5 text-emerald-600 ${isExportingCsv ? "animate-spin" : ""}`} />
+                <span>{isExportingCsv ? "正在导出..." : "导出 CSV"}</span>
               </Button>
 
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleExportJson}
+                disabled={isExportingJson || isRefreshing}
                 className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
-                <FileJson className="h-3.5 w-3.5 text-blue-600" />
-                <span>导出 JSON</span>
+                <FileJson className={`h-3.5 w-3.5 text-blue-600 ${isExportingJson ? "animate-spin" : ""}`} />
+                <span>{isExportingJson ? "正在导出..." : "导出 JSON"}</span>
               </Button>
             </div>
 
@@ -152,8 +191,28 @@ export function LogsView({
 
       {/* Pagination Footer */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-2 text-xs text-muted-foreground">
-        <div>
-          第 <strong className="text-foreground">{currentPage}</strong> 页，共 <strong className="text-foreground">{totalPages}</strong> 页 · 共 <strong className="text-foreground">{totalLogs}</strong> 条记录
+        <div className="flex items-center gap-3 flex-wrap">
+          <div>
+            第 <strong className="text-foreground">{currentPage}</strong> 页，共 <strong className="text-foreground">{totalPages}</strong> 页 · 共 <strong className="text-foreground">{totalLogs}</strong> 条记录
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">每页</span>
+            <Select
+              value={String(pageSize)}
+              onValueChange={(val) => onPageSizeChange?.(Number(val))}
+            >
+              <SelectTrigger className="h-7 w-[78px] text-xs rounded-md border-border/60 bg-background/80 shadow-none px-2">
+                <SelectValue placeholder={`${pageSize} 条`}>{`${pageSize} 条`}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10 条</SelectItem>
+                <SelectItem value="30">30 条</SelectItem>
+                <SelectItem value="50">50 条</SelectItem>
+                <SelectItem value="100">100 条</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap">

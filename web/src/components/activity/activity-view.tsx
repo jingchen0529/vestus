@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { exportToJsonFile, exportToCsvFile } from "@/lib/export-utils";
 import { getPageItems } from "@/lib/pagination";
+import { api } from "@/lib/api-client";
 import { toast } from "sonner";
 
 interface ActivityViewProps {
@@ -38,6 +39,7 @@ interface ActivityViewProps {
   currentPage: number;
   pageSize: number;
   onPageChange: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
   filters: BrowserSessionFilters;
   onFiltersChange: (filters: BrowserSessionFilters) => void;
   /** 用来把筛选下拉填成人看得懂的名字，而不是让人记 ID。 */
@@ -54,6 +56,7 @@ export function ActivityView({
   currentPage,
   pageSize,
   onPageChange,
+  onPageSizeChange,
   filters,
   onFiltersChange,
   users,
@@ -64,6 +67,8 @@ export function ActivityView({
 }: ActivityViewProps) {
   const [selectedSession, setSelectedSession] = useState<BrowserSessionItem | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [isExportingJson, setIsExportingJson] = useState(false);
 
   const handleViewDetail = (session: BrowserSessionItem) => {
     setSelectedSession(session);
@@ -92,46 +97,87 @@ export function ActivityView({
     toast.success("已重置所有筛选条件");
   };
 
-  const handleExportJson = () => {
-    if (sessions.length === 0) {
-      toast.warning("当前列表无数据可导出");
+  const handleExportJson = async () => {
+    if (totalSessions === 0 && sessions.length === 0) {
+      toast.warning("当前筛选条件下无数据可导出");
       return;
     }
-    exportToJsonFile(
-      sessions,
-      `vestus-browser-sessions-p${currentPage}-${new Date().toISOString().slice(0, 10)}.json`,
-    );
-    toast.success(`已导出 ${sessions.length} 条会话追踪记录 (JSON)`);
+    try {
+      setIsExportingJson(true);
+      const allSessions =
+        sessions.length === totalSessions && currentPage === 1
+          ? sessions
+          : await api.fetchAllBrowserSessions(filters);
+
+      if (allSessions.length === 0) {
+        toast.warning("未检索到可导出的数据");
+        return;
+      }
+
+      exportToJsonFile(
+        allSessions,
+        `vestus-browser-sessions-all-${new Date().toISOString().slice(0, 10)}.json`,
+      );
+      toast.success(`已导出全部 ${allSessions.length} 条会话追踪记录 (JSON)`);
+    } catch (err: any) {
+      toast.error("导出 JSON 失败", { description: err.message });
+    } finally {
+      setIsExportingJson(false);
+    }
   };
 
-  const handleExportCsv = () => {
-    if (sessions.length === 0) {
-      toast.warning("当前列表无数据可导出");
+  const handleExportCsv = async () => {
+    if (totalSessions === 0 && sessions.length === 0) {
+      toast.warning("当前筛选条件下无数据可导出");
       return;
     }
-    const headers = [
-      { label: "会话编号", key: "id" },
-      { label: "开始时间", key: "startedAt" },
-      { label: "最近上报", key: "lastReportAt" },
-      { label: "桌面用户", key: "username" },
-      { label: "平台名称", key: "platformName" },
-      { label: "直连模式", key: "directMode" },
-      { label: "访问地址数", key: "pageCount" },
-      { label: "未记录地址数", key: "droppedPages" },
-      { label: "访问次数", key: "visits" },
-      { label: "点击次数", key: "clicks" },
-      { label: "输入次数", key: "inputs" },
-      { label: "提交次数", key: "submits" },
-      { label: "滚动次数", key: "scrolls" },
-      { label: "前台停留(毫秒)", key: "dwellMs" },
-      { label: "客户端IP", key: "ipAddress" },
-    ];
-    exportToCsvFile(
-      headers,
-      sessions,
-      `vestus-browser-sessions-p${currentPage}-${new Date().toISOString().slice(0, 10)}.csv`,
-    );
-    toast.success(`已导出 ${sessions.length} 条会话追踪记录 (CSV)`);
+    try {
+      setIsExportingCsv(true);
+      const allSessions =
+        sessions.length === totalSessions && currentPage === 1
+          ? sessions
+          : await api.fetchAllBrowserSessions(filters);
+
+      if (allSessions.length === 0) {
+        toast.warning("未检索到可导出的数据");
+        return;
+      }
+
+      const headers = [
+        { label: "会话编号", key: "id" },
+        { label: "开始时间", key: "startedAt" },
+        { label: "最近上报", key: "lastReportAt" },
+        { label: "桌面用户", key: "username" },
+        { label: "平台名称", key: "platformName" },
+        { label: "连接方式", key: "connectionText" },
+        { label: "访问地址数", key: "pageCount" },
+        { label: "未记录地址数", key: "droppedPages" },
+        { label: "访问次数", key: "visits" },
+        { label: "点击次数", key: "clicks" },
+        { label: "输入次数", key: "inputs" },
+        { label: "提交次数", key: "submits" },
+        { label: "滚动次数", key: "scrolls" },
+        { label: "前台停留(毫秒)", key: "dwellMs" },
+        { label: "客户端IP", key: "ipAddress" },
+      ];
+
+      const rows = allSessions.map((s) => ({
+        ...s,
+        connectionText: s.directMode ? "直连" : "代理",
+        directMode: s.directMode ? "直连" : "代理",
+      }));
+
+      exportToCsvFile(
+        headers,
+        rows,
+        `vestus-browser-sessions-all-${new Date().toISOString().slice(0, 10)}.csv`,
+      );
+      toast.success(`已导出全部 ${rows.length} 条会话追踪记录 (CSV)`);
+    } catch (err: any) {
+      toast.error("导出 CSV 失败", { description: err.message });
+    } finally {
+      setIsExportingCsv(false);
+    }
   };
 
   const totalPages = Math.ceil(totalSessions / pageSize) || 1;
@@ -159,20 +205,22 @@ export function ActivityView({
                 variant="outline"
                 size="sm"
                 onClick={handleExportCsv}
+                disabled={isExportingCsv || isRefreshing}
                 className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
-                <span>导出 CSV</span>
+                <FileSpreadsheet className={`h-3.5 w-3.5 text-emerald-600 ${isExportingCsv ? "animate-spin" : ""}`} />
+                <span>{isExportingCsv ? "正在导出..." : "导出 CSV"}</span>
               </Button>
 
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleExportJson}
+                disabled={isExportingJson || isRefreshing}
                 className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
               >
-                <FileJson className="h-3.5 w-3.5 text-blue-600" />
-                <span>导出 JSON</span>
+                <FileJson className={`h-3.5 w-3.5 text-blue-600 ${isExportingJson ? "animate-spin" : ""}`} />
+                <span>{isExportingJson ? "正在导出..." : "导出 JSON"}</span>
               </Button>
             </div>
 
@@ -278,8 +326,28 @@ export function ActivityView({
 
       {/* 分页 */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-2 text-xs text-muted-foreground">
-        <div>
-          第 <strong className="text-foreground">{currentPage}</strong> 页，共 <strong className="text-foreground">{totalPages}</strong> 页 · 共 <strong className="text-foreground">{totalSessions}</strong> 条记录
+        <div className="flex items-center gap-3 flex-wrap">
+          <div>
+            第 <strong className="text-foreground">{currentPage}</strong> 页，共 <strong className="text-foreground">{totalPages}</strong> 页 · 共 <strong className="text-foreground">{totalSessions}</strong> 条记录
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">每页</span>
+            <Select
+              value={String(pageSize)}
+              onValueChange={(val) => onPageSizeChange?.(Number(val))}
+            >
+              <SelectTrigger className="h-7 w-[78px] text-xs rounded-md border-border/60 bg-background/80 shadow-none px-2">
+                <SelectValue placeholder={`${pageSize} 条`}>{`${pageSize} 条`}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10 条</SelectItem>
+                <SelectItem value="30">30 条</SelectItem>
+                <SelectItem value="50">50 条</SelectItem>
+                <SelectItem value="100">100 条</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap">
