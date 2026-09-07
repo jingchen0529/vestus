@@ -8,6 +8,41 @@ import { useToast } from "@/components/ui/toast";
 
 import defaultLogo from "@/assets/logo.png";
 
+const REMEMBER_USERNAME_KEY = "vestus_desktop_remembered_username_v1";
+const REMEMBER_PASSWORD_KEY = "vestus_desktop_remembered_password_v1";
+
+function readRememberedUsername(): string {
+  try {
+    return window.localStorage.getItem(REMEMBER_USERNAME_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function readRememberedPassword(): string {
+  try {
+    const raw = window.localStorage.getItem(REMEMBER_PASSWORD_KEY);
+    if (!raw) return "";
+    return decodeURIComponent(escape(window.atob(raw)));
+  } catch {
+    return "";
+  }
+}
+
+function writeRememberedCredentials(username: string, password: string): void {
+  try {
+    if (username) {
+      window.localStorage.setItem(REMEMBER_USERNAME_KEY, username);
+      window.localStorage.setItem(REMEMBER_PASSWORD_KEY, window.btoa(unescape(encodeURIComponent(password))));
+    } else {
+      window.localStorage.removeItem(REMEMBER_USERNAME_KEY);
+      window.localStorage.removeItem(REMEMBER_PASSWORD_KEY);
+    }
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
 interface LoginCardProps {
   productName: string;
   logoUrl?: string;
@@ -22,8 +57,9 @@ export const LoginCard: React.FC<LoginCardProps> = ({
   onLoginSuccess,
 }) => {
   const { success, error } = useToast();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState(() => readRememberedUsername());
+  const [password, setPassword] = useState(() => readRememberedPassword());
+  const [rememberUsername, setRememberUsername] = useState(() => Boolean(readRememberedUsername()));
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(notice || null);
@@ -48,6 +84,11 @@ export const LoginCard: React.FC<LoginCardProps> = ({
 
     try {
       const user = await authService.login(username, password);
+      if (rememberUsername) {
+        writeRememberedCredentials(username.trim(), password);
+      } else {
+        writeRememberedCredentials("", "");
+      }
       success("登录成功", `欢迎回来，${user.name}（桌面端用户）`);
       onLoginSuccess(user);
     } catch (err: any) {
@@ -112,7 +153,7 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                   autoComplete="username"
                   icon={<User className="w-4 h-4 text-muted-foreground/70" />}
                   className="h-10 text-sm rounded-xl"
-                  autoFocus
+                  autoFocus={!username}
                   disabled={loading}
                 />
               </div>
@@ -147,9 +188,21 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                       )}
                     </button>
                   }
+                  autoFocus={Boolean(username) && !password}
                   disabled={loading}
                 />
               </div>
+
+              <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-foreground/80 hover:text-foreground transition-colors w-fit">
+                <input
+                  type="checkbox"
+                  checked={rememberUsername}
+                  onChange={(e) => setRememberUsername(e.target.checked)}
+                  disabled={loading}
+                  className="w-3.5 h-3.5 rounded border-border accent-blue-600 cursor-pointer"
+                />
+                记住登录信息
+              </label>
 
               <Button
                 type="submit"
