@@ -38,8 +38,36 @@ const VALID_TABS: NavTab[] = [
   "settings",
 ];
 
+function getTabFromPath(pathname: string): NavTab | null {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length > 0) {
+    const last = segments[segments.length - 1].toLowerCase() as NavTab;
+    if (VALID_TABS.includes(last)) {
+      return last;
+    }
+  }
+  if (segments.length === 0 || (segments.length === 1 && segments[0].toLowerCase() === "admin")) {
+    return "dashboard";
+  }
+  return null;
+}
+
+function getTabPath(tab: NavTab): string {
+  if (typeof window === "undefined") return "/admin";
+  const isUnderAdmin = window.location.pathname.startsWith("/admin");
+  const prefix = isUnderAdmin ? "/admin" : "";
+  if (tab === "dashboard") {
+    return isUnderAdmin ? "/admin" : "/";
+  }
+  return `${prefix}/${tab}`;
+}
+
 function getInitialTab(): NavTab {
   if (typeof window !== "undefined") {
+    const tabFromPath = getTabFromPath(window.location.pathname);
+    if (tabFromPath) {
+      return tabFromPath;
+    }
     const hash = window.location.hash.replace(/^#\/?/, "").toLowerCase() as NavTab;
     if (VALID_TABS.includes(hash)) {
       return hash;
@@ -68,31 +96,33 @@ export function App() {
     setCurrentTab(tab);
     if (typeof window !== "undefined") {
       localStorage.setItem("vestus_admin_active_tab", tab);
-      if (window.location.hash.replace(/^#\/?/, "").toLowerCase() !== tab) {
-        window.history.replaceState(null, "", `#${tab}`);
+      const targetPath = getTabPath(tab);
+      if (window.location.pathname !== targetPath || window.location.hash) {
+        window.history.pushState(null, "", targetPath);
       }
     }
   }, []);
 
-  // Listen to browser Back/Forward or hash changes
+  // Listen to browser Back/Forward (HTML5 History popstate)
   useEffect(() => {
-    const handleHashChange = () => {
-      const hash = window.location.hash.replace(/^#\/?/, "").toLowerCase() as NavTab;
-      if (VALID_TABS.includes(hash) && hash !== currentTab) {
-        setCurrentTab(hash);
-        localStorage.setItem("vestus_admin_active_tab", hash);
+    const handlePopState = () => {
+      const tab = getTabFromPath(window.location.pathname);
+      if (tab && VALID_TABS.includes(tab) && tab !== currentTab) {
+        setCurrentTab(tab);
+        localStorage.setItem("vestus_admin_active_tab", tab);
       }
     };
-    window.addEventListener("hashchange", handleHashChange);
-    return () => window.removeEventListener("hashchange", handleHashChange);
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, [currentTab]);
 
-  // Keep hash & storage in sync
+  // Keep path & storage in sync, clean up legacy hash
   useEffect(() => {
     if (typeof window !== "undefined" && user) {
       localStorage.setItem("vestus_admin_active_tab", currentTab);
-      if (window.location.hash.replace(/^#\/?/, "").toLowerCase() !== currentTab) {
-        window.history.replaceState(null, "", `#${currentTab}`);
+      const targetPath = getTabPath(currentTab);
+      if (window.location.pathname !== targetPath || window.location.hash) {
+        window.history.replaceState(null, "", targetPath);
       }
     }
   }, [currentTab, user]);

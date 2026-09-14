@@ -91,4 +91,26 @@ def admin_browser_session_detail(
     return activity_service.get_session_detail(db, session_id, page_limit=page_limit)
 
 
+@router.get("/api/admin/browser-activity/export-advids", tags=["browser-activity"])
+def admin_export_advids(
+    param: str = Query("advid", description="参数名，默认 advid"),
+    user_id: Optional[int] = Query(None, alias="userId"),
+    platform_id: Optional[int] = Query(None, alias="platformId"),
+    direct_mode: Optional[bool] = Query(None, alias="directMode"),
+    start_at: Optional[str] = Query(None, alias="startAt"),
+    end_at: Optional[str] = Query(None, alias="endAt"),
+    _auth: Dict[str, Any] = Depends(admin_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    return activity_service.export_advids(
+        db,
+        param=param,
+        user_id=user_id,
+        platform_id=platform_id,
+        direct_mode=direct_mode,
+        start_at=start_at,
+        end_at=end_at,
+    )
+
+
 __all__ = ["router"]

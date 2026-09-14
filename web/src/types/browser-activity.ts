@@ -102,3 +102,21 @@ export function toBrowserSessionQuery(
     endAt: filters.endAt || undefined,
   };
 }
+
+/** 页面访问参数（如 advid）去重导出项。 */
+export interface AdvidExportItem {
+  paramValue: string;
+  occurrences: number;
+  totalVisits: number;
+  firstSeenAt?: string | null;
+  lastSeenAt?: string | null;
+  usernames: string;
+  platforms: string;
+}
+
+export interface AdvidExportResponse {
+  items: AdvidExportItem[];
+  total: number;
+  param: string;
+}
+

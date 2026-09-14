@@ -5,6 +5,7 @@ import {
   BrowserSessionDetail,
   BrowserSessionFilters,
   BrowserSessionItem,
+  toBrowserSessionQuery,
 } from "@/types/browser-activity";
 import { DesktopUser } from "@/types/user";
 import { PlatformItem } from "@/types/platform";
@@ -17,11 +18,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   RefreshCw,
   FileJson,
   FileSpreadsheet,
+  Download,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -69,6 +78,7 @@ export function ActivityView({
   const [detailOpen, setDetailOpen] = useState(false);
   const [isExportingCsv, setIsExportingCsv] = useState(false);
   const [isExportingJson, setIsExportingJson] = useState(false);
+  const [isExportingAdvids, setIsExportingAdvids] = useState(false);
 
   const handleViewDetail = (session: BrowserSessionItem) => {
     setSelectedSession(session);
@@ -180,6 +190,54 @@ export function ActivityView({
     }
   };
 
+  const handleExportAdvids = async (valuesOnly: boolean = false) => {
+    try {
+      setIsExportingAdvids(true);
+      const query = toBrowserSessionQuery(filters);
+      const res = await api.exportAdvids({
+        param: "advid",
+        userId: query.userId,
+        platformId: query.platformId,
+        directMode: query.directMode,
+        startAt: query.startAt,
+        endAt: query.endAt,
+      });
+
+      if (!res.items || res.items.length === 0) {
+        toast.warning("当前筛选条件下未检索到相关的 ID 数据");
+        return;
+      }
+
+      const datePart =
+        filters.startAt || filters.endAt
+          ? `${filters.startAt || "start"}_${filters.endAt || "end"}`
+          : "all";
+      const filename = `vestus-advid-unique-${datePart}-${new Date().toISOString().slice(0, 10)}.csv`;
+
+      if (valuesOnly) {
+        const headers = [{ label: res.param || "advid", key: "paramValue" }];
+        exportToCsvFile(headers, res.items, filename);
+      } else {
+        const headers = [
+          { label: "ID (" + (res.param || "advid") + ")", key: "paramValue" },
+          { label: "出现次数", key: "occurrences" },
+          { label: "累计访问量", key: "totalVisits" },
+          { label: "首次访问时间", key: "firstSeenAt" },
+          { label: "最后访问时间", key: "lastSeenAt" },
+          { label: "关联桌面用户", key: "usernames" },
+          { label: "关联平台", key: "platforms" },
+        ];
+        exportToCsvFile(headers, res.items, filename);
+      }
+
+      toast.success(`已导出去重后的 ${res.items.length} 个 ID 记录 (CSV)`);
+    } catch (err: any) {
+      toast.error("导出 ID 失败", { description: err.message });
+    } finally {
+      setIsExportingAdvids(false);
+    }
+  };
+
   const totalPages = Math.ceil(totalSessions / pageSize) || 1;
 
   return (
@@ -222,6 +280,38 @@ export function ActivityView({
                 <FileJson className={`h-3.5 w-3.5 text-blue-600 ${isExportingJson ? "animate-spin" : ""}`} />
                 <span>{isExportingJson ? "正在导出..." : "导出 JSON"}</span>
               </Button>
+
+              {/* 去重 ID 导出按钮组 */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={isExportingAdvids || isRefreshing}
+                    className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Download className={`h-3.5 w-3.5 text-indigo-600 shrink-0 ${isExportingAdvids ? "animate-spin" : ""}`} />
+                    <span className="whitespace-nowrap">{isExportingAdvids ? "正在导出 ID..." : "导出 ID (去重)"}</span>
+                    <ChevronDown className="h-3 w-3 text-muted-foreground ml-0.5 shrink-0" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-auto min-w-[220px] text-xs whitespace-nowrap p-1">
+                  <DropdownMenuItem
+                    onClick={() => handleExportAdvids(false)}
+                    className="cursor-pointer whitespace-nowrap flex items-center py-2 px-3"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 mr-2 shrink-0" />
+                    <span className="whitespace-nowrap">导出去重 ID 汇总表 (CSV)</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => handleExportAdvids(true)}
+                    className="cursor-pointer whitespace-nowrap flex items-center py-2 px-3"
+                  >
+                    <Download className="h-3.5 w-3.5 text-indigo-600 mr-2 shrink-0" />
+                    <span className="whitespace-nowrap">仅导出纯 ID 列表 (CSV)</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
 
             {/* 右侧筛选条件 单行排列 */}

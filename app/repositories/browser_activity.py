@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import parse_qsl
 
 from sqlalchemy import and_, asc, desc, func, select
 from sqlalchemy.orm import Session
@@ -213,11 +214,89 @@ def list_pages(session: Session, session_id: int, *, limit: int = 500) -> Sequen
     return session.scalars(stmt).all()
 
 
+def list_distinct_url_params(
+    session: Session,
+    *,
+    param: str = "advid",
+    user_id: Optional[int] = None,
+    platform_id: Optional[int] = None,
+    direct_mode: Optional[bool] = None,
+    start_at: Any = None,
+    end_at: Any = None,
+) -> List[Dict[str, Any]]:
+    """提取指定参数的所有去重取值及聚合统计。"""
+    conditions: List[Any] = [
+        BrowserPageVisit.url_params.contains(param, autoescape=True)
+    ]
+    if user_id is not None:
+        conditions.append(BrowserSession.user_id == user_id)
+    if platform_id is not None:
+        conditions.append(BrowserSession.platform_id == platform_id)
+    if direct_mode is not None:
+        conditions.append(BrowserSession.direct_mode.is_(direct_mode))
+    if start_at:
+        conditions.append(BrowserPageVisit.last_seen_at >= parse_datetime(start_at))
+    if end_at:
+        conditions.append(BrowserPageVisit.first_seen_at <= parse_datetime(end_at, end_of_day=True))
+
+    stmt = (
+        select(BrowserPageVisit, BrowserSession)
+        .join(BrowserSession, BrowserPageVisit.session_id == BrowserSession.id)
+        .where(*conditions)
+        .order_by(asc(BrowserSession.id), asc(BrowserPageVisit.first_seen_at))
+    )
+
+    stats: Dict[str, Dict[str, Any]] = {}
+    for visit, sess in session.execute(stmt):
+        if not visit.url_params:
+            continue
+        pairs = parse_qsl(visit.url_params, keep_blank_values=True)
+        for name, val in pairs:
+            if name != param:
+                continue
+            if val not in stats:
+                stats[val] = {
+                    "param_value": val,
+                    "occurrences": 0,
+                    "total_visits": 0,
+                    "first_seen_at": visit.first_seen_at,
+                    "last_seen_at": visit.last_seen_at,
+                    "usernames": set(),
+                    "platforms": set(),
+                }
+            item = stats[val]
+            item["occurrences"] += 1
+            item["total_visits"] += int(visit.visits or 0)
+            if visit.first_seen_at and (item["first_seen_at"] is None or visit.first_seen_at < item["first_seen_at"]):
+                item["first_seen_at"] = visit.first_seen_at
+            if visit.last_seen_at and (item["last_seen_at"] is None or visit.last_seen_at > item["last_seen_at"]):
+                item["last_seen_at"] = visit.last_seen_at
+            if sess.username:
+                item["usernames"].add(sess.username)
+            if sess.platform_name:
+                item["platforms"].add(sess.platform_name)
+
+    results: List[Dict[str, Any]] = []
+    for val in sorted(stats.keys()):
+        item = stats[val]
+        results.append({
+            "param_value": item["param_value"],
+            "occurrences": item["occurrences"],
+            "total_visits": item["total_visits"],
+            "first_seen_at": item["first_seen_at"],
+            "last_seen_at": item["last_seen_at"],
+            "usernames": "; ".join(sorted(item["usernames"])),
+            "platforms": "; ".join(sorted(item["platforms"])),
+        })
+    return results
+
+
 __all__ = [
     "add_session_totals",
     "create_session",
     "get_session",
     "get_session_by_key",
+    "list_distinct_url_params",
     "list_pages",
     "list_sessions_page",
     "merge_page",

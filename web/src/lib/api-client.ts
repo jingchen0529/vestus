@@ -25,6 +25,7 @@ import {
 } from "@/types/admin";
 import { UserLogResponse, UserLogItem } from "@/types/log";
 import {
+  AdvidExportResponse,
   BrowserSessionDetail,
   BrowserSessionFilters,
   BrowserSessionItem,
@@ -409,6 +410,32 @@ export const api = {
   async getBrowserSession(id: number, pageLimit?: number): Promise<BrowserSessionDetail> {
     const query = pageLimit ? `?pageLimit=${pageLimit}` : "";
     return request<BrowserSessionDetail>(`/api/admin/browser-sessions/${id}${query}`);
+  },
+
+  async exportAdvids(params: {
+    param?: string;
+    userId?: number | string;
+    platformId?: number | string;
+    directMode?: boolean;
+    startAt?: string;
+    endAt?: string;
+  } = {}): Promise<AdvidExportResponse> {
+    const searchParams = new URLSearchParams();
+    if (params.param) searchParams.append("param", params.param);
+    if (params.userId !== undefined && params.userId !== "ALL") {
+      searchParams.append("userId", String(params.userId));
+    }
+    if (params.platformId !== undefined && params.platformId !== "ALL") {
+      searchParams.append("platformId", String(params.platformId));
+    }
+    if (params.directMode !== undefined) {
+      searchParams.append("directMode", String(params.directMode));
+    }
+    if (params.startAt) searchParams.append("startAt", params.startAt);
+    if (params.endAt) searchParams.append("endAt", params.endAt);
+
+    const qs = searchParams.toString();
+    return request<AdvidExportResponse>(`/api/admin/browser-activity/export-advids${qs ? `?${qs}` : ""}`);
   },
 
   // System Health

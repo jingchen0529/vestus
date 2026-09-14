@@ -84,7 +84,8 @@ def product(
 
 
 @router.get("/admin", include_in_schema=False)
-async def admin_page() -> Response:
+@router.get("/admin/{path:path}", include_in_schema=False)
+async def admin_page(path: str = "") -> Response:
     page_to_serve = ADMIN_DIST_PAGE if ADMIN_DIST_PAGE.exists() else ADMIN_FALLBACK_PAGE
     if not page_to_serve.exists():
         raise HTTPException(status_code=404, detail=ADMIN_PAGE_UNAVAILABLE_DETAIL)

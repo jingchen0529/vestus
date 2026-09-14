@@ -766,3 +766,77 @@ def test_session_records_and_returns_client_version(api: Any) -> None:
         client.get(f"/api/admin/browser-sessions/{session_id}", headers=_bearer(admin_token))
     )
     assert detail["clientVersion"] == "0.1.8"
+
+
+def test_export_advids_deduplication_and_aggregation(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    res1 = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/item1", visits=3),
+                "urlParams": "advid=99901&utm_source=ad",
+            },
+            {
+                **_page("https://shop.example.test/item2", visits=2),
+                "urlParams": "advid=99901&utm_source=feed",
+            },
+            {
+                **_page("https://shop.example.test/item3", visits=5),
+                "urlParams": "advid=99902&utm_source=search",
+            },
+            platformId=platform_id,
+        ),
+    )
+    assert res1.status_code == 200, res1.text
+
+    resp = client.get(
+        "/api/admin/browser-activity/export-advids",
+        headers=_bearer(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    data = payload(resp)
+    assert data["total"] == 2
+    assert data["param"] == "advid"
+    items = data["items"]
+    assert items[0]["paramValue"] == "99901"
+    assert items[0]["occurrences"] == 2
+    assert items[0]["totalVisits"] == 5
+    assert items[1]["paramValue"] == "99902"
+    assert items[1]["occurrences"] == 1
+    assert items[1]["totalVisits"] == 5
+
+
+def test_export_advids_date_and_user_filtering(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/item", visits=1),
+                "urlParams": "advid=88888",
+            },
+            platformId=platform_id,
+        ),
+    )
+
+    resp_empty = client.get(
+        "/api/admin/browser-activity/export-advids?startAt=2020-01-01&endAt=2020-01-02",
+        headers=_bearer(admin_token),
+    )
+    assert resp_empty.status_code == 200
+    assert payload(resp_empty)["total"] == 0
+
+    resp_match = client.get(
+        "/api/admin/browser-activity/export-advids?startAt=2026-01-01&endAt=2099-12-31",
+        headers=_bearer(admin_token),
+    )
+    assert resp_match.status_code == 200
+    assert payload(resp_match)["total"] >= 1
+

@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.base import utc_now
+from app.db.base import iso_datetime, utc_now
 from app.db.session import Database
 from app.repositories import browser_activity as activity_repo
 from app.repositories import platforms as platforms_repo
@@ -235,7 +235,47 @@ def get_session_detail(
         return {**browser_session_dict(item), "pages": pages}
 
 
+def export_advids(
+    database: Database,
+    *,
+    param: str = "advid",
+    user_id: Optional[int] = None,
+    platform_id: Optional[int] = None,
+    direct_mode: Optional[bool] = None,
+    start_at: Any = None,
+    end_at: Any = None,
+) -> Dict[str, Any]:
+    """导出指定参数（如 advid）的去重列表及聚合统计。"""
+    with database.session() as session:
+        items = activity_repo.list_distinct_url_params(
+            session,
+            param=param,
+            user_id=user_id,
+            platform_id=platform_id,
+            direct_mode=direct_mode,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        return {
+            "items": [
+                {
+                    "paramValue": item["param_value"],
+                    "occurrences": item["occurrences"],
+                    "totalVisits": item["total_visits"],
+                    "firstSeenAt": iso_datetime(item["first_seen_at"]),
+                    "lastSeenAt": iso_datetime(item["last_seen_at"]),
+                    "usernames": item["usernames"],
+                    "platforms": item["platforms"],
+                }
+                for item in items
+            ],
+            "total": len(items),
+            "param": param,
+        }
+
+
 __all__ = [
+    "export_advids",
     "get_session_detail",
     "list_sessions",
     "record_activity",
