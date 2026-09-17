@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { chromiumExecutable, chromiumResourceDir } from "./chromium-resource.mjs";
 
 // 与 CI 产物一一对应的锁定版本；升级时同时更新 README 的说明。
-const PLAYWRIGHT_VERSION = "1.62.1";
+const PLAYWRIGHT_VERSION = "1.63.0";
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const browserCache = join(desktopRoot, ".cache", "ms-playwright");

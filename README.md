@@ -91,7 +91,7 @@ VESTUS_API_BASE_URL='https://api.example.com' npm run desktop:build
 
 正式发布覆盖四个目标：Windows x86_64（NSIS）、macOS arm64 与 x86_64（dmg）、Linux
 x86_64（deb / AppImage）。随包 Chromium 不能跨平台也不能跨架构，因此每个目标都在对应的
-GitHub runner 上原生构建，构建时下载锁定版本（Playwright 1.62.1）的浏览器资源并放进安装包；
+GitHub runner 上原生构建，构建时下载锁定版本（Playwright 1.63.0）的浏览器资源并放进安装包；
 不需要上传 OA 的 `bin/`、`packages/` 等大型产物。`oa/` 仅作为只读参考，不参与 Rust 客户端
 编译。每次点击平台都会启动一个新的进程和临时 Profile；同平台及不同平台均可并行，关闭后
 清理本次 Profile，不保存 Cookie。
