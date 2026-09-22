@@ -179,7 +179,7 @@ def test_active_proxy_and_platforms_are_shared_by_every_desktop_user(api: Any) -
     assert second_config["profileKey"] == f"user-{second_user['id']}"
 
 
-def test_creating_an_active_proxy_makes_it_the_only_active_proxy(api: Any) -> None:
+def test_creating_multiple_active_proxies_keeps_them_all_active(api: Any) -> None:
     client, _module = api
     admin_token = _login(
         client,
@@ -217,13 +217,20 @@ def test_creating_an_active_proxy_makes_it_the_only_active_proxy(api: Any) -> No
 
     proxies = items(client.get("/api/admin/proxies", headers=headers))
     statuses = {item["id"]: item["status"] for item in proxies}
+    # Users can be assigned their own node now, so several proxies may be
+    # active side by side; the newest active one is just the fallback.
     assert statuses == {
-        first["id"]: "disabled",
+        first["id"]: "active",
         second["id"]: "active",
+    }
+    defaults = {item["id"]: item["isDefault"] for item in proxies}
+    assert defaults == {
+        first["id"]: False,
+        second["id"]: False,
     }
 
 
-def test_enabling_a_proxy_disables_the_previous_active_proxy(api: Any) -> None:
+def test_setting_a_default_proxy_moves_the_mark_to_the_new_proxy(api: Any) -> None:
     client, _module = api
     admin_token = _login(
         client,
@@ -237,11 +244,12 @@ def test_enabling_a_proxy_disables_the_previous_active_proxy(api: Any) -> None:
             "/api/admin/proxies",
             headers=headers,
             json={
-                "name": "Current Global Proxy",
-                "host": "current-global-proxy.example.test",
+                "name": "Current Default Proxy",
+                "host": "current-default-proxy.example.test",
                 "port": 3128,
                 "username": "current-user",
                 "password": "current-secret",
+                "isDefault": True,
             },
         )
     )
@@ -250,36 +258,50 @@ def test_enabling_a_proxy_disables_the_previous_active_proxy(api: Any) -> None:
             "/api/admin/proxies",
             headers=headers,
             json={
-                "name": "Replacement Global Proxy",
-                "host": "replacement-global-proxy.example.test",
+                "name": "Replacement Default Proxy",
+                "host": "replacement-default-proxy.example.test",
                 "port": 8080,
                 "username": "replacement-user",
                 "password": "replacement-secret",
                 "status": "disabled",
+                "isDefault": True,
             },
         )
     )
 
-    enabled = client.patch(
+    proxies = items(client.get("/api/admin/proxies", headers=headers))
+    defaults = {item["id"]: item["isDefault"] for item in proxies}
+    assert defaults == {
+        first["id"]: False,
+        replacement["id"]: True,
+    }
+
+    # Re-enabling a node never touches the others, and dropping the default
+    # mark leaves no default behind.
+    cleared = client.patch(
         f"/api/admin/proxies/{replacement['id']}",
         headers=headers,
-        json={"status": "active"},
+        json={"status": "active", "isDefault": False},
     )
-    assert enabled.status_code == 200, enabled.text
-
+    assert cleared.status_code == 200, cleared.text
     proxies = items(client.get("/api/admin/proxies", headers=headers))
-    statuses = {item["id"]: item["status"] for item in proxies}
-    assert statuses == {
-        first["id"]: "disabled",
+    assert {item["id"]: item["isDefault"] for item in proxies} == {
+        first["id"]: False,
+        replacement["id"]: False,
+    }
+    assert {
+        item["id"]: item["status"] for item in proxies
+    } == {
+        first["id"]: "active",
         replacement["id"]: "active",
     }
 
 
-def test_concurrent_active_proxy_creation_keeps_one_active_proxy(api: Any) -> None:
+def test_concurrent_default_proxy_creation_keeps_one_default(api: Any) -> None:
     _client, module = api
     select_barrier = Barrier(2)
 
-    def synchronize_empty_active_reads(
+    def synchronize_empty_default_reads(
         _conn: Any,
         _cursor: Any,
         statement: str,
@@ -288,41 +310,44 @@ def test_concurrent_active_proxy_creation_keeps_one_active_proxy(api: Any) -> No
         _executemany: bool,
     ) -> None:
         normalized = " ".join(statement.lower().split())
-        if normalized.startswith("select") and "from proxy" in normalized and "proxy.status" in normalized:
+        if normalized.startswith("select") and "from proxy" in normalized and "proxy.is_default" in normalized:
             # Once a stable DB lock serializes the transactions, the first
             # transaction times out here before the second can run SELECT.
             with suppress(BrokenBarrierError):
                 select_barrier.wait(timeout=1)
 
-    event.listen(module.db.engine, "after_cursor_execute", synchronize_empty_active_reads)
+    event.listen(module.db.engine, "after_cursor_execute", synchronize_empty_default_reads)
     try:
         def create_proxy(index: int) -> dict[str, Any]:
             return module.db.insert_proxy(
                 {
-                    "name": f"Concurrent Global Proxy {index}",
-                    "host": f"concurrent-{index}.example.test",
+                    "name": f"Concurrent Default Proxy {index}",
+                    "host": f"concurrent-default-{index}.example.test",
                     "port": 3100 + index,
                     "username": f"concurrent-user-{index}",
                     "password": f"concurrent-secret-{index}",
                     "status": "active",
+                    # The facade calls the service directly, so the service's
+                    # snake_case key applies here, not the HTTP alias.
+                    "is_default": True,
                 }
             )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(create_proxy, (1, 2)))
     finally:
-        event.remove(module.db.engine, "after_cursor_execute", synchronize_empty_active_reads)
+        event.remove(module.db.engine, "after_cursor_execute", synchronize_empty_default_reads)
 
     assert len(results) == 2
     with module.db.session() as session:
-        active_proxies = session.scalars(
-            select(module.Proxy).where(module.Proxy.status == "active")
+        default_proxies = session.scalars(
+            select(module.Proxy).where(module.Proxy.is_default.is_(True))
         ).all()
-    assert len(active_proxies) == 1
-    assert active_proxies[0].name in {result["name"] for result in results}
+    assert len(default_proxies) == 1
+    assert default_proxies[0].name in {result["name"] for result in results}
 
 
-def test_proxy_activation_locks_singleton_before_target_row(api: Any) -> None:
+def test_proxy_default_locks_singleton_before_target_row(api: Any) -> None:
     client, module = api
     admin_token = _login(
         client,
@@ -358,11 +383,11 @@ def test_proxy_activation_locks_singleton_before_target_row(api: Any) -> None:
 
     event.listen(module.db.engine, "before_cursor_execute", record_statement)
     try:
-        updated = module.db.update_proxy(proxy["id"], {"status": "active"})
+        updated = module.db.update_proxy(proxy["id"], {"is_default": True})
     finally:
         event.remove(module.db.engine, "before_cursor_execute", record_statement)
 
-    assert updated is not None and updated["status"] == "active"
+    assert updated is not None and updated["isDefault"] is True
     singleton_lock_index = next(
         index
         for index, statement in enumerate(statements)
@@ -378,7 +403,7 @@ def test_proxy_activation_locks_singleton_before_target_row(api: Any) -> None:
     assert singleton_lock_index < target_proxy_lock_index
 
 
-def test_startup_normalizes_legacy_multiple_active_proxies(api: Any) -> None:
+def test_startup_normalizes_legacy_multiple_default_proxies(api: Any) -> None:
     client, module = api
     admin_token = _login(
         client,
@@ -415,11 +440,14 @@ def test_startup_normalizes_legacy_multiple_active_proxies(api: Any) -> None:
         )
     )
 
+    # A database written by an older build can carry two default marks (for
+    # example after restoring a backup taken mid-switch).
     with module.db.session() as session:
         older = session.get(module.Proxy, first["id"])
         newer = session.get(module.Proxy, second["id"])
         assert older is not None and newer is not None
-        older.status = "active"
+        older.is_default = True
+        newer.is_default = True
         newer.status = "active"
         older.updated_at = module.utc_now() - timedelta(minutes=1)
         newer.updated_at = module.utc_now()
@@ -427,8 +455,15 @@ def test_startup_normalizes_legacy_multiple_active_proxies(api: Any) -> None:
     module.db.initialize()
 
     proxies = items(client.get("/api/admin/proxies", headers=headers))
-    active_ids = [item["id"] for item in proxies if item["status"] == "active"]
-    assert active_ids == [second["id"]]
+    defaults = [item["id"] for item in proxies if item["isDefault"]]
+    # Startup keeps the most recently updated default and clears the rest;
+    # statuses are untouched either way.
+    assert defaults == [second["id"]]
+    statuses = {item["id"]: item["status"] for item in proxies}
+    assert statuses == {
+        first["id"]: "active",
+        second["id"]: "active",
+    }
 
 
 def test_user_specific_desktop_config_admin_api_is_gone(api: Any) -> None:

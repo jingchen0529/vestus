@@ -30,9 +30,14 @@ def find_by_username(session: Session, username: str) -> Optional[User]:
 
 
 def list_all(
-    session: Session, search: Optional[str] = None, status: Optional[str] = None
+    session: Session,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    bound_admin_id: Optional[int] = None,
 ) -> Sequence[User]:
     stmt = select(User).where(User.deleted_at.is_(None))
+    if bound_admin_id is not None:
+        stmt = stmt.where(User.bound_admin_id == int(bound_admin_id))
     if search:
         pattern = f"%{search.strip()}%"
         stmt = stmt.where(
@@ -53,6 +58,8 @@ def create(session: Session, values: Dict[str, Any], password_hash: str) -> User
         status=values.get("status", "active"),
         expires_at=parse_datetime(values.get("expires_at"), end_of_day=True),
         max_sessions=int(values.get("max_sessions", 1)),
+        proxy_id=values.get("proxy_id"),
+        bound_admin_id=values.get("bound_admin_id"),
         created_by=values.get("created_by"),
         remark=values.get("remark"),
         must_change_password=bool(values.get("must_change_password", False)),
@@ -62,31 +69,39 @@ def create(session: Session, values: Dict[str, Any], password_hash: str) -> User
     return item
 
 
-def stats(session: Session) -> Dict[str, int]:
+def bound_user_ids(session: Session, admin_id: int) -> Sequence[int]:
+    """The ids of the live accounts bound to one administrator."""
+    return session.scalars(
+        select(User.id).where(User.bound_admin_id == int(admin_id), User.deleted_at.is_(None))
+    ).all()
+
+
+def stats(session: Session, bound_admin_id: Optional[int] = None) -> Dict[str, int]:
     now = utc_now()
+    live = [User.deleted_at.is_(None)]
+    if bound_admin_id is not None:
+        live.append(User.bound_admin_id == int(bound_admin_id))
     rows = session.execute(
         select(User.status, func.count(User.id))
-        .where(User.deleted_at.is_(None), or_(User.expires_at.is_(None), User.expires_at > now))
+        .where(*live, or_(User.expires_at.is_(None), User.expires_at > now))
         .group_by(User.status)
     ).all()
     result: Dict[str, int] = {"total": 0, "active": 0, "disabled": 0, "locked": 0, "expired": 0}
     for key, count in rows:
         result[str(key)] = int(count)
         result["total"] += int(count)
-    expired_count = int(
-        session.scalar(
-            select(func.count(User.id)).where(
-                User.deleted_at.is_(None), User.expires_at.is_not(None), User.expires_at <= now
-            )
+    expired_rows = session.execute(
+        select(func.count(User.id)).where(
+            *live, User.expires_at.is_not(None), User.expires_at <= now
         )
-        or 0
-    )
-    result["expired"] = expired_count
-    result["total"] += expired_count
+    ).scalar()
+    result["expired"] = int(expired_rows or 0)
+    result["total"] += result["expired"]
     return result
 
 
 __all__ = [
+    "bound_user_ids",
     "create",
     "find_by_username",
     "get_active",

@@ -63,10 +63,10 @@ export function QuickActions({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-semibold group-hover:text-emerald-600 transition-colors">
-                添加全局代理
+                添加代理节点
               </div>
               <div className="text-[11px] text-muted-foreground truncate">
-                所有桌面用户共享，最多启用一个
+                维护 VPN 节点池，可设默认
               </div>
             </div>
           </button>

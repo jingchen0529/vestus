@@ -29,7 +29,7 @@ after(async () => {
   await server.close();
 });
 
-test("代理管理只展示全局单代理规则，不再展示用户分配控件", async () => {
+test("代理管理展示多节点与默认节点规则，指向用户管理配置 VPN", async () => {
   const { DesktopConfigView } = await server.ssrLoadModule(
     "/src/components/desktop-config/desktop-config-view.tsx",
   );
@@ -46,7 +46,9 @@ test("代理管理只展示全局单代理规则，不再展示用户分配控�
 
   assert.doesNotMatch(html, /目标桌面端用户/);
   assert.doesNotMatch(html, /分配可访问平台/);
-  assert.match(html, /全局最多启用一条代理/);
+  assert.match(html, /多条代理可同时启用/);
+  assert.match(html, /用户管理/);
+  assert.match(html, /默认/);
 });
 
 test("用户列表不再提供按用户配置代理和平台的入口", async () => {
@@ -73,6 +75,60 @@ test("用户列表不再提供按用户配置代理和平台的入口", async ()
 
   assert.doesNotMatch(html, /配置桌面/);
   assert.doesNotMatch(html, /配置专属代理与平台/);
+});
+
+test("用户列表展示指定 VPN 与绑定管理员列", async () => {
+  const { UserTable } = await server.ssrLoadModule(
+    "/src/components/users/user-table.tsx",
+  );
+  const html = renderToStaticMarkup(
+    createElement(UserTable, {
+      users: [
+        {
+          id: 42,
+          username: "assigned-user",
+          name: "Assigned User",
+          status: "active",
+          maxSessions: 1,
+          proxyId: 7,
+          proxyName: "北京节点",
+          boundAdminId: 3,
+          boundAdminName: "北京管理员",
+        },
+      ],
+      onEditUser() {},
+      onToggleStatus() {},
+      onResetPassword() {},
+      onDeleteUser() {},
+    }),
+  );
+
+  assert.match(html, /指定 VPN/);
+  assert.match(html, /绑定管理员/);
+  assert.match(html, /北京节点/);
+  assert.match(html, /单独指派/);
+  assert.match(html, /北京管理员/);
+
+  const fallbackHtml = renderToStaticMarkup(
+    createElement(UserTable, {
+      users: [
+        {
+          id: 43,
+          username: "default-user",
+          name: "Default User",
+          status: "active",
+          maxSessions: 1,
+        },
+      ],
+      onEditUser() {},
+      onToggleStatus() {},
+      onResetPassword() {},
+      onDeleteUser() {},
+    }),
+  );
+  assert.match(fallbackHtml, /默认节点/);
+  assert.match(fallbackHtml, /跟随默认/);
+  assert.match(fallbackHtml, /未绑定/);
 });
 
 test("编辑 locked 用户且未改状态时不会提交 active", async () => {

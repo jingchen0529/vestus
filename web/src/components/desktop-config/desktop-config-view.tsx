@@ -12,6 +12,7 @@ import {
   PowerOff,
   ShieldCheck,
   Globe,
+  Star,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -36,6 +37,7 @@ import {
 } from "@/components/ui/dialog";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
 import { ProxyDialog } from "./proxy-dialog";
+import { toast } from "sonner";
 
 interface DesktopConfigViewProps {
   proxies: ProxyItem[];
@@ -130,7 +132,9 @@ export function DesktopConfigView({
       {/* Notice Banner */}
       <div className="flex items-center gap-2.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs text-emerald-700 dark:text-emerald-300">
         <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-        <span>全局最多启用一条代理；启用新代理时会自动停用原代理，当前启用代理将下发给全部桌面用户。</span>
+        <span>
+          多条代理可同时启用。在【用户管理】中可为每个用户单独指定 VPN 节点；未单独配置的用户走【默认】节点，全局同时只有一条默认。
+        </span>
       </div>
 
       {/* 1. Metric Stats Cards */}
@@ -152,7 +156,7 @@ export function DesktopConfigView({
         <Card className="border-border/80 shadow-sm">
           <CardContent className="p-4 flex items-center justify-between">
             <div>
-              <p className="text-xs text-muted-foreground font-medium">当前生效代理</p>
+              <p className="text-xs text-muted-foreground font-medium">启用节点数</p>
               <p className="text-2xl font-bold tracking-tight mt-1 text-emerald-600 dark:text-emerald-400">
                 {stats.active}
               </p>
@@ -273,8 +277,13 @@ export function DesktopConfigView({
                             <Server className="h-4 w-4" />
                           </div>
                           <div className="flex flex-col min-w-0">
-                            <span className="font-semibold text-foreground text-xs truncate">
+                            <span className="font-semibold text-foreground text-xs truncate inline-flex items-center gap-1.5">
                               {proxy.name}
+                              {proxy.isDefault && (
+                                <Badge variant="success" className="text-[10px] px-1.5 py-0 shrink-0">
+                                  默认
+                                </Badge>
+                              )}
                             </span>
                             <span className="text-[10px] text-muted-foreground font-mono">
                               节点 #{proxy.id}
@@ -336,6 +345,31 @@ export function DesktopConfigView({
                             <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                             <span>编辑</span>
                           </Button>
+
+                          {!proxy.isDefault && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={proxy.status !== "active"}
+                              title={
+                                proxy.status !== "active"
+                                  ? "停用节点不能作为默认，请先启用"
+                                  : "设为默认节点，未单独配置 VPN 的用户将走这条"
+                              }
+                              onClick={async () => {
+                                try {
+                                  await onUpdateProxy(proxy.id, { isDefault: true });
+                                  toast.success(`已将 ${proxy.name} 设为默认节点`);
+                                } catch (err: any) {
+                                  toast.error("设置默认失败", { description: err.message });
+                                }
+                              }}
+                              className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 border border-border/40 hover:border-emerald-500/30 shadow-none font-normal transition-colors"
+                            >
+                              <Star className="h-3.5 w-3.5 text-emerald-500" />
+                              <span>设为默认</span>
+                            </Button>
+                          )}
 
                           <Button
                             variant="ghost"
@@ -407,7 +441,7 @@ export function DesktopConfigView({
                 。
               </p>
               <p className="text-amber-600 dark:text-amber-400">
-                ⚠️ 删除后所有桌面端将不再通过此节点建立代理连接。该操作不可撤销。
+                ⚠️ 删除后，被指派到该节点的用户将自动回落到默认节点继续上网。该操作不可撤销。
               </p>
             </DialogDescription>
           </DialogHeader>

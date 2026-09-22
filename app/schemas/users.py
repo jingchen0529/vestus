@@ -18,6 +18,10 @@ class UserCreate(BaseModel):
     status: str = Field(default="active", pattern="^(active|disabled|locked)$")
     expires_at: Optional[str] = Field(default=None, alias="expiresAt")
     max_sessions: int = Field(default=1, alias="maxSessions", ge=1, le=999)
+    #: The VPN node this user must use; ``None`` follows the default proxy.
+    proxy_id: Optional[int] = Field(default=None, alias="proxyId", ge=1)
+    #: The administrator this account belongs to; ``None`` stays super-admin-only.
+    bound_admin_id: Optional[int] = Field(default=None, alias="boundAdminId", ge=1)
     must_change_password: bool = Field(default=False, alias="mustChangePassword")
     remark: Optional[str] = Field(default=None, max_length=500)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
@@ -46,6 +50,10 @@ class UserUpdate(BaseModel):
     status: Optional[str] = Field(default=None, pattern="^(active|disabled|locked)$")
     expires_at: Optional[str] = Field(default=None, alias="expiresAt")
     max_sessions: Optional[int] = Field(default=None, alias="maxSessions", ge=1, le=999)
+    #: Send ``null`` to drop the per-user VPN and follow the default proxy again.
+    proxy_id: Optional[int] = Field(default=None, alias="proxyId", ge=1)
+    #: Send ``null`` to unbind the administrator.
+    bound_admin_id: Optional[int] = Field(default=None, alias="boundAdminId", ge=1)
     must_change_password: Optional[bool] = Field(default=None, alias="mustChangePassword")
     remark: Optional[str] = Field(default=None, max_length=500)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")

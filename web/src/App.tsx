@@ -515,6 +515,9 @@ export function App() {
             onToggleUserStatus={handleToggleUserStatus}
             onResetPassword={handleResetUserPassword}
             onDeleteUser={handleDeleteUser}
+            proxies={proxies}
+            admins={admins}
+            canAssignVpn={isSuperAdmin}
           />
         )}
 

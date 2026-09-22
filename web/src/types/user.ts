@@ -14,6 +14,13 @@ export interface DesktopUser {
   lastLoginAt?: string | null;
   lastLoginIp?: string | null;
   createdBy?: number | null;
+  /** 单独指定的 VPN 节点；null 表示跟随默认代理。 */
+  proxyId?: number | null;
+  /** 绑定的管理员；null 表示仅超级管理员可见。 */
+  boundAdminId?: number | null;
+  /** 由服务端富化的展示名，可能缺失（如引用已被删除）。 */
+  proxyName?: string | null;
+  boundAdminName?: string | null;
   remark?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -34,6 +41,8 @@ export interface CreateUserPayload {
   phone?: string | null;
   expiresAt?: string | null;
   maxSessions: number;
+  proxyId?: number | null;
+  boundAdminId?: number | null;
   remark?: string | null;
 }
 
@@ -43,6 +52,8 @@ export interface UpdateUserPayload {
   phone?: string | null;
   expiresAt?: string | null;
   maxSessions?: number;
+  proxyId?: number | null;
+  boundAdminId?: number | null;
   remark?: string | null;
   status?: DesktopUser["status"];
 }

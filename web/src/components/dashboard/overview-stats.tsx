@@ -69,7 +69,7 @@ export function OverviewStats({
         <CardContent className="p-5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              全局共享代理池
+              VPN 代理节点池
             </span>
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
               <Server className="h-5 w-5" />
@@ -87,7 +87,7 @@ export function OverviewStats({
               <span>{activeProxies} 个启用</span>
             </div>
             <div className="flex items-center gap-1 text-slate-500">
-              <span>所有用户共享 · 最多启用 1 个</span>
+              <span>可按用户单独指派 · 默认 1 个</span>
             </div>
           </div>
         </CardContent>

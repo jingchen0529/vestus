@@ -212,6 +212,20 @@ async def user_auth(auth: Dict[str, Any] = Depends(current_account)) -> Dict[str
     return auth
 
 
+def user_scope_admin_id(auth: Dict[str, Any]) -> Optional[int]:
+    """The admin id that user data must be bound to, or ``None`` for super admins.
+
+    A plain administrator only sees the accounts bound to them -- their user
+    list, their stats and their users' activity.  Super administrators keep the
+    unscoped view.  Services treat the id as a visibility filter and answer
+    ``404`` outside of it, so the API does not leak which accounts exist.
+    """
+
+    if auth["model"].role == "super_admin":
+        return None
+    return auth["id"]
+
+
 __all__ = [
     "SAFE_HTTP_METHODS",
     "SESSION_COOKIE",
@@ -228,4 +242,5 @@ __all__ = [
     "safe_int_subject",
     "super_admin_auth",
     "user_auth",
+    "user_scope_admin_id",
 ]

@@ -28,6 +28,7 @@ from app.db.base import iso_datetime, utc_now
 from app.db.session import Database
 from app.repositories import browser_activity as activity_repo
 from app.repositories import platforms as platforms_repo
+from app.repositories import users as users_repo
 from app.schemas.browser_activity import BrowserActivityReport, BrowserPageReport
 from app.schemas.serializers import browser_page_visit_dict, browser_session_dict
 from app.services.errors import NotFoundError
@@ -185,6 +186,23 @@ def record_activity(
         return {"sessionId": item.id, "acceptedPages": len(report.pages), "newPages": new_pages}
 
 
+def _scoped_user_ids(session: Session, user_id: Optional[int], visible_admin_id: Optional[int]) -> Optional[List[int]]:
+    """Narrow the requested user filter to the admin's bound users.
+
+    Returns ``None`` when no scope applies (a super administrator, or any
+    desktop-side caller), otherwise the list of user ids visible to the caller:
+    the bound accounts, intersected with the requested ``user_id`` if one was
+    given.  An empty list means the caller may not see anything.
+    """
+
+    if visible_admin_id is None:
+        return None
+    bound = set(users_repo.bound_user_ids(session, visible_admin_id))
+    if user_id is not None:
+        return [int(user_id)] if int(user_id) in bound else []
+    return sorted(bound)
+
+
 def list_sessions(
     database: Database,
     *,
@@ -195,16 +213,28 @@ def list_sessions(
     direct_mode: Optional[bool] = None,
     start_at: Any = None,
     end_at: Any = None,
+    visible_admin_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """One page of browser sessions, newest first."""
 
     page, page_size = max(int(page), 1), min(max(int(page_size), 1), 200)
+    empty = {
+        "items": [],
+        "total": 0,
+        "page": page,
+        "pageSize": page_size,
+        "pages": 0,
+    }
     with database.session() as session:
+        scoped_ids = _scoped_user_ids(session, user_id, visible_admin_id)
+        if scoped_ids is not None and not scoped_ids:
+            return empty
         items, total = activity_repo.list_sessions_page(
             session,
             page=page,
             page_size=page_size,
             user_id=user_id,
+            user_ids=scoped_ids,
             platform_id=platform_id,
             direct_mode=direct_mode,
             start_at=start_at,
@@ -220,13 +250,21 @@ def list_sessions(
 
 
 def get_session_detail(
-    database: Database, session_id: int | str, *, page_limit: int = 500
+    database: Database,
+    session_id: int | str,
+    *,
+    page_limit: int = 500,
+    visible_admin_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """One session with the addresses visited during it, oldest first."""
 
     with database.session() as session:
         item = activity_repo.get_session(session, session_id)
         if item is None:
+            raise NotFoundError(MISSING_SESSION_DETAIL)
+        if visible_admin_id is not None and item.user_id not in set(
+            users_repo.bound_user_ids(session, visible_admin_id)
+        ):
             raise NotFoundError(MISSING_SESSION_DETAIL)
         pages: List[Dict[str, Any]] = [
             browser_page_visit_dict(row)
@@ -244,13 +282,18 @@ def export_advids(
     direct_mode: Optional[bool] = None,
     start_at: Any = None,
     end_at: Any = None,
+    visible_admin_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """导出指定参数（如 advid）的去重列表及聚合统计。"""
     with database.session() as session:
+        scoped_ids = _scoped_user_ids(session, user_id, visible_admin_id)
+        if scoped_ids is not None and not scoped_ids:
+            return {"items": [], "total": 0, "param": param}
         items = activity_repo.list_distinct_url_params(
             session,
             param=param,
             user_id=user_id,
+            user_ids=scoped_ids,
             platform_id=platform_id,
             direct_mode=direct_mode,
             start_at=start_at,

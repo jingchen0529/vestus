@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.deps import admin_auth, audit_context, get_db, user_auth
+from app.api.deps import admin_auth, audit_context, get_db, user_auth, user_scope_admin_id
 from app.api.envelope import EnvelopeRoute
 from app.db.session import Database
 from app.schemas.browser_activity import BrowserActivityReport
@@ -66,7 +66,7 @@ def admin_browser_sessions(
     direct_mode: Optional[bool] = Query(None, alias="directMode"),
     start_at: Optional[str] = Query(None, alias="startAt"),
     end_at: Optional[str] = Query(None, alias="endAt"),
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     return activity_service.list_sessions(
@@ -78,6 +78,7 @@ def admin_browser_sessions(
         direct_mode=direct_mode,
         start_at=start_at,
         end_at=end_at,
+        visible_admin_id=user_scope_admin_id(auth),
     )
 
 
@@ -85,10 +86,12 @@ def admin_browser_sessions(
 def admin_browser_session_detail(
     session_id: int,
     page_limit: int = Query(500, ge=1, le=1000, alias="pageLimit"),
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return activity_service.get_session_detail(db, session_id, page_limit=page_limit)
+    return activity_service.get_session_detail(
+        db, session_id, page_limit=page_limit, visible_admin_id=user_scope_admin_id(auth)
+    )
 
 
 @router.get("/api/admin/browser-activity/export-advids", tags=["browser-activity"])
@@ -99,7 +102,7 @@ def admin_export_advids(
     direct_mode: Optional[bool] = Query(None, alias="directMode"),
     start_at: Optional[str] = Query(None, alias="startAt"),
     end_at: Optional[str] = Query(None, alias="endAt"),
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     return activity_service.export_advids(
@@ -110,6 +113,7 @@ def admin_export_advids(
         direct_mode=direct_mode,
         start_at=start_at,
         end_at=end_at,
+        visible_admin_id=user_scope_admin_id(auth),
     )
 
 

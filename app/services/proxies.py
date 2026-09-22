@@ -1,10 +1,12 @@
 """Proxy management.
 
-Only one proxy may be ``active`` at a time.  That invariant is global, so both
-writers take the shared advisory lock (``lock_global_proxy_activation``) *before*
-reading any proxy row -- two concurrent activations otherwise both see "no other
-active proxy" and commit, leaving two.  The lock-before-select order is asserted
-by ``test_proxy_activation_locks_singleton_before_target_row``.
+Any number of proxies may be ``active`` at once -- each desktop user is pointed
+at its own node, or at the single ``is_default`` one.  That default mark is the
+only global invariant left, so both writers take the shared advisory lock
+(``lock_global_proxy_activation``) *before* reading any proxy row -- two
+concurrent "set default" writes otherwise both see "no other default" and
+commit, leaving two.  The lock-before-select order is asserted by
+``test_proxy_default_locks_singleton_before_target_row``.
 """
 
 from __future__ import annotations
@@ -30,13 +32,18 @@ _TEXT_FIELDS = ("name", "host", "username")
 _DIRECT_FIELDS = ("name", "host", "port", "username", "status")
 
 
-def _deactivate_others(session: Session, *, exclude_id: Optional[int] = None) -> None:
-    """Disable every other active proxy so the activated one stands alone."""
+def _claim_default(session: Session, item: Proxy) -> None:
+    """Mark ``item`` as the default proxy, clearing the previous holder.
+
+    Callers must already hold ``lock_global_proxy_activation`` so two writers
+    cannot both observe "no other default" and commit two default rows.
+    """
 
     replaced_at = utc_now()
-    for active_proxy in proxies_repo.active_for_update(session, exclude_id=exclude_id):
-        active_proxy.status = "disabled"
-        active_proxy.updated_at = replaced_at
+    for other in proxies_repo.defaults_for_update(session, exclude_id=item.id):
+        other.is_default = False
+        other.updated_at = replaced_at
+    item.is_default = True
 
 
 def list_proxies(database: Database) -> List[Dict[str, Any]]:
@@ -55,15 +62,18 @@ def create_proxy(
 ) -> Dict[str, Any]:
     with database.session() as session:
         status = values.get("status", "active")
-        if status == "active":
+        wants_default = bool(values.get("is_default"))
+        # Before any proxy row is written: see the module docstring.
+        if wants_default:
             lock_global_proxy_activation(session)
-            _deactivate_others(session)
         try:
             item = proxies_repo.create(
                 session, values, encrypt_proxy_password(values["password"]), status
             )
         except IntegrityError as exc:
             raise ConflictError(DUPLICATE_NAME_DETAIL) from exc
+        if wants_default:
+            _claim_default(session, item)
         result = proxy_dict(item)
         record(
             session,
@@ -86,15 +96,13 @@ def update_proxy(
 ) -> Dict[str, Any]:
     numeric_id = int(proxy_id)
     with database.session() as session:
-        activates_proxy = values.get("status") == "active"
+        claims_default = bool(values.get("is_default"))
         # Before the target row is even read: see the module docstring.
-        if activates_proxy:
+        if claims_default:
             lock_global_proxy_activation(session)
         item = proxies_repo.get_for_update(session, numeric_id)
         if item is None:
             raise NotFoundError(MISSING_PROXY_DETAIL)
-        if activates_proxy:
-            _deactivate_others(session, exclude_id=numeric_id)
         try:
             result = _apply_changes(session, item, values)
         except IntegrityError as exc:
@@ -127,6 +135,13 @@ def _apply_changes(session: Session, item: Proxy, values: Dict[str, Any]) -> Dic
         item.bypass_hosts = list(values["bypass_hosts"] or [])
     if "password" in values and values["password"] is not None:
         item.encrypted_password = encrypt_proxy_password(values["password"])
+    if "is_default" in values:
+        # ``update_proxy`` took the lock before reading the row whenever this
+        # flag is being claimed, so the previous holder is cleared safely here.
+        if values["is_default"]:
+            _claim_default(session, item)
+        else:
+            item.is_default = False
     item.updated_at = utc_now()
     session.flush()
     return proxy_dict(item)

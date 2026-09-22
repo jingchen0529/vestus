@@ -12,7 +12,7 @@ const tabTitles: Record<NavTab, { title: string; subtitle: string }> = {
   dashboard: { title: "控制总览", subtitle: "系统状态与综合统计指标" },
   admins: { title: "系统管理", subtitle: "超级管理员与普通管理员授权及安全控制" },
   users: { title: "桌面用户", subtitle: "管理桌面客户端授权账号、并发与到期时间" },
-  desktop: { title: "代理管理", subtitle: "配置所有桌面用户共享的代理节点，系统最多启用一个" },
+  desktop: { title: "代理管理", subtitle: "维护多条 VPN 代理节点，可为用户单独指派或设为默认" },
   platforms: { title: "平台管理", subtitle: "统一维护业务平台入口与可用状态" },
   activity: { title: "会话追踪", subtitle: "桌面端内置浏览器会话链路、访问地址与交互统计" },
   logs: { title: "审计日志", subtitle: "完整追踪桌面端与管理员操作轨迹" },

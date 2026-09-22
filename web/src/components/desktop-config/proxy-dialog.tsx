@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
 import { toast } from "sonner";
 import { Server, Eye, EyeOff, ShieldCheck, ShieldOff } from "lucide-react";
@@ -48,6 +49,7 @@ export function ProxyDialog({
   const [password, setPassword] = useState("");
   const [bypassHosts, setBypassHosts] = useState("");
   const [status, setStatus] = useState<"active" | "disabled">("active");
+  const [isDefault, setIsDefault] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -60,6 +62,7 @@ export function ProxyDialog({
       setPassword("");
       setBypassHosts((proxyToEdit.bypassHosts || []).join("\n"));
       setStatus(proxyToEdit.status || "active");
+      setIsDefault(!!proxyToEdit.isDefault);
     } else {
       setName("");
       setHost("");
@@ -68,6 +71,7 @@ export function ProxyDialog({
       setPassword("");
       setBypassHosts("");
       setStatus("active");
+      setIsDefault(false);
     }
   }, [proxyToEdit, open]);
 
@@ -94,6 +98,7 @@ export function ProxyDialog({
           username: username.trim(),
           bypassHosts: directHosts,
           status,
+          isDefault,
         };
         if (password) {
           payload.password = password;
@@ -114,6 +119,7 @@ export function ProxyDialog({
           password,
           bypassHosts: directHosts,
           status,
+          isDefault,
         });
         toast.success(`代理 ${name} 创建成功`);
       }
@@ -133,10 +139,11 @@ export function ProxyDialog({
         <DialogHeader>
           <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 mb-1">
             <Server className="h-5 w-5" />
-            <DialogTitle>{isEditing ? "编辑全局代理" : "新增全局网络代理"}</DialogTitle>
+            <DialogTitle>{isEditing ? "编辑代理节点" : "新增网络代理节点"}</DialogTitle>
           </div>
           <DialogDescription className="text-xs">
-            配置所有桌面用户共享的 HTTP/SOCKS 代理节点。系统最多启用一个；启用新节点会自动停用旧节点。
+            可同时保存多条代理节点，分别下发给不同的用户；未单独配置 VPN
+            的用户走【默认】节点，设为默认会自动取消其它节点的默认标记。
           </DialogDescription>
         </DialogHeader>
 
@@ -270,6 +277,24 @@ export function ProxyDialog({
                 <SelectItem value="disabled">暂时停用</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          {/* Default mark */}
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+            <div className="space-y-0.5">
+              <Label htmlFor="p-default" className="text-xs">
+                设为默认节点
+              </Label>
+              <p className="text-[11px] leading-4 text-muted-foreground">
+                未在用户管理中单独配置 VPN 的用户走这条节点；同一时间只能有一个默认。
+              </p>
+            </div>
+            <Switch
+              id="p-default"
+              checked={isDefault}
+              onCheckedChange={setIsDefault}
+              disabled={loading}
+            />
           </div>
 
           <div className="flex items-center gap-2 rounded-lg bg-muted/40 p-2.5 text-[11px] text-muted-foreground">

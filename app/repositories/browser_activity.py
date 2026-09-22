@@ -165,6 +165,7 @@ def list_sessions_page(
     page: int = 1,
     page_size: int = 50,
     user_id: Optional[int] = None,
+    user_ids: Optional[Sequence[int]] = None,
     platform_id: Optional[int] = None,
     direct_mode: Optional[bool] = None,
     start_at: Any = None,
@@ -172,7 +173,11 @@ def list_sessions_page(
 ) -> Tuple[Sequence[BrowserSession], int]:
     page, page_size = max(int(page), 1), min(max(int(page_size), 1), 200)
     conditions: List[Any] = []
-    if user_id is not None:
+    # ``user_ids`` is the visibility scope (the users bound to an admin); it
+    # takes precedence so an id outside the scope cannot widen the result.
+    if user_ids is not None:
+        conditions.append(BrowserSession.user_id.in_(user_ids))
+    elif user_id is not None:
         conditions.append(BrowserSession.user_id == user_id)
     if platform_id is not None:
         conditions.append(BrowserSession.platform_id == platform_id)
@@ -219,6 +224,7 @@ def list_distinct_url_params(
     *,
     param: str = "advid",
     user_id: Optional[int] = None,
+    user_ids: Optional[Sequence[int]] = None,
     platform_id: Optional[int] = None,
     direct_mode: Optional[bool] = None,
     start_at: Any = None,
@@ -228,7 +234,9 @@ def list_distinct_url_params(
     conditions: List[Any] = [
         BrowserPageVisit.url_params.contains(param, autoescape=True)
     ]
-    if user_id is not None:
+    if user_ids is not None:
+        conditions.append(BrowserSession.user_id.in_(user_ids))
+    elif user_id is not None:
         conditions.append(BrowserSession.user_id == user_id)
     if platform_id is not None:
         conditions.append(BrowserSession.platform_id == platform_id)

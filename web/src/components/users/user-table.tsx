@@ -18,6 +18,8 @@ import {
   Building,
   Phone,
   Clock,
+  Globe,
+  UserCog,
   ShieldAlert,
   Trash2,
 } from "lucide-react";
@@ -77,14 +79,16 @@ export function UserTable({
   }
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+    <div className="rounded-xl border bg-card shadow-sm overflow-hidden overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-[220px]">账号与识别</TableHead>
+            <TableHead className="w-[200px]">账号与识别</TableHead>
             <TableHead>姓名 / 归属单位</TableHead>
-            <TableHead className="w-[120px]">账号状态</TableHead>
-            <TableHead className="w-[140px]">授权到期</TableHead>
+            <TableHead className="w-[140px]">指定 VPN</TableHead>
+            <TableHead className="w-[130px]">绑定管理员</TableHead>
+            <TableHead className="w-[110px]">账号状态</TableHead>
+            <TableHead className="w-[120px]">授权到期</TableHead>
             <TableHead className="w-[280px] text-right">操作管理</TableHead>
           </TableRow>
         </TableHeader>
@@ -129,6 +133,35 @@ export function UserTable({
                     )}
                   </div>
                 </div>
+              </TableCell>
+
+              {/* Assigned VPN */}
+              <TableCell>
+                <div className="flex flex-col text-xs">
+                  <span className="flex items-center gap-1 font-medium text-foreground">
+                    <Globe className="h-3 w-3 text-emerald-500" />
+                    <span className="truncate max-w-[110px]" title={user.proxyName || undefined}>
+                      {user.proxyName || "默认节点"}
+                    </span>
+                  </span>
+                  <span className="text-[11px] text-muted-foreground mt-0.5">
+                    {user.proxyId ? "单独指派" : "跟随默认"}
+                  </span>
+                </div>
+              </TableCell>
+
+              {/* Bound admin */}
+              <TableCell>
+                {user.boundAdminName ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-medium">
+                    <UserCog className="h-3 w-3" />
+                    <span className="truncate max-w-[90px]" title={user.boundAdminName}>
+                      {user.boundAdminName}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">未绑定</span>
+                )}
               </TableCell>
 
               {/* Status */}

@@ -94,6 +94,8 @@ class ProxyCreate(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
     bypass_hosts: List[str] = Field(default_factory=list, alias="bypassHosts")
     status: str = Field(default="active", pattern="^(active|disabled)$")
+    #: Mark this node as the fallback for users without their own assignment.
+    is_default: bool = Field(default=False, alias="isDefault")
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     @field_validator("name")
@@ -140,6 +142,8 @@ class ProxyUpdate(BaseModel):
     password: Optional[str] = Field(default=None, min_length=1, max_length=1024)
     bypass_hosts: Optional[List[str]] = Field(default=None, alias="bypassHosts")
     status: Optional[str] = Field(default=None, pattern="^(active|disabled)$")
+    #: Claiming the default mark clears it from the previous holder.
+    is_default: Optional[bool] = Field(default=None, alias="isDefault")
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     @field_validator("name")

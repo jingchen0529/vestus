@@ -57,6 +57,8 @@ def user_dict(item: User) -> Dict[str, Any]:
         "lockedUntil": iso_datetime(item.locked_until),
         "mustChangePassword": bool(item.must_change_password),
         "createdBy": item.created_by,
+        "proxyId": item.proxy_id,
+        "boundAdminId": item.bound_admin_id,
         "remark": item.remark,
         "createdAt": iso_datetime(item.created_at),
         "updatedAt": iso_datetime(item.updated_at),
@@ -86,6 +88,7 @@ def proxy_dict(item: Proxy) -> Dict[str, Any]:
         "username": item.username,
         "bypassHosts": proxy_bypass_hosts(item),
         "status": item.status,
+        "isDefault": bool(item.is_default),
         "createdAt": iso_datetime(item.created_at),
         "updatedAt": iso_datetime(item.updated_at),
     }

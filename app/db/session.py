@@ -149,21 +149,26 @@ class Database:
                     connection.execute(insert(SystemSetting).values(**values))
 
     def _normalize_active_proxies(self) -> None:
-        """Keep only the most recently updated legacy active proxy."""
+        """Keep only one ``is_default`` proxy: the most recently updated one.
+
+        Multiple active proxies are legitimate now that users carry their own
+        assignment; the default mark is the invariant that must stay singleton.
+        A database written by an older build has no default at all, which the
+        desktop resolution treats as "fall back to the newest active proxy" --
+        exactly the behaviour that build shipped.
+        """
         with self.session() as db:
             lock_global_proxy_activation(db)
-            active_proxies = db.scalars(
+            default_proxies = db.scalars(
                 select(Proxy)
-                .where(Proxy.status == "active")
+                .where(Proxy.is_default.is_(True))
                 .order_by(desc(Proxy.updated_at), desc(Proxy.id))
                 .with_for_update()
             ).all()
-            if len(active_proxies) <= 1:
+            if len(default_proxies) <= 1:
                 return
-            replaced_at = utc_now()
-            for proxy in active_proxies[1:]:
-                proxy.status = "disabled"
-                proxy.updated_at = replaced_at
+            for proxy in default_proxies[1:]:
+                proxy.is_default = False
 
     def _bootstrap_admin(self) -> None:
         # Deliberately no weak built-in password.  Set both variables in a

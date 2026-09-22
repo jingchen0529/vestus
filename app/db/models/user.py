@@ -28,6 +28,13 @@ class User(Base):
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True, index=True)
     max_sessions: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: The upstream proxy (VPN) node this user must use.  ``NULL`` resolves to
+    #: the default-marked proxy, then to the most recently updated active one.
+    proxy_id: Mapped[Optional[int]] = mapped_column(IdType, nullable=True, index=True)
+    #: The administrator this account belongs to.  Plain administrators only
+    #: see activity and statistics of users bound to them; ``NULL`` is visible
+    #: to super administrators alone.
+    bound_admin_id: Mapped[Optional[int]] = mapped_column(IdType, nullable=True, index=True)
     failed_login_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

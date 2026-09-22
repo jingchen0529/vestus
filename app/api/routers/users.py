@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.deps import admin_auth, audit_context, get_db
+from app.api.deps import admin_auth, audit_context, get_db, user_scope_admin_id
 from app.api.envelope import EnvelopeRoute
 from app.api.responses import collection
 from app.db.session import Database
@@ -24,10 +24,14 @@ router = APIRouter(route_class=EnvelopeRoute)
 def list_users(
     search: Optional[str] = Query(default=None, max_length=100),
     status_filter: Optional[str] = Query(default=None, alias="status"),
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return collection(users_service.list_users(db, search, status_filter))
+    return collection(
+        users_service.list_users(
+            db, search, status_filter, visible_admin_id=user_scope_admin_id(auth)
+        )
+    )
 
 
 @router.post("/api/admin/users", status_code=201, tags=["users"])
@@ -39,16 +43,20 @@ def create_user(
 ) -> Dict[str, Any]:
     values = payload.model_dump(by_alias=False)
     values["created_by"] = auth["id"]
+    # A plain administrator's own creation is theirs by definition; only a
+    # super administrator deliberately picks a different binding.
+    if auth["model"].role != "super_admin" and values.get("bound_admin_id") is None:
+        values["bound_admin_id"] = auth["id"]
     return users_service.create_user(db, values, audit=audit_context(request, auth))
 
 
 @router.get("/api/admin/users/{user_id}", tags=["users"])
 def get_user(
     user_id: int,
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    result = users_service.get_user(db, user_id)
+    result = users_service.get_user(db, user_id, visible_admin_id=user_scope_admin_id(auth))
     if result is None:
         raise HTTPException(status_code=404, detail=MISSING_USER_DETAIL)
     return result
@@ -66,6 +74,7 @@ def update_user(
         db,
         user_id,
         payload.model_dump(exclude_unset=True, by_alias=False),
+        visible_admin_id=user_scope_admin_id(auth),
         audit=audit_context(request, auth),
     )
 
@@ -77,7 +86,9 @@ def enable_user(
     auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return users_service.enable_user(db, user_id, audit=audit_context(request, auth))
+    return users_service.enable_user(
+        db, user_id, visible_admin_id=user_scope_admin_id(auth), audit=audit_context(request, auth)
+    )
 
 
 @router.post("/api/admin/users/{user_id}/disable", tags=["users"])
@@ -87,7 +98,9 @@ def disable_user(
     auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return users_service.disable_user(db, user_id, audit=audit_context(request, auth))
+    return users_service.disable_user(
+        db, user_id, visible_admin_id=user_scope_admin_id(auth), audit=audit_context(request, auth)
+    )
 
 
 @router.post("/api/admin/users/{user_id}/reset-password", tags=["users"])
@@ -102,7 +115,11 @@ def reset_user_password(
     # No payload: ``code == 0`` already says it worked, and the old
     # ``{"success": true}`` carried no information beyond that.
     users_service.reset_password(
-        db, user_id, payload.password, audit=audit_context(request, auth)
+        db,
+        user_id,
+        payload.password,
+        visible_admin_id=user_scope_admin_id(auth),
+        audit=audit_context(request, auth),
     )
 
 
@@ -115,7 +132,9 @@ def delete_user(
 ) -> None:
     # The service raises NotFoundError when there is nothing to delete, so the
     # old ``{"success": deleted}`` could only ever report ``true``.
-    users_service.delete_user(db, user_id, audit=audit_context(request, auth))
+    users_service.delete_user(
+        db, user_id, visible_admin_id=user_scope_admin_id(auth), audit=audit_context(request, auth)
+    )
 
 
 @router.get("/api/admin/users/{user_id}/desktop-config", tags=["desktop-config"], deprecated=True)
@@ -134,9 +153,9 @@ async def update_user_desktop_config(
 
 @router.get("/api/admin/stats", tags=["users"])
 def admin_stats(
-    _auth: Dict[str, Any] = Depends(admin_auth), db: Database = Depends(get_db)
+    auth: Dict[str, Any] = Depends(admin_auth), db: Database = Depends(get_db)
 ) -> Dict[str, int]:
-    return users_service.stats(db)
+    return users_service.stats(db, visible_admin_id=user_scope_admin_id(auth))
 
 
 __all__ = ["router"]

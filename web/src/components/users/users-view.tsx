@@ -3,6 +3,8 @@ import { UserTable } from "./user-table";
 import { UserDialog } from "./user-dialog";
 import { UserResetPasswordDialog } from "./user-reset-password-dialog";
 import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user";
+import { ProxyItem } from "@/types/proxy";
+import { AdminUser } from "@/types/admin";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -30,6 +32,10 @@ interface UsersViewProps {
   onToggleUserStatus: (user: DesktopUser) => Promise<void>;
   onResetPassword: (id: number, pwd: string) => Promise<void>;
   onDeleteUser: (user: DesktopUser) => Promise<void>;
+  /** 超管可用：供弹窗选择 VPN 节点与绑定管理员。 */
+  proxies?: ProxyItem[];
+  admins?: AdminUser[];
+  canAssignVpn?: boolean;
 }
 
 export function UsersView({
@@ -45,6 +51,9 @@ export function UsersView({
   onToggleUserStatus,
   onResetPassword,
   onDeleteUser,
+  proxies,
+  admins,
+  canAssignVpn,
 }: UsersViewProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<DesktopUser | null>(null);
@@ -167,6 +176,9 @@ export function UsersView({
         userToEdit={editingUser}
         onSubmitCreate={onCreateUser}
         onSubmitUpdate={onUpdateUser}
+        proxies={proxies}
+        admins={admins}
+        canAssignVpn={canAssignVpn}
       />
 
       <UserResetPasswordDialog

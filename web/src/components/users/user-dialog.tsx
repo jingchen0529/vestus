@@ -13,8 +13,10 @@ import { DatePicker } from "@/components/ui/date-picker";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user";
+import { ProxyItem } from "@/types/proxy";
+import { AdminUser } from "@/types/admin";
 import { generateRandomPassword } from "@/lib/utils";
-import { Sparkles, Copy, Check } from "lucide-react";
+import { Sparkles, Copy, Check, Globe, UserCog } from "lucide-react";
 import { toast } from "sonner";
 
 interface UserDialogProps {
@@ -23,6 +25,11 @@ interface UserDialogProps {
   userToEdit?: DesktopUser | null;
   onSubmitCreate: (payload: CreateUserPayload) => Promise<void>;
   onSubmitUpdate: (id: number, payload: UpdateUserPayload) => Promise<void>;
+  /** 仅超级管理员可见：可指派的 VPN 节点列表（含停用节点，供编辑展示）。 */
+  proxies?: ProxyItem[];
+  /** 仅超级管理员可见：可绑定的管理员列表。 */
+  admins?: AdminUser[];
+  canAssignVpn?: boolean;
 }
 
 interface UserEditFormValues {
@@ -33,6 +40,9 @@ interface UserEditFormValues {
   maxSessions: number;
   remark: string;
   status: DesktopUser["status"];
+  /** 仅超级管理员的表单会带上这两个字段；普通管理员的表单保持缺省。 */
+  proxyId?: number | null;
+  boundAdminId?: number | null;
 }
 
 export function buildUserUpdatePayload(
@@ -52,6 +62,14 @@ export function buildUserUpdatePayload(
     payload.status = values.status;
   }
 
+  // 只有超管的表单会提交 VPN 指派与绑定管理员；普通管理员不触碰这两个字段。
+  if (values.proxyId !== undefined) {
+    payload.proxyId = values.proxyId;
+  }
+  if (values.boundAdminId !== undefined) {
+    payload.boundAdminId = values.boundAdminId;
+  }
+
   return payload;
 }
 
@@ -61,6 +79,9 @@ export function UserDialog({
   userToEdit,
   onSubmitCreate,
   onSubmitUpdate,
+  proxies = [],
+  admins = [],
+  canAssignVpn = false,
 }: UserDialogProps) {
   const isEditing = !!userToEdit;
 
@@ -73,6 +94,10 @@ export function UserDialog({
   const [maxSessions, setMaxSessions] = useState(1);
   const [remark, setRemark] = useState("");
   const [status, setStatus] = useState<DesktopUser["status"]>("active");
+  /** "default" 表示跟随默认代理；其余为 ProxyItem.id 的字符串形式。 */
+  const [proxyChoice, setProxyChoice] = useState("default");
+  /** "none" 表示不绑定；其余为 AdminUser.id 的字符串形式。 */
+  const [adminChoice, setAdminChoice] = useState("none");
 
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -90,6 +115,8 @@ export function UserDialog({
       setMaxSessions(userToEdit.maxSessions || 1);
       setRemark(userToEdit.remark || "");
       setStatus(userToEdit.status);
+      setProxyChoice(userToEdit.proxyId ? String(userToEdit.proxyId) : "default");
+      setAdminChoice(userToEdit.boundAdminId ? String(userToEdit.boundAdminId) : "none");
     } else {
       setUsername("");
       setPassword(generateRandomPassword(10));
@@ -100,6 +127,8 @@ export function UserDialog({
       setMaxSessions(1);
       setRemark("");
       setStatus("active");
+      setProxyChoice("default");
+      setAdminChoice("none");
     }
   }, [userToEdit, open]);
 
@@ -115,6 +144,11 @@ export function UserDialog({
     toast.success("密码已复制到剪贴板");
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const resolvedProxyId = (): number | null =>
+    proxyChoice === "default" ? null : Number(proxyChoice);
+  const resolvedBoundAdminId = (): number | null =>
+    adminChoice === "none" ? null : Number(adminChoice);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,6 +170,8 @@ export function UserDialog({
             maxSessions,
             remark,
             status,
+            proxyId: resolvedProxyId(),
+            boundAdminId: resolvedBoundAdminId(),
           }),
         );
         toast.success(`用户 ${userToEdit.username} 已更新`);
@@ -153,6 +189,8 @@ export function UserDialog({
           expiresAt: expiresAt || null,
           maxSessions: Number(maxSessions) || 1,
           remark: remark.trim() || null,
+          proxyId: canAssignVpn ? resolvedProxyId() : undefined,
+          boundAdminId: canAssignVpn ? resolvedBoundAdminId() : undefined,
         });
         toast.success(`桌面端用户 ${username} 创建成功`);
       }
@@ -166,6 +204,14 @@ export function UserDialog({
     }
   };
 
+  // 可选节点 = 当前启用的节点；编辑时若当前指派的节点已停用，也要能显示出来。
+  const proxyOptions = proxies.filter(
+    (p) => p.status === "active" || (userToEdit?.proxyId && p.id === userToEdit.proxyId)
+  );
+  const adminOptions = admins.filter(
+    (a) => a.status === "active" || (userToEdit?.boundAdminId && a.id === userToEdit.boundAdminId)
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[560px]">
@@ -173,7 +219,7 @@ export function UserDialog({
           <DialogTitle>{isEditing ? "编辑桌面端用户" : "开通桌面端账号"}</DialogTitle>
           <DialogDescription className="text-xs">
             {isEditing
-              ? "修改用户基本资料、授权有效期或最大并发数"
+              ? "修改用户基本资料、授权有效期、最大并发数或 VPN 指派"
               : "创建全新的桌面客户端受权账号，并设置初始密码"}
           </DialogDescription>
         </DialogHeader>
@@ -281,6 +327,7 @@ export function UserDialog({
             <div className="space-y-1.5">
               <Label htmlFor="u-expires">授权到期日</Label>
               <DatePicker
+                id="u-expires"
                 value={expiresAt}
                 onChange={(val) => setExpiresAt(val)}
                 disabled={loading}
@@ -323,6 +370,66 @@ export function UserDialog({
                   <SelectItem value="locked">已锁定</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {canAssignVpn && (
+            <div className="grid grid-cols-2 gap-3">
+              {/* Assigned VPN */}
+              <div className="space-y-1.5">
+                <Label htmlFor="u-proxy" className="flex items-center gap-1.5">
+                  <Globe className="h-3.5 w-3.5 text-emerald-500" />
+                  <span>指定 VPN 节点</span>
+                </Label>
+                <Select
+                  value={proxyChoice}
+                  onValueChange={(val: string) => setProxyChoice(val)}
+                >
+                  <SelectTrigger id="u-proxy" className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">默认（跟随默认代理）</SelectItem>
+                    {proxyOptions.map((proxy) => (
+                      <SelectItem key={proxy.id} value={String(proxy.id)}>
+                        {proxy.name}
+                        {proxy.status !== "active" ? "（已停用）" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-[11px] text-muted-foreground">
+                  未单独配置的用户使用代理池中的默认节点
+                </span>
+              </div>
+
+              {/* Bound admin */}
+              <div className="space-y-1.5">
+                <Label htmlFor="u-bound-admin" className="flex items-center gap-1.5">
+                  <UserCog className="h-3.5 w-3.5 text-emerald-500" />
+                  <span>绑定管理员</span>
+                </Label>
+                <Select
+                  value={adminChoice}
+                  onValueChange={(val: string) => setAdminChoice(val)}
+                >
+                  <SelectTrigger id="u-bound-admin" className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">不绑定（仅超管可见）</SelectItem>
+                    {adminOptions.map((admin) => (
+                      <SelectItem key={admin.id} value={String(admin.id)}>
+                        {admin.name}（{admin.username}）
+                        {admin.status !== "active" ? "（已停用）" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-[11px] text-muted-foreground">
+                  该管理员只能查看绑定用户的操作数据
+                </span>
+              </div>
             </div>
           )}
 
