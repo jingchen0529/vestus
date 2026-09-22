@@ -374,6 +374,7 @@ export function ActivityView({
 
               <div className="w-[140px]">
                 <DatePicker
+                  size="sm"
                   value={filters.startAt}
                   max={filters.endAt || undefined}
                   onChange={(value) => patchFilters({ startAt: value })}
@@ -384,6 +385,7 @@ export function ActivityView({
 
               <div className="w-[140px]">
                 <DatePicker
+                  size="sm"
                   value={filters.endAt}
                   min={filters.startAt || undefined}
                   onChange={(value) => patchFilters({ endAt: value })}

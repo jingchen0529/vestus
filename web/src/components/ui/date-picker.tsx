@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 interface DatePickerProps {
+  id?: string;
   value?: string; // YYYY-MM-DD
   onChange: (value: string) => void;
   placeholder?: string;
@@ -14,9 +15,11 @@ interface DatePickerProps {
   min?: string;
   max?: string;
   title?: string;
+  size?: "default" | "sm";
 }
 
 export function DatePicker({
+  id,
   value,
   onChange,
   placeholder = "选择日期",
@@ -25,6 +28,7 @@ export function DatePicker({
   min,
   max,
   title,
+  size = "default",
 }: DatePickerProps) {
   const [open, setOpen] = React.useState(false);
 
@@ -110,17 +114,21 @@ export function DatePicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
+          id={id}
           type="button"
           disabled={disabled}
           title={title}
           className={cn(
-            "flex h-8 w-full items-center justify-between rounded-md border border-border/60 bg-background/80 px-2 py-1 text-xs text-foreground shadow-none transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+            "flex w-full items-center justify-between rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+            size === "sm"
+              ? "h-8 px-2 py-1 text-xs border-border/60 bg-background/80 shadow-none hover:bg-accent/50"
+              : "h-9 px-3 py-1 text-sm border-input bg-transparent shadow-sm hover:bg-accent/30",
             !value && "text-muted-foreground",
             className
           )}
         >
-          <span className="flex items-center gap-1.5 min-w-0 font-normal">
-            <CalendarIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className={cn("flex items-center min-w-0 font-normal", size === "sm" ? "gap-1.5" : "gap-2")}>
+            <CalendarIcon className={cn("shrink-0 text-muted-foreground", size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4")} />
             <span className={cn("whitespace-nowrap", !value ? "text-muted-foreground" : "font-mono")}>
               {value || placeholder}
             </span>
@@ -130,10 +138,13 @@ export function DatePicker({
               role="button"
               tabIndex={0}
               onClick={handleClear}
-              className="ml-0.5 shrink-0 rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={cn(
+                "shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground",
+                size === "sm" ? "p-0.5 ml-0.5" : "p-1 ml-1"
+              )}
               title="清除日期"
             >
-              <X className="h-3 w-3" />
+              <X className={size === "sm" ? "h-3 w-3" : "h-3.5 w-3.5"} />
             </span>
           ) : null}
         </button>
