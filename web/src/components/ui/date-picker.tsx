@@ -129,7 +129,7 @@ export function DatePicker({
         >
           <span className={cn("flex items-center min-w-0 font-normal", size === "sm" ? "gap-1.5" : "gap-2")}>
             <CalendarIcon className={cn("shrink-0 text-muted-foreground", size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4")} />
-            <span className={cn("whitespace-nowrap", !value ? "text-muted-foreground" : "font-mono")}>
+            <span className={cn("whitespace-nowrap", !value ? "text-muted-foreground" : size === "sm" ? "font-mono" : "")}>
               {value || placeholder}
             </span>
           </span>
