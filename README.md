@@ -17,6 +17,8 @@ Vestus 现在分成两个明确入口：
 
 桌面端不提供手工填写代理的入口。代理口令在服务端数据库中加密保存，下发后只存在于当前 Rust 会话内存；不会进入 React、代理 URL 或本地配置文件。代理不可用时本地适配器返回错误，不会回退到本机直连。
 
+桌面端会上报操作系统暴露的机器标识（macOS `IOPlatformUUID`、Windows `MachineGuid`、Linux `/etc/machine-id`），登录时记入 `user.last_device_id`、每次会话存进 `browser_session.device_id`，管理端在用户列表「最近设备」与会话追踪「设备码」两处展示。读取失败或值不合规时上报为空，**采集绝不影响登录与上报**；老版本客户端不带该字段也照常工作。这项信息的边界要清楚：重装系统（Windows）、更换逻辑板或迁移助理换机（macOS）、容器内每次启动（Linux）都会变，sysprep 封装或克隆的 Windows 镜像可能多台机器相同，本机管理员也能改——只适合审计与运营告警，不能当安全边界用。细节见 [docs/backend.md](docs/backend.md#设备标识)。
+
 管理员可以给每条代理配置一份「直连域名」清单（例如 `lf3-ad-platform.byteadverts.com`、`*.byteadverts.com`）。命中清单的请求由客户端直接连接，不经过代理；未命中的一律走代理。两条路径互不回退：代理失败回 502/407，直连失败回 502。规则、校验和安全边界见 [docs/backend.md](docs/backend.md#直连域名bypasshosts)。
 
 桌面端只负责「登录后按服务端下发的平台打开浏览器」，和 OA 的语义一致：Rust 把起始网址作为命令行参数交给独立 Chromium，不与浏览器建立任何控制通道，也不开调试端点。打开之后页面完全由用户自己操作，客户端不做页面自动化。

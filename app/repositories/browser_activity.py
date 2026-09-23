@@ -52,6 +52,7 @@ def create_session(
     platform_name: Optional[str],
     direct_mode: bool,
     client_version: Optional[str] = None,
+    device_id: Optional[str] = None,
     ip: Optional[str],
     started_at: datetime,
 ) -> BrowserSession:
@@ -64,6 +65,7 @@ def create_session(
         platform_name=(platform_name or None) and platform_name[:100],
         direct_mode=direct_mode,
         client_version=(client_version or None) and client_version[:50],
+        device_id=(device_id or None) and device_id[:64],
         ip_address=ip_bytes(ip),
         started_at=started_at,
         last_report_at=started_at,

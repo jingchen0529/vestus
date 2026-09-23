@@ -122,6 +122,7 @@ def _session_for_report(
                 platform_name=getattr(platform, "name", None),
                 direct_mode=report.direct_mode,
                 client_version=client_ver,
+                device_id=report.device_id,
                 ip=ip,
                 started_at=started_at,
             )
@@ -149,6 +150,11 @@ def record_activity(
         item = _session_for_report(
             session, report, user_id=user_id, username=username, ip=ip, now=now
         )
+        # A later batch may be the first one carrying a device id (client
+        # upgraded mid-session); fill a blank in rather than overwriting, so a
+        # session cannot be re-labelled by a forged report.
+        if report.device_id and not item.device_id:
+            item.device_id = report.device_id
         totals = dict.fromkeys(_COUNTERS, 0)
         new_pages = 0
         for page in report.pages:

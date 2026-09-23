@@ -59,6 +59,7 @@ def user_dict(item: User) -> Dict[str, Any]:
         "createdBy": item.created_by,
         "proxyId": item.proxy_id,
         "boundAdminId": item.bound_admin_id,
+        "lastDeviceId": item.last_device_id,
         "remark": item.remark,
         "createdAt": iso_datetime(item.created_at),
         "updatedAt": iso_datetime(item.updated_at),
@@ -236,6 +237,7 @@ def browser_session_dict(item: BrowserSession) -> Dict[str, Any]:
         "dwellMs": item.dwell_ms,
         "droppedPages": item.dropped_pages,
         "ipAddress": ip_text(item.ip_address),
+        "deviceId": item.device_id,
         "startedAt": iso_datetime(item.started_at),
         "lastReportAt": iso_datetime(item.last_report_at),
     }

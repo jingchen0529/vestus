@@ -261,9 +261,12 @@ impl LoginResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LoginRequest<'a> {
     username: &'a str,
     password: &'a str,
+    /// 操作系统机器标识；读不到时为 None，服务端不强制要求。见 [`crate::device`]。
+    device_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -595,6 +598,7 @@ impl DesktopAuthState {
             .json(&LoginRequest {
                 username,
                 password: &password,
+                device_id: crate::device::wire_device_id(),
             })
             .send()
             .await

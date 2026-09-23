@@ -67,6 +67,10 @@ class BrowserSession(Base):
 
     #: The reporting client's address, as seen by the server.
     ip_address: Mapped[Optional[bytes]] = mapped_column(LargeBinary(16), nullable=True)
+    #: Machine identifier reported with the session (canonical form, see
+    #: :mod:`app.core.device`).  Lets one device's sessions be traced across
+    #: accounts; ``NULL`` for rows written before the client reported one.
+    device_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     #: Server clock, both of them: the client's own timestamps are only used to
     #: order rows within a batch, never to decide when something was recorded.
     started_at: Mapped[datetime] = mapped_column(

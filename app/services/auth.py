@@ -124,12 +124,16 @@ def _register_failed_attempt(model: Any, *, max_attempts: int, lock_minutes: int
         model.locked_until = utc_now() + timedelta(minutes=max(int(lock_minutes), 1))
 
 
-def _mark_login(model: Any, ip: Optional[str]) -> None:
+def _mark_login(model: Any, ip: Optional[str], device_id: Optional[str] = None) -> None:
     model.last_login_at = utc_now()
     model.last_login_ip = ip_bytes(ip)
     if isinstance(model, User):
         model.failed_login_count = 0
         model.locked_until = None
+        # Never cleared by a login that did not report one: a client build
+        # without device support must not erase what an earlier login stored.
+        if device_id:
+            model.last_device_id = device_id
 
 
 def _refuse_login(
@@ -190,6 +194,7 @@ def login(
     username: str,
     password: str,
     *,
+    device_id: Optional[str] = None,
     audit: Optional[AuditContext] = None,
 ) -> TokenGrant:
     """Authenticate one account, committing the outcome either way.
@@ -220,12 +225,18 @@ def login(
             if password_needs_rehash(model.password_hash):
                 # Upgrade the stored hash silently; the old format is never exposed.
                 model.password_hash = hash_password(password)
-            _mark_login(model, audit.ip if audit else None)
+            _mark_login(model, audit.ip if audit else None, device_id)
             ttl = get_settings().access_token_ttl_seconds
             token, expires = create_access_token(
                 account_type, model.id, int(model.token_version or 1), ttl
             )
-            record(session, audit.for_account(account_type, model) if audit else None, "LOGIN", "登录成功")
+            record(
+                session,
+                audit.for_account(account_type, model) if audit else None,
+                "LOGIN",
+                "登录成功",
+                details={"deviceId": device_id} if device_id else None,
+            )
             grant = TokenGrant(
                 payload=_token_payload(account_type, model, token, expires),
                 token=token,

@@ -7,6 +7,7 @@
 //! - [`adapter`]  本地 HTTP 代理适配器，为 Chromium 补上游认证并做代理/直连路由
 //! - [`probe`]    出口 IP 探测
 //! - [`config`]   管理员下发代理配置的内存校验
+//! - [`device`]   操作系统暴露的机器标识（登录与上报时携带）
 //! - [`auth`]     桌面用户认证（令牌仅存 Rust 与系统钥匙串）
 //! - [`browser`]  外置 Chromium 多会话与临时 profile 生命周期
 //! - [`cdp`]      浏览器活动采集（DevTools 协议，只取页面地址与操作次数）
@@ -22,6 +23,7 @@ mod bypass;
 mod cdp;
 mod commands;
 mod config;
+mod device;
 mod httpio;
 mod probe;
 mod rt;

@@ -43,6 +43,7 @@ export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTable
             <TableHead className="w-[215px] min-w-[210px] p-2 py-2.5 text-center whitespace-nowrap">交互统计</TableHead>
             <TableHead className="w-[76px] min-w-[72px] p-2 py-2.5 text-center whitespace-nowrap">前台停留</TableHead>
             <TableHead className="w-[105px] min-w-[100px] p-2 py-2.5 text-center whitespace-nowrap">客户端 IP</TableHead>
+            <TableHead className="w-[130px] min-w-[125px] p-2 py-2.5 text-center whitespace-nowrap">设备码</TableHead>
             <TableHead className="w-[138px] min-w-[135px] p-1.5 py-2.5 text-center whitespace-nowrap">会话时间</TableHead>
             <TableHead className="w-[125px] min-w-[120px] p-1.5 py-2.5 text-center whitespace-nowrap">上报时间</TableHead>
             <TableHead className="w-[68px] min-w-[65px] p-2 py-2.5 text-center whitespace-nowrap sticky right-0 bg-muted/95 backdrop-blur-xs z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] border-l border-border/30">详情</TableHead>
@@ -137,6 +138,19 @@ export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTable
               {/* 客户端 IP */}
               <TableCell className="text-center font-mono text-muted-foreground whitespace-nowrap p-2 py-2.5 text-xs">
                 {session.ipAddress || "—"}
+              </TableCell>
+
+              {/* 设备码：同一台机器在不同账号下的会话可据此关联 */}
+              <TableCell className="text-center font-mono text-muted-foreground whitespace-nowrap p-2 py-2.5 text-[11px]">
+                {session.deviceId ? (
+                  <span title={session.deviceId}>
+                    {session.deviceId.length > 16
+                      ? `…${session.deviceId.slice(-12)}`
+                      : session.deviceId}
+                  </span>
+                ) : (
+                  "—"
+                )}
               </TableCell>
 
               {/* 会话时间 (开始时间) */}

@@ -49,3 +49,5 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# 直接读注册表 MachineGuid：比 spawn reg query 稳，也不受系统语言影响
+winreg = "0.55"

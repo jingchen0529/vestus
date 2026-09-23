@@ -23,6 +23,8 @@ export interface BrowserSessionItem {
   /** 客户端聚合表溢出而没记下的地址数，大于 0 表示这次会话的列表不完整。 */
   droppedPages: number;
   ipAddress?: string | null;
+  /** 上报该会话的机器标识（操作系统机器码，已由服务端归一化）。旧客户端为空。 */
+  deviceId?: string | null;
   startedAt?: string;
   lastReportAt?: string;
 }

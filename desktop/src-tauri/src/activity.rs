@@ -91,6 +91,9 @@ struct ActivityReport {
     platform_id: i64,
     direct_mode: bool,
     client_version: String,
+    /// 操作系统暴露的机器标识。读不到时为 None，服务端按可空处理——采集失败
+    /// 绝不能让上报失败。见 [`crate::device`]。
+    device_id: Option<String>,
     /// 客户端本机时钟的毫秒时间戳。服务端不信这个值，只用它排序并夹到「现在」，
     /// 记录时间仍由服务端自己盖。
     reported_at_ms: u64,
@@ -479,6 +482,7 @@ fn activity_report(
         platform_id: key.platform_id,
         direct_mode: key.direct_mode,
         client_version: CLIENT_VERSION.to_string(),
+        device_id: crate::device::wire_device_id(),
         reported_at_ms,
         dropped_pages,
         pages,
@@ -548,6 +552,7 @@ mod tests {
             reported_at_ms: 3,
             dropped_pages: 0,
             client_version: "0.1.8".into(),
+            device_id: None,
             pages: rows,
         })
         .unwrap()
@@ -801,6 +806,7 @@ mod tests {
             platform_id: 3,
             direct_mode: true,
             client_version: "0.1.8".into(),
+            device_id: Some("a1b2c3d4e5f67890abcdef1234567890".into()),
             reported_at_ms: 1_700_000_000_000,
             dropped_pages: 0,
             pages: vec![PageRow {

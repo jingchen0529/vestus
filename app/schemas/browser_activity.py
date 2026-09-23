@@ -15,6 +15,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.device import normalize_device_id
+
 #: Longest URL we store, matching ``browser_page_visit.url``.
 MAX_URL_LENGTH = 500
 
@@ -224,10 +226,18 @@ class BrowserActivityReport(BaseModel):
     platform_id: int = Field(alias="platformId", ge=0, le=2**63 - 1)
     direct_mode: bool = Field(default=False, alias="directMode")
     client_version: Optional[str] = Field(default="", alias="clientVersion", max_length=50)
+    #: Machine identifier of the reporting desktop; optional so uploads from
+    #: builds already in the field keep working.  See :mod:`app.core.device`.
+    device_id: Optional[str] = Field(default=None, alias="deviceId")
     reported_at_ms: int = Field(default=0, alias="reportedAtMs", ge=0)
     dropped_pages: int = Field(default=0, alias="droppedPages", ge=0, le=2**31 - 1)
     pages: List[BrowserPageReport] = Field(min_length=1, max_length=MAX_PAGES_PER_REPORT)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @field_validator("device_id")
+    @classmethod
+    def canonical_device_id(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_device_id(value)
 
 
 __all__ = [

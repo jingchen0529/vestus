@@ -23,6 +23,8 @@ export interface DesktopUser {
   /** 所指派的节点当前是否启用；false 表示该指派已失效，用户实际走默认节点。 */
   proxyActive?: boolean | null;
   boundAdminName?: string | null;
+  /** 最近一次登录上报的机器标识；客户端未上报过则为空。 */
+  lastDeviceId?: string | null;
   remark?: string | null;
   createdAt?: string;
   updatedAt?: string;

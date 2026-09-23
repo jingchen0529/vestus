@@ -19,6 +19,7 @@ import {
   Phone,
   Clock,
   Globe,
+  MonitorSmartphone,
   UserCog,
   ShieldAlert,
   Trash2,
@@ -87,6 +88,7 @@ export function UserTable({
             <TableHead>姓名 / 归属单位</TableHead>
             <TableHead className="w-[140px]">指定 VPN</TableHead>
             <TableHead className="w-[130px]">绑定管理员</TableHead>
+            <TableHead className="w-[140px]">最近设备</TableHead>
             <TableHead className="w-[110px]">账号状态</TableHead>
             <TableHead className="w-[120px]">授权到期</TableHead>
             <TableHead className="w-[280px] text-right">操作管理</TableHead>
@@ -172,6 +174,25 @@ export function UserTable({
                   </span>
                 ) : (
                   <span className="text-[11px] text-muted-foreground">未绑定</span>
+                )}
+              </TableCell>
+
+              {/* Last reported machine identifier */}
+              <TableCell>
+                {user.lastDeviceId ? (
+                  <span
+                    className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground"
+                    title={user.lastDeviceId}
+                  >
+                    <MonitorSmartphone className="h-3 w-3 shrink-0" />
+                    <span className="truncate max-w-[110px]">
+                      {user.lastDeviceId.length > 14
+                        ? `…${user.lastDeviceId.slice(-10)}`
+                        : user.lastDeviceId}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">未上报</span>
                 )}
               </TableCell>
 

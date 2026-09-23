@@ -155,6 +155,53 @@ test("用户列表展示指定 VPN 与绑定管理员列", async () => {
   assert.match(lapsedHtml, /指派已失效·回落默认/);
 });
 
+test("用户列表展示最近登录的设备码，未上报时明确标出", async () => {
+  const { UserTable } = await server.ssrLoadModule(
+    "/src/components/users/user-table.tsx",
+  );
+  const withDevice = renderToStaticMarkup(
+    createElement(UserTable, {
+      users: [
+        {
+          id: 51,
+          username: "device-user",
+          name: "Device User",
+          status: "active",
+          maxSessions: 1,
+          lastDeviceId: "a1b2c3d4e5f67890abcdef1234567890",
+        },
+      ],
+      onEditUser() {},
+      onToggleStatus() {},
+      onResetPassword() {},
+      onDeleteUser() {},
+    }),
+  );
+  assert.match(withDevice, /最近设备/);
+  // 长机器码只显示尾部，完整值在 title 里。
+  assert.match(withDevice, /…1234567890/);
+  assert.match(withDevice, /title="a1b2c3d4e5f67890abcdef1234567890"/);
+
+  const withoutDevice = renderToStaticMarkup(
+    createElement(UserTable, {
+      users: [
+        {
+          id: 52,
+          username: "old-client-user",
+          name: "Old Client",
+          status: "active",
+          maxSessions: 1,
+        },
+      ],
+      onEditUser() {},
+      onToggleStatus() {},
+      onResetPassword() {},
+      onDeleteUser() {},
+    }),
+  );
+  assert.match(withoutDevice, /未上报/);
+});
+
 test("编辑 locked 用户且未改状态时不会提交 active", async () => {
   const dialogModule = await server.ssrLoadModule(
     "/src/components/users/user-dialog.tsx",

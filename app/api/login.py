@@ -30,6 +30,7 @@ def perform_login(
         account_type,
         payload.username,
         payload.password,
+        device_id=payload.device_id,
         audit=audit_context(request),
     )
     if account_type == "admin":
