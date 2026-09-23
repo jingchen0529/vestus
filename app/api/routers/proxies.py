@@ -1,4 +1,10 @@
-"""Global proxy management."""
+"""Global proxy management.
+
+Reads stay open to every administrator (the payload carries no credential), but
+every write is super-admin only: a proxy is shared infrastructure, and the
+``is_default`` mark in particular decides the egress of every user who has no
+node of their own -- including users bound to other administrators.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +12,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.api.deps import admin_auth, audit_context, get_db
+from app.api.deps import admin_auth, audit_context, get_db, super_admin_auth
 from app.api.envelope import EnvelopeRoute
 from app.api.responses import collection
 from app.db.session import Database
@@ -29,7 +35,7 @@ def list_proxies(
 def create_proxy(
     payload: ProxyCreate,
     request: Request,
-    auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     return proxies_service.create_proxy(
@@ -42,7 +48,7 @@ def update_proxy(
     proxy_id: int,
     payload: ProxyUpdate,
     request: Request,
-    auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     changes = payload.model_dump(exclude_unset=True)
@@ -57,7 +63,7 @@ def update_proxy(
 def delete_proxy(
     proxy_id: int,
     request: Request,
-    auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> None:
     proxies_service.delete_proxy(db, proxy_id, audit=audit_context(request, auth))

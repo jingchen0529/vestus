@@ -17,6 +17,7 @@ from app.db.base import utc_now
 from app.db.models import Admin
 from app.db.session import Database
 from app.repositories import admins as admins_repo
+from app.repositories import users as users_repo
 from app.schemas.serializers import admin_dict
 from app.services.audit import AuditContext, record
 from app.services.errors import (
@@ -240,15 +241,22 @@ def delete_admin(
         item.deleted_at = utc_now()
         item.status = "disabled"
         item.token_version = int(item.token_version or 1) + 1
+        # Release the desktop accounts this administrator owned.  Leaving the
+        # binding behind pointed at a deleted row: no administrator but the
+        # super admin could see those users, and every edit of one failed with
+        # "管理员不存在" because the binding could no longer be re-validated.
+        released = users_repo.unbind_from_admin(session, int(admin_id))
         session.flush()
         record(
             session,
             audit,
             "ADMIN_DELETE",
-            f"删除管理员 {username}",
+            f"删除管理员 {username}"
+            + (f"，已解绑其名下 {released} 个用户" if released else ""),
             target_type="admin",
             target_id=int(admin_id),
             target_name=username,
+            details={"releasedUsers": released} if released else None,
         )
         return True
 

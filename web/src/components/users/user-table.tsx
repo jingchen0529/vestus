@@ -139,13 +139,24 @@ export function UserTable({
               <TableCell>
                 <div className="flex flex-col text-xs">
                   <span className="flex items-center gap-1 font-medium text-foreground">
-                    <Globe className="h-3 w-3 text-emerald-500" />
+                    <Globe
+                      className={cn(
+                        "h-3 w-3",
+                        user.proxyId && user.proxyActive === false
+                          ? "text-muted-foreground"
+                          : "text-emerald-500",
+                      )}
+                    />
                     <span className="truncate max-w-[110px]" title={user.proxyName || undefined}>
                       {user.proxyName || "默认节点"}
                     </span>
                   </span>
                   <span className="text-[11px] text-muted-foreground mt-0.5">
-                    {user.proxyId ? "单独指派" : "跟随默认"}
+                    {user.proxyId
+                      ? user.proxyActive === false
+                        ? "指派已失效·回落默认"
+                        : "单独指派"
+                      : "跟随默认"}
                   </span>
                 </div>
               </TableCell>

@@ -41,6 +41,8 @@ class ApiCode(IntEnum):
     LAST_SUPER_ADMIN = 40001
     UNAUTHENTICATED = 40100
     ACCOUNT_UNAVAILABLE = 40300
+    #: The caller may use the endpoint but not the field it tried to write.
+    FORBIDDEN_FIELD = 40301
     NOT_FOUND = 40400
     METHOD_NOT_ALLOWED = 40500
     CONFLICT = 40900

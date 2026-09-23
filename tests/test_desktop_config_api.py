@@ -263,7 +263,6 @@ def test_setting_a_default_proxy_moves_the_mark_to_the_new_proxy(api: Any) -> No
                 "port": 8080,
                 "username": "replacement-user",
                 "password": "replacement-secret",
-                "status": "disabled",
                 "isDefault": True,
             },
         )
@@ -276,8 +275,8 @@ def test_setting_a_default_proxy_moves_the_mark_to_the_new_proxy(api: Any) -> No
         replacement["id"]: True,
     }
 
-    # Re-enabling a node never touches the others, and dropping the default
-    # mark leaves no default behind.
+    # Dropping the mark leaves no default behind, and touching one node never
+    # changes another's status.
     cleared = client.patch(
         f"/api/admin/proxies/{replacement['id']}",
         headers=headers,
@@ -365,7 +364,6 @@ def test_proxy_default_locks_singleton_before_target_row(api: Any) -> None:
                 "port": 3128,
                 "username": "lock-order-user",
                 "password": "lock-order-secret",
-                "status": "disabled",
             },
         )
     )

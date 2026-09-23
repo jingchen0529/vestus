@@ -441,7 +441,8 @@ export function DesktopConfigView({
                 。
               </p>
               <p className="text-amber-600 dark:text-amber-400">
-                ⚠️ 删除后，被指派到该节点的用户将自动回落到默认节点继续上网。该操作不可撤销。
+                ⚠️ 被指派到该节点的用户将回落到默认节点；若删除的正是默认节点，未单独配置 VPN
+                的用户将回落到第一个启用节点。该操作不可撤销。
               </p>
             </DialogDescription>
           </DialogHeader>

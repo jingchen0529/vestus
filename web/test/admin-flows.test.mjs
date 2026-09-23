@@ -129,6 +129,30 @@ test("用户列表展示指定 VPN 与绑定管理员列", async () => {
   assert.match(fallbackHtml, /默认节点/);
   assert.match(fallbackHtml, /跟随默认/);
   assert.match(fallbackHtml, /未绑定/);
+
+  // 指派到已停用节点：名字还在，但要标出这条指派已经不生效。
+  const lapsedHtml = renderToStaticMarkup(
+    createElement(UserTable, {
+      users: [
+        {
+          id: 44,
+          username: "lapsed-user",
+          name: "Lapsed User",
+          status: "active",
+          maxSessions: 1,
+          proxyId: 9,
+          proxyName: "已停用节点",
+          proxyActive: false,
+        },
+      ],
+      onEditUser() {},
+      onToggleStatus() {},
+      onResetPassword() {},
+      onDeleteUser() {},
+    }),
+  );
+  assert.match(lapsedHtml, /已停用节点/);
+  assert.match(lapsedHtml, /指派已失效·回落默认/);
 });
 
 test("编辑 locked 用户且未改状态时不会提交 active", async () => {

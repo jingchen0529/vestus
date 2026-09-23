@@ -20,6 +20,8 @@ export interface DesktopUser {
   boundAdminId?: number | null;
   /** 由服务端富化的展示名，可能缺失（如引用已被删除）。 */
   proxyName?: string | null;
+  /** 所指派的节点当前是否启用；false 表示该指派已失效，用户实际走默认节点。 */
+  proxyActive?: boolean | null;
   boundAdminName?: string | null;
   remark?: string | null;
   createdAt?: string;

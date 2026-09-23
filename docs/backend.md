@@ -15,7 +15,7 @@
 - `admin`：后台管理员
 - `user`：桌面端用户
 - `user_log`：管理员和桌面端用户操作日志
-- `proxy` / `platform`：管理员维护的全局代理和平台入口；所有 active 平台及唯一 active 代理供全部桌面用户共享
+- `proxy` / `platform`：管理员维护的代理节点和平台入口；所有 active 平台下发给全部桌面用户，代理按用户解析（单独指派 → 默认节点 → 第一条启用节点）
 - `user_proxy_assignment` / `user_platform_assignment`：历史用户配置关联表，仅为兼容保留，桌面配置读取不再使用
 - `system_setting`：产品名称、Logo 与界面颜色配置
 - `uploaded_file`：上传文件元数据（只保存相对路径）
@@ -87,17 +87,46 @@ Cookie 支持刷新后的会话恢复；Cookie 认证的写请求还必须通过
 代理出口 IP；客户端也据此验证所选路径能否到达自己的 Vestus 服务，不依赖第三方 IP 服务。反向代理
 必须覆盖传入的 `X-Forwarded-For`；应用只读取 ASGI 已验证的 `request.client`，不直接信任该请求头。
 
-## 全局桌面配置
+## 桌面端配置与管理员可见范围
 
-桌面端配置不再按用户分配：`platform.status = 'active'` 的全部平台会下发给每个桌面用户，
-`proxy.status = 'active'` 的代理由每个桌面用户共享。代理最多只能有一个 active；创建或启用新代理
-会在同一事务中停用原 active 代理。代理状态变更会先更新 `system_setting` 中的内部单例锁行，确保即使
-当前没有 active 代理，并发创建或启用操作也会串行执行。允许没有 active 代理，客户端此时使用保留的直连模式开关。
+`platform.status = 'active'` 的全部平台会下发给每个桌面用户。代理按用户解析，`/api/user/desktop-config`
+（及其 lease）里的那条节点依次取：
+
+1. 用户被单独指定的 `user.proxy_id`，前提是这条代理仍然 `active`；
+2. `proxy.is_default = true` 且 `active` 的那条（全局最多一条默认）；
+3. 按 `id` 升序的第一条 `active` 代理。
+
+第 3 步按 `id` 而不是 `updated_at` 排序：编辑任意代理都会刷新它的 `updated_at`，用"最近更新"做兜底
+会让每次无关编辑都把未指派用户整体搬一次家。允许一条 `active` 代理都没有，客户端此时使用保留的
+直连模式开关。
+
+默认标记只能是启用状态：把默认节点改成 `disabled` 会同时摘掉它的默认标记（审计行摘要写明"已取消其
+默认标记"），而一次请求里同时提交"停用 + 设为默认"会被 400 拒绝。指定到已停用节点的用户在列表里会
+显示 `proxyActive: false`，提示这条指派已失效、实际走的是默认节点。
+
+`is_default` 是全局唯一的：两条写入路径（创建、更新）都要先更新 `system_setting` 中的内部单例锁行
+再读任何代理行，这样即使当前没有默认，并发设置默认也会串行执行，不会留下两条。锁先于 SELECT 的
+顺序由 `test_proxy_default_locks_singleton_before_target_row` 断言。
+
+`user.proxy_id` / `user.bound_admin_id` 都没有数据库外键，引用清理由服务层负责：删除代理时清空指向它
+的 `user.proxy_id`，删除管理员时清空指向它的 `user.bound_admin_id`（否则那些账号会绑定在一个已删除
+的行上，任何编辑都会以"管理员不存在"失败）。
+
+管理员的数据可见范围由 `user.bound_admin_id` 决定。普通管理员（`role=admin`）只能看到绑定给自己的
+桌面用户：`/api/admin/users`、`/api/admin/stats`、`/api/admin/browser-sessions`（含详情）、advid 导出和
+`/api/admin/user-logs`（含详情）都按这个范围过滤，越界一律 404；`bound_admin_id` 与 `proxy_id` 这两个
+字段只有超级管理员可以写，普通管理员提交它们会得到 403（`code=40301`），它们自己创建的用户会自动
+绑定到自己名下。审计日志的过滤规则是"自己的操作 + 名下用户产生的行 + 针对名下用户的行"，因为其他
+租户的用户名、IP 和会话 id 正是绑定关系要隔离的内容。
+
+代理节点的写操作（创建 / 修改 / 删除，含默认标记）以及平台、系统配置、管理员管理都只开放给超级
+管理员；代理列表读取对所有管理员开放，返回内容不含口令。
 
 `user_proxy_assignment` 和 `user_platform_assignment` 是 legacy compatibility 表，可以继续存在；当前 HTTP API
 不再写入或读取它们，它们也不会参与 `/api/user/desktop-config` 或 lease 计算。升级已有数据库时，
-建议先备份。服务启动时若发现多条 active 代理，会自动保留 `updated_at` 最新的一条；时间相同时保留
-`id` 最大的一条，其余代理改为 disabled。assignment 表中的历史数据不会被该过程删除或改写。
+建议先备份。服务启动时若发现多条默认代理（历史数据或备份恢复可能造成），会自动保留 `updated_at`
+最新的一条；时间相同时保留 `id` 最大的一条，其余清掉 `is_default`。代理的 `status` 不再被启动过程
+改写。assignment 表中的历史数据不会被该过程删除或改写。
 
 生产环境必须固定设置 `VESTUS_SECRET_KEY` 与 `VESTUS_PROXY_SECRET_KEY`；代理密码下发链路必须使用
 HTTPS，桌面端需在构建时设置 `VESTUS_API_BASE_URL=https://...`。同时建议启用 Secure Cookie 和

@@ -43,11 +43,17 @@ def create_user(
 ) -> Dict[str, Any]:
     values = payload.model_dump(by_alias=False)
     values["created_by"] = auth["id"]
-    # A plain administrator's own creation is theirs by definition; only a
-    # super administrator deliberately picks a different binding.
-    if auth["model"].role != "super_admin" and values.get("bound_admin_id") is None:
-        values["bound_admin_id"] = auth["id"]
-    return users_service.create_user(db, values, audit=audit_context(request, auth))
+    scope = user_scope_admin_id(auth)
+    if scope is not None:
+        # The schema defaults both privileged fields to ``None`` for everyone,
+        # so drop the ones this caller did not actually send: only a deliberate
+        # attempt should reach the service's refusal.
+        for field in ("bound_admin_id", "proxy_id"):
+            if field not in payload.model_fields_set:
+                values.pop(field, None)
+    return users_service.create_user(
+        db, values, visible_admin_id=scope, audit=audit_context(request, auth)
+    )
 
 
 @router.get("/api/admin/users/{user_id}", tags=["users"])

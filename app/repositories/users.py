@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Sequence
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.base import parse_datetime, utc_now
@@ -76,6 +76,22 @@ def bound_user_ids(session: Session, admin_id: int) -> Sequence[int]:
     ).all()
 
 
+def unbind_from_admin(session: Session, admin_id: int) -> int:
+    """Release every account bound to one administrator.  Returns the count.
+
+    Called when that administrator is deleted: a binding left pointing at a
+    deleted row is unusable -- it can no longer be re-validated, so the account
+    becomes uneditable -- and invisible to every administrator but the super
+    admin.  Unbinding puts those users back in the super admin's hands.
+    """
+    result = session.execute(
+        update(User)
+        .where(User.bound_admin_id == int(admin_id), User.deleted_at.is_(None))
+        .values(bound_admin_id=None)
+    )
+    return int(result.rowcount or 0)
+
+
 def stats(session: Session, bound_admin_id: Optional[int] = None) -> Dict[str, int]:
     now = utc_now()
     live = [User.deleted_at.is_(None)]
@@ -108,4 +124,5 @@ __all__ = [
     "get_active_for_update",
     "list_all",
     "stats",
+    "unbind_from_admin",
 ]

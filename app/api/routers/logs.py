@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import admin_auth, get_db
+from app.api.deps import admin_auth, get_db, user_scope_admin_id
 from app.api.envelope import EnvelopeRoute
 from app.api.responses import collection
 from app.db.session import Database
@@ -26,7 +26,7 @@ def user_logs(
     target_id: Optional[int] = Query(None, alias="targetId"),
     start_at: Optional[str] = Query(None, alias="startAt"),
     end_at: Optional[str] = Query(None, alias="endAt"),
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     return logs_service.list_logs(
@@ -40,16 +40,17 @@ def user_logs(
         target_id=target_id,
         start_at=start_at,
         end_at=end_at,
+        visible_admin_id=user_scope_admin_id(auth),
     )
 
 
 @router.get("/api/admin/user-logs/{log_id}", tags=["logs"])
 def user_log_detail(
     log_id: int,
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return logs_service.get_log(db, log_id)
+    return logs_service.get_log(db, log_id, visible_admin_id=user_scope_admin_id(auth))
 
 
 @router.get("/api/admin/audit-logs", include_in_schema=False)
@@ -57,10 +58,14 @@ def user_log_detail(
 def legacy_logs(
     limit: int = Query(100, ge=1, le=500),
     user_id: Optional[int] = Query(None),
-    _auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return collection(logs_service.list_recent(db, limit=limit, actor_id=user_id))
+    return collection(
+        logs_service.list_recent(
+            db, limit=limit, actor_id=user_id, visible_admin_id=user_scope_admin_id(auth)
+        )
+    )
 
 
 __all__ = ["router"]

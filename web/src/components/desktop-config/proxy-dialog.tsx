@@ -90,6 +90,9 @@ export function ProxyDialog({
     setLoading(true);
     try {
       const directHosts = parseBypassHosts(bypassHosts);
+      // 停用的节点不能持有默认标记：把状态与标记一起提交时，标记先按状态归零，
+      // 免得发出一条自相矛盾的请求（服务端会以 400 拒绝）。
+      const effectiveDefault = isDefault && status === "active";
       if (isEditing && proxyToEdit) {
         const payload: UpdateProxyPayload = {
           name: name.trim(),
@@ -98,7 +101,7 @@ export function ProxyDialog({
           username: username.trim(),
           bypassHosts: directHosts,
           status,
-          isDefault,
+          isDefault: effectiveDefault,
         };
         if (password) {
           payload.password = password;
@@ -119,7 +122,7 @@ export function ProxyDialog({
           password,
           bypassHosts: directHosts,
           status,
-          isDefault,
+          isDefault: effectiveDefault,
         });
         toast.success(`代理 ${name} 创建成功`);
       }
@@ -286,14 +289,16 @@ export function ProxyDialog({
                 设为默认节点
               </Label>
               <p className="text-[11px] leading-4 text-muted-foreground">
-                未在用户管理中单独配置 VPN 的用户走这条节点；同一时间只能有一个默认。
+                {status === "disabled"
+                  ? "停用的节点不能作为默认：未配置 VPN 的用户会直接跳过它。请先启用，或把默认标记留给其它启用节点。"
+                  : "未在用户管理中单独配置 VPN 的用户走这条节点；同一时间只能有一个默认。"}
               </p>
             </div>
             <Switch
               id="p-default"
-              checked={isDefault}
+              checked={isDefault && status === "active"}
               onCheckedChange={setIsDefault}
-              disabled={loading}
+              disabled={loading || status === "disabled"}
             />
           </div>
 

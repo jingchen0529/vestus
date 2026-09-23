@@ -170,8 +170,11 @@ export function UserDialog({
             maxSessions,
             remark,
             status,
-            proxyId: resolvedProxyId(),
-            boundAdminId: resolvedBoundAdminId(),
+            // 普通管理员的表单没有这两个选择器，不提交这两个字段：服务端把它们
+            // 视为超管专属，凭空带上去只会收到 403。
+            ...(canAssignVpn
+              ? { proxyId: resolvedProxyId(), boundAdminId: resolvedBoundAdminId() }
+              : {}),
           }),
         );
         toast.success(`用户 ${userToEdit.username} 已更新`);

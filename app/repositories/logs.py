@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.base import ip_bytes, parse_datetime
@@ -50,6 +50,32 @@ def create(
     return item
 
 
+def visibility_condition(
+    admin_id: Optional[int], bound_user_ids: Optional[Sequence[int]]
+) -> Optional[Any]:
+    """Restrict a log listing to what one plain administrator may see.
+
+    ``None`` means no restriction (a super administrator).  Otherwise the rows
+    kept are: the administrator's own actions, whatever their bound users did,
+    and whatever was done *to* those users.  Everything else -- other admins'
+    actions, other tenants' users, and failed logins for unknown usernames
+    (written as ``actor_type='system'`` with the attempted name in ``summary``)
+    -- stays hidden, because those rows carry exactly the account names the
+    binding is meant to keep apart.
+    """
+
+    if admin_id is None:
+        return None
+    clauses: List[Any] = [
+        and_(UserLog.actor_type == "admin", UserLog.actor_id == int(admin_id))
+    ]
+    ids = [int(value) for value in (bound_user_ids or [])]
+    if ids:
+        clauses.append(and_(UserLog.actor_type == "user", UserLog.actor_id.in_(ids)))
+        clauses.append(and_(UserLog.target_type == "user", UserLog.target_id.in_(ids)))
+    return or_(*clauses)
+
+
 def list_page(
     session: Session,
     *,
@@ -62,9 +88,14 @@ def list_page(
     target_id: Optional[int] = None,
     start_at: Any = None,
     end_at: Any = None,
+    visible: Optional[Any] = None,
 ) -> Tuple[Sequence[UserLog], int]:
     page, page_size = max(int(page), 1), min(max(int(page_size), 1), 200)
     conditions: List[Any] = []
+    # The visibility scope is applied first and is never widened by a caller
+    # supplied filter: ``actorId``/``targetId`` can only narrow the result.
+    if visible is not None:
+        conditions.append(visible)
     if actor_type:
         conditions.append(UserLog.actor_type == actor_type)
     if actor_id is not None:
@@ -95,8 +126,17 @@ def list_page(
     return session.scalars(stmt).all(), total
 
 
-def get(session: Session, log_id: int | str) -> Optional[UserLog]:
-    return session.get(UserLog, int(log_id))
+def get(session: Session, log_id: int | str, *, visible: Optional[Any] = None) -> Optional[UserLog]:
+    """One audit row, or ``None`` when it lies outside the caller's scope.
+
+    Reading by id goes through the same visibility clause as the listing, so a
+    row that the list hides cannot be fetched by guessing its id.
+    """
+
+    stmt = select(UserLog).where(UserLog.id == int(log_id))
+    if visible is not None:
+        stmt = stmt.where(visible)
+    return session.scalar(stmt)
 
 
-__all__ = ["create", "get", "list_page"]
+__all__ = ["create", "get", "list_page", "visibility_condition"]

@@ -26,11 +26,12 @@ from app.repositories import users as users_repo
 from app.schemas.serializers import user_dict
 from app.services.admins import MISSING_ADMIN_DETAIL
 from app.services.audit import AuditContext, record
-from app.services.errors import ConflictError, NotFoundError
+from app.services.errors import ConflictError, ForbiddenFieldError, NotFoundError
 from app.services.proxies import MISSING_PROXY_DETAIL
 
 DUPLICATE_USERNAME_DETAIL = "用户账号名已存在"
 MISSING_USER_DETAIL = "用户不存在"
+PRIVILEGED_FIELD_DETAIL = "仅超级管理员可调整用户的指定 VPN 与绑定管理员"
 
 _TEXT_FIELDS = ("username", "name")
 _DIRECT_FIELDS = (
@@ -82,6 +83,24 @@ def _ensure_visible(item: User, visible_admin_id: Optional[int]) -> None:
         raise NotFoundError(MISSING_USER_DETAIL)
 
 
+def _reject_privileged_fields(values: Dict[str, Any], visible_admin_id: Optional[int]) -> None:
+    """Keep the two tenancy-defining fields super-admin only.
+
+    ``_ensure_visible`` checks the row as it *was*; without this a plain admin
+    could still rewrite the binding on the way through -- handing one of their
+    users to another administrator, or unbinding it so the account keeps working
+    while disappearing from every administrator's view but the super admin's.
+    ``proxy_id`` is refused for the same reason the proxy writes are: the nodes
+    themselves are super-admin territory.
+    """
+
+    if visible_admin_id is None:
+        return
+    refused = [name for name in ("bound_admin_id", "proxy_id") if name in values]
+    if refused:
+        raise ForbiddenFieldError(PRIVILEGED_FIELD_DETAIL)
+
+
 def apply_changes(session: Session, item: User, values: Dict[str, Any]) -> Dict[str, Any]:
     """Apply a partial update to an already-loaded user row."""
 
@@ -112,30 +131,46 @@ def apply_changes(session: Session, item: User, values: Dict[str, Any]) -> Dict[
 
 def _assignment_name_maps(
     session: Session, results: List[Dict[str, Any]]
-) -> Tuple[Dict[int, str], Dict[int, str]]:
+) -> Tuple[Dict[int, Tuple[str, bool]], Dict[int, str]]:
     proxy_ids = {entry["proxyId"] for entry in results if entry.get("proxyId")}
     admin_ids = {entry["boundAdminId"] for entry in results if entry.get("boundAdminId")}
-    proxy_names: Dict[int, str] = {}
+    proxies: Dict[int, Tuple[str, bool]] = {}
     admin_names: Dict[int, str] = {}
     if proxy_ids:
-        proxy_names = dict(
-            session.execute(select(Proxy.id, Proxy.name).where(Proxy.id.in_(proxy_ids))).all()
-        )
+        proxies = {
+            row[0]: (row[1], row[2] == "active")
+            for row in session.execute(
+                select(Proxy.id, Proxy.name, Proxy.status).where(Proxy.id.in_(proxy_ids))
+            ).all()
+        }
     if admin_ids:
         admin_names = dict(
-            session.execute(select(Admin.id, Admin.name).where(Admin.id.in_(admin_ids))).all()
+            session.execute(
+                select(Admin.id, Admin.name).where(
+                    Admin.id.in_(admin_ids), Admin.deleted_at.is_(None)
+                )
+            ).all()
         )
-    return proxy_names, admin_names
+    return proxies, admin_names
 
 
 def _enrich(
     session: Session, results: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-    """Attach display names for the assigned VPN and the bound administrator."""
+    """Attach display names for the assigned VPN and the bound administrator.
 
-    proxy_names, admin_names = _assignment_name_maps(session, results)
+    ``proxyActive`` travels with the name because an assignment to a disabled
+    node still shows as an assignment while the user has in fact fallen back to
+    the default: without the flag the console cannot tell the two apart.
+    Deleted administrators are filtered out, so a stale binding reads as unbound
+    rather than naming someone who no longer exists.
+    """
+
+    proxies, admin_names = _assignment_name_maps(session, results)
     for entry in results:
-        entry["proxyName"] = proxy_names.get(entry["proxyId"]) if entry.get("proxyId") else None
+        assigned = proxies.get(entry["proxyId"]) if entry.get("proxyId") else None
+        entry["proxyName"] = assigned[0] if assigned else None
+        entry["proxyActive"] = assigned[1] if assigned else None
         entry["boundAdminName"] = (
             admin_names.get(entry["boundAdminId"]) if entry.get("boundAdminId") else None
         )
@@ -165,9 +200,19 @@ def get_user(
 
 
 def create_user(
-    database: Database, values: Dict[str, Any], *, audit: Optional[AuditContext] = None
+    database: Database,
+    values: Dict[str, Any],
+    *,
+    visible_admin_id: Optional[int] = None,
+    audit: Optional[AuditContext] = None,
 ) -> Dict[str, Any]:
     with database.session() as session:
+        # A plain administrator's account is bound to them; naming a different
+        # owner (or a node) is refused rather than silently overridden.
+        _reject_privileged_fields(values, visible_admin_id)
+        if visible_admin_id is not None:
+            values["bound_admin_id"] = int(visible_admin_id)
+            values["proxy_id"] = None
         # Reject unknown references before the insert so a typo'd id does not
         # half-create the account.
         values["proxy_id"] = _resolve_proxy_id(session, values.get("proxy_id"))
@@ -176,7 +221,7 @@ def create_user(
             item = users_repo.create(session, values, hash_password(values["password"]))
         except IntegrityError as exc:
             raise ConflictError(DUPLICATE_USERNAME_DETAIL) from exc
-        result = user_dict(item)
+        result = _enrich(session, [user_dict(item)])[0]
         record(
             session,
             audit,
@@ -202,6 +247,7 @@ def update_user(
         if item is None:
             raise NotFoundError(MISSING_USER_DETAIL)
         _ensure_visible(item, visible_admin_id)
+        _reject_privileged_fields(values, visible_admin_id)
         try:
             result = _enrich(session, [apply_changes(session, item, values)])[0]
         except IntegrityError as exc:

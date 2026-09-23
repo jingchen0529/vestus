@@ -7,6 +7,10 @@ only global invariant left, so both writers take the shared advisory lock
 concurrent "set default" writes otherwise both see "no other default" and
 commit, leaving two.  The lock-before-select order is asserted by
 ``test_proxy_default_locks_singleton_before_target_row``.
+
+The mark may only sit on an ``active`` node: a disabled default is skipped by
+the resolution tier that reads it, which would send unassigned users somewhere
+else while the console still showed a default.  See :func:`_settle_default_mark`.
 """
 
 from __future__ import annotations
@@ -23,10 +27,11 @@ from app.db.session import Database, lock_global_proxy_activation
 from app.repositories import proxies as proxies_repo
 from app.schemas.serializers import proxy_dict
 from app.services.audit import AuditContext, record
-from app.services.errors import ConflictError, NotFoundError
+from app.services.errors import BadRequestError, ConflictError, NotFoundError
 
 DUPLICATE_NAME_DETAIL = "代理名称已存在"
 MISSING_PROXY_DETAIL = "代理不存在"
+DISABLED_DEFAULT_DETAIL = "停用的代理不能设为默认，请先启用该节点或把默认标记转移到其它启用节点"
 
 _TEXT_FIELDS = ("name", "host", "username")
 _DIRECT_FIELDS = ("name", "host", "port", "username", "status")
@@ -63,6 +68,8 @@ def create_proxy(
     with database.session() as session:
         status = values.get("status", "active")
         wants_default = bool(values.get("is_default"))
+        if wants_default and status != "active":
+            raise BadRequestError(DISABLED_DEFAULT_DETAIL)
         # Before any proxy row is written: see the module docstring.
         if wants_default:
             lock_global_proxy_activation(session)
@@ -103,20 +110,31 @@ def update_proxy(
         item = proxies_repo.get_for_update(session, numeric_id)
         if item is None:
             raise NotFoundError(MISSING_PROXY_DETAIL)
+        held_default = bool(item.is_default)
         try:
             result = _apply_changes(session, item, values)
         except IntegrityError as exc:
             raise ConflictError(DUPLICATE_NAME_DETAIL) from exc
+        # Disabling the node that held the mark drops it; say so in the audit
+        # row rather than leaving operators to notice the default is gone.
+        dropped_default = held_default and not result["isDefault"] and not claims_default
         safe_fields = [field for field in values if field != "password"]
+        summary = f"更新代理 {result['name']}"
+        if dropped_default:
+            summary = f"停用代理 {result['name']}，已取消其默认标记"
         record(
             session,
             audit,
             "PROXY_UPDATE",
-            f"更新代理 {result['name']}",
+            summary,
             target_type="proxy",
             target_id=numeric_id,
             target_name=result["name"],
-            details={"fields": safe_fields, "passwordChanged": "password" in values},
+            details={
+                "fields": safe_fields,
+                "passwordChanged": "password" in values,
+                "defaultCleared": dropped_default,
+            },
         )
         return result
 
@@ -142,9 +160,32 @@ def _apply_changes(session: Session, item: Proxy, values: Dict[str, Any]) -> Dic
             _claim_default(session, item)
         else:
             item.is_default = False
+    _settle_default_mark(item, values)
     item.updated_at = utc_now()
     session.flush()
     return proxy_dict(item)
+
+
+def _settle_default_mark(item: Proxy, values: Dict[str, Any]) -> bool:
+    """Keep the invariant "only an active proxy may be the default".
+
+    A disabled node holding the mark is the worst of both worlds: the second
+    resolution tier skips it, so unassigned users silently fall through to the
+    third tier while the console still shows a default.  Two cases, deliberately
+    handled differently:
+
+    * asking for both at once (``isDefault`` with a non-active status) is a
+      contradictory request and is rejected, so the mistake is visible;
+    * merely disabling the node that happened to hold the mark drops the mark.
+      The caller records that in the audit row, so it is never silent.
+    """
+
+    if item.status == "active" or not item.is_default:
+        return False
+    if values.get("is_default"):
+        raise BadRequestError(DISABLED_DEFAULT_DETAIL)
+    item.is_default = False
+    return True
 
 
 def delete_proxy(

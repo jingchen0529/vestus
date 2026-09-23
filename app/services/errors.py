@@ -55,6 +55,18 @@ class AccountUnavailableError(ServiceError):
     code = ApiCode.ACCOUNT_UNAVAILABLE
 
 
+class ForbiddenFieldError(ServiceError):
+    """The caller may use the endpoint, but not the field it tried to write.
+
+    Distinct from :class:`NotFoundError`: the target is legitimately visible to
+    this caller, so hiding it would only be confusing.  What is refused is the
+    specific privileged field, and the message says which one.
+    """
+
+    status_code = 403
+    code = ApiCode.FORBIDDEN_FIELD
+
+
 class NotFoundError(ServiceError):
     status_code = 404
     code = ApiCode.NOT_FOUND
@@ -87,6 +99,7 @@ __all__ = [
     "BadRequestError",
     "ConflictError",
     "CredentialUnreadableError",
+    "ForbiddenFieldError",
     "LastSuperAdminError",
     "NotFoundError",
     "ServiceError",

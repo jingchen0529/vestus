@@ -3,17 +3,20 @@
 One SELECT loads the user row, the proxy that user resolves to and every active
 platform (with its icon).  The proxy resolution order is: the node assigned to
 this user (``User.proxy_id``, when it is still active), else the active proxy
-marked as default, else the most recently updated active proxy -- the behaviour
-databases written before per-user assignment shipped already rely on.  Keeping
-the read to one statement is asserted by the test suite: a lease read must not
-fan out into per-platform queries.
+marked as default, else the first active proxy by id.  Keeping the read to one
+statement is asserted by the test suite: a lease read must not fan out into
+per-platform queries.
+
+The last tier is ordered by ``id``, not by ``updated_at``: editing any proxy
+bumps its ``updated_at``, so a recency-ordered fallback silently moved every
+unassigned user onto whichever node an administrator happened to touch last.
 """
 
 from __future__ import annotations
 
 from typing import Any, List, Optional, Set, Tuple
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.db.models import Platform, Proxy, UploadedFile, User
@@ -31,7 +34,7 @@ def _resolved_proxy_id() -> Any:
     """
     assigned = aliased(Proxy)
     marked = aliased(Proxy)
-    newest = aliased(Proxy)
+    first = aliased(Proxy)
     return func.coalesce(
         # The user's own node, only while it is usable.
         select(assigned.id)
@@ -43,10 +46,10 @@ def _resolved_proxy_id() -> Any:
         .order_by(desc(marked.updated_at), desc(marked.id))
         .limit(1)
         .scalar_subquery(),
-        # Legacy fallback: the most recently updated active proxy.
-        select(newest.id)
-        .where(newest.status == "active")
-        .order_by(desc(newest.updated_at), desc(newest.id))
+        # No default configured: the first active proxy, stable across edits.
+        select(first.id)
+        .where(first.status == "active")
+        .order_by(asc(first.id))
         .limit(1)
         .scalar_subquery(),
     )
