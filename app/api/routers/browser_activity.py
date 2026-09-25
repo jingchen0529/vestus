@@ -82,6 +82,38 @@ def admin_browser_sessions(
     )
 
 
+@router.get("/api/admin/browser-activity/daily", tags=["browser-activity"])
+def admin_browser_daily_activity(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+    user_id: Optional[int] = Query(None, alias="userId"),
+    platform_id: Optional[int] = Query(None, alias="platformId"),
+    direct_mode: Optional[bool] = Query(None, alias="directMode"),
+    start_at: Optional[str] = Query(None, alias="startAt"),
+    end_at: Optional[str] = Query(None, alias="endAt"),
+    auth: Dict[str, Any] = Depends(admin_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    """Sessions summed into one row per user × device × platform × day.
+
+    The aggregation happens at read time over the same session rows the client
+    already reports, so there is nothing to backfill and nothing the client has
+    to change.
+    """
+
+    return activity_service.list_daily_activity(
+        db,
+        page=page,
+        page_size=page_size,
+        user_id=user_id,
+        platform_id=platform_id,
+        direct_mode=direct_mode,
+        start_at=start_at,
+        end_at=end_at,
+        visible_admin_id=user_scope_admin_id(auth),
+    )
+
+
 @router.get("/api/admin/browser-sessions/{session_id}", tags=["browser-activity"])
 def admin_browser_session_detail(
     session_id: int,

@@ -122,3 +122,34 @@ export interface AdvidExportResponse {
   param: string;
 }
 
+
+/** 「按天汇总」视图的一行：用户 × 设备 × 平台 × 东八区自然日。 */
+export interface DailyActivityItem {
+  userId: number;
+  username: string;
+  /** 机器标识（已归一化）；老客户端没上报时为 null。 */
+  deviceId?: string | null;
+  platformId: number;
+  platformName?: string | null;
+  /** 会话开始时刻的东八区自然日，`YYYY-MM-DD`。跨零点的会话整体归开始日。 */
+  date: string;
+  /** 当天合进来的会话个数。 */
+  sessions: number;
+  pageCount: number;
+  visits: number;
+  clicks: number;
+  inputs: number;
+  submits: number;
+  scrolls: number;
+  dwellMs: number;
+  firstAt?: string | null;
+  lastAt?: string | null;
+}
+
+export interface DailyActivityResponse {
+  items: DailyActivityItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+}

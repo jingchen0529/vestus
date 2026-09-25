@@ -301,9 +301,102 @@ def list_distinct_url_params(
     return results
 
 
+def daily_activity_rows(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    user_id: Optional[int] = None,
+    user_ids: Optional[Sequence[int]] = None,
+    platform_id: Optional[int] = None,
+    direct_mode: Optional[bool] = None,
+    start_at: Any = None,
+    end_at: Any = None,
+) -> Tuple[Sequence[Any], int]:
+    """One row per user × device × platform × calendar day, counters summed.
+
+    Sessions are grouped by the Asia/Shanghai calendar day of their start:
+    clients and admins both live in that zone, so it is the day a session
+    "belongs to" in every report the admins read.  A session that crosses
+    midnight carries its whole running total into the day it started -- the
+    session row stores totals, not per-day slices, so the alternative would be
+    to invent data.  ``direct_mode`` filters which sessions are summed but does
+    not split the grouping: one user's day is one row regardless of how they
+    connected.  ``device_id`` may be ``None`` (clients too old to report one);
+    those sessions still count, grouped under their own "unknown device" key.
+    """
+
+    page, page_size = max(int(page), 1), min(max(int(page_size), 1), 200)
+    # Fixed-offset conversion needs no timezone tables on MySQL; SQLite takes
+    # the same shift as a date() modifier.  Both shift the UTC column into the
+    # zone where every client and admin of this deployment lives.
+    bind = session.get_bind()
+    if bind.dialect.name == "sqlite":
+        local_day = func.date(BrowserSession.started_at, "+8 hours")
+    else:
+        local_day = func.date(
+            func.convert_tz(BrowserSession.started_at, "+00:00", "+08:00")
+        )
+    conditions: List[Any] = []
+    if user_ids is not None:
+        conditions.append(BrowserSession.user_id.in_(user_ids))
+    elif user_id is not None:
+        conditions.append(BrowserSession.user_id == user_id)
+    if platform_id is not None:
+        conditions.append(BrowserSession.platform_id == platform_id)
+    if direct_mode is not None:
+        conditions.append(BrowserSession.direct_mode.is_(direct_mode))
+    # The filters mean "days in this range", so they compare against the grouped
+    # day directly instead of the raw UTC instant the session list filters on.
+    if start_at:
+        conditions.append(local_day >= str(start_at)[:10])
+    if end_at:
+        conditions.append(local_day <= str(end_at)[:10])
+    where = and_(*conditions) if conditions else None
+
+    grouped = select(
+        BrowserSession.user_id,
+        BrowserSession.username,
+        BrowserSession.device_id,
+        BrowserSession.platform_id,
+        BrowserSession.platform_name,
+        local_day.label("day"),
+        func.count(BrowserSession.id).label("sessions"),
+        func.sum(BrowserSession.page_count).label("page_count"),
+        *[func.sum(getattr(BrowserSession, name)).label(name) for name in _COUNTERS],
+        func.min(BrowserSession.started_at).label("first_at"),
+        func.max(BrowserSession.last_report_at).label("last_at"),
+    ).group_by(
+        BrowserSession.user_id,
+        BrowserSession.username,
+        BrowserSession.device_id,
+        BrowserSession.platform_id,
+        BrowserSession.platform_name,
+        local_day,
+    )
+    if where is not None:
+        grouped = grouped.where(where)
+    # Newest day first; within a day, a stable read order by user then platform.
+    subquery = grouped.subquery()
+    total = int(session.scalar(select(func.count()).select_from(subquery)) or 0)
+    rows = session.execute(
+        select(subquery)
+        .order_by(
+            desc(subquery.c.day),
+            asc(subquery.c.user_id),
+            asc(subquery.c.platform_id),
+            asc(subquery.c.device_id),
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return rows, total
+
+
 __all__ = [
     "add_session_totals",
     "create_session",
+    "daily_activity_rows",
     "get_session",
     "get_session_by_key",
     "list_distinct_url_params",

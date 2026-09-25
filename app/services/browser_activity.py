@@ -255,6 +255,79 @@ def list_sessions(
         }
 
 
+def _daily_activity_dict(row: Any) -> Dict[str, Any]:
+    """Serialize one grouped row from :func:`daily_activity_rows`."""
+
+    return {
+        "userId": row.user_id,
+        "username": row.username,
+        # None when the reporting client predates device reporting; the admin
+        # view groups these under an explicit "unknown device" label.
+        "deviceId": row.device_id,
+        "platformId": row.platform_id,
+        "platformName": row.platform_name,
+        # MySQL returns a date, SQLite the same day as "YYYY-MM-DD" text;
+        # str() renders both identically.
+        "date": str(row.day) if row.day else None,
+        "sessions": int(row.sessions or 0),
+        "pageCount": int(row.page_count or 0),
+        "visits": int(row.visits or 0),
+        "clicks": int(row.clicks or 0),
+        "inputs": int(row.inputs or 0),
+        "submits": int(row.submits or 0),
+        "scrolls": int(row.scrolls or 0),
+        "dwellMs": int(row.dwell_ms or 0),
+        "firstAt": iso_datetime(row.first_at) if row.first_at else None,
+        "lastAt": iso_datetime(row.last_at) if row.last_at else None,
+    }
+
+
+def list_daily_activity(
+    database: Database,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    user_id: Optional[int] = None,
+    platform_id: Optional[int] = None,
+    direct_mode: Optional[bool] = None,
+    start_at: Any = None,
+    end_at: Any = None,
+    visible_admin_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """One row per user × device × platform × day, same scope as the sessions list."""
+
+    page, page_size = max(int(page), 1), min(max(int(page_size), 1), 200)
+    empty = {
+        "items": [],
+        "total": 0,
+        "page": page,
+        "pageSize": page_size,
+        "pages": 0,
+    }
+    with database.session() as session:
+        scoped_ids = _scoped_user_ids(session, user_id, visible_admin_id)
+        if scoped_ids is not None and not scoped_ids:
+            return empty
+        rows, total = activity_repo.daily_activity_rows(
+            session,
+            page=page,
+            page_size=page_size,
+            user_id=user_id,
+            user_ids=scoped_ids,
+            platform_id=platform_id,
+            direct_mode=direct_mode,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        return {
+            "items": [_daily_activity_dict(row) for row in rows],
+            "total": total,
+            "page": page,
+            "pageSize": page_size,
+            "pages": math.ceil(total / page_size) if total else 0,
+        }
+
+
 def get_session_detail(
     database: Database,
     session_id: int | str,

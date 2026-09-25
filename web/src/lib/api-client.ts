@@ -31,6 +31,8 @@ import {
   BrowserSessionItem,
   BrowserSessionQuery,
   BrowserSessionResponse,
+  DailyActivityItem,
+  DailyActivityResponse,
   toBrowserSessionQuery,
 } from "@/types/browser-activity";
 import { API_CODE_OK, ApiCollection, ApiEnvelope, SystemHealth } from "@/types/api";
@@ -410,6 +412,46 @@ export const api = {
   async getBrowserSession(id: number, pageLimit?: number): Promise<BrowserSessionDetail> {
     const query = pageLimit ? `?pageLimit=${pageLimit}` : "";
     return request<BrowserSessionDetail>(`/api/admin/browser-sessions/${id}${query}`);
+  },
+
+  /** 按天汇总：同一用户 × 设备 × 平台 × 自然日一条，计数求和。 */
+  async listDailyActivity(params: BrowserSessionQuery = {}): Promise<DailyActivityResponse> {
+    const searchParams = new URLSearchParams();
+    searchParams.append("page", String(params.page || 1));
+    searchParams.append("pageSize", String(params.pageSize || 50));
+    if (params.userId !== undefined) searchParams.append("userId", String(params.userId));
+    if (params.platformId !== undefined) searchParams.append("platformId", String(params.platformId));
+    // false 也要发出去：只看直连是合法筛选，undefined 才是不筛。
+    if (params.directMode !== undefined) searchParams.append("directMode", String(params.directMode));
+    if (params.startAt) searchParams.append("startAt", params.startAt);
+    if (params.endAt) searchParams.append("endAt", params.endAt);
+
+    return request<DailyActivityResponse>(`/api/admin/browser-activity/daily?${searchParams.toString()}`);
+  },
+
+  async fetchAllDailyActivity(
+    filtersOrQuery: BrowserSessionFilters | BrowserSessionQuery = {},
+  ): Promise<DailyActivityItem[]> {
+    const queryBase: BrowserSessionQuery =
+      "connection" in filtersOrQuery
+        ? toBrowserSessionQuery(filtersOrQuery)
+        : { ...filtersOrQuery };
+    delete queryBase.page;
+    delete queryBase.pageSize;
+
+    const allItems: DailyActivityItem[] = [];
+    let page = 1;
+    const pageSize = 200; // max allowed by backend
+
+    while (true) {
+      const res = await this.listDailyActivity({ ...queryBase, page, pageSize });
+      allItems.push(...res.items);
+      if (allItems.length >= res.total || res.items.length === 0 || page >= res.pages) {
+        break;
+      }
+      page++;
+    }
+    return allItems;
   },
 
   async exportAdvids(params: {

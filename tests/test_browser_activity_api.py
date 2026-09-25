@@ -34,7 +34,7 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _create_user(client: Any, admin_token: str, username: str) -> dict[str, Any]:
+def _create_user(client: Any, admin_token: str, username: str, **extra: Any) -> dict[str, Any]:
     response = client.post(
         "/api/admin/users",
         headers=_bearer(admin_token),
@@ -43,6 +43,7 @@ def _create_user(client: Any, admin_token: str, username: str) -> dict[str, Any]
             "password": f"{username}-password",
             "name": username,
             "expiresAt": "2099-12-31",
+            **extra,
         },
     )
     assert response.status_code == 201, response.text
@@ -840,3 +841,140 @@ def test_export_advids_date_and_user_filtering(api: Any) -> None:
     assert resp_match.status_code == 200
     assert payload(resp_match)["total"] >= 1
 
+
+THIRD_SESSION_KEY = "0000018f2c4a1b3d00001234000000aa"
+FOURTH_SESSION_KEY = "0000018f2c4a1b3d00001234000000bb"
+
+
+def _expected_local_day() -> str:
+    """The Asia/Shanghai calendar day the server would stamp right now."""
+
+    return (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
+
+
+def test_daily_activity_merges_one_users_day_into_one_row(api: Any) -> None:
+    """同一用户同一天的会话按设备分开聚合，代理与直连合进同一行。"""
+
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    reports = [
+        # (session key, device, direct, visits)
+        (SESSION_KEY, "a" * 32, False, 1),
+        (OTHER_SESSION_KEY, "a" * 32, True, 3),
+        (THIRD_SESSION_KEY, "b" * 32, False, 5),
+        (FOURTH_SESSION_KEY, None, False, 7),
+    ]
+    for key, device, direct, visits in reports:
+        overrides: dict[str, Any] = {
+            "sessionKey": key,
+            "platformId": platform_id,
+            "directMode": direct,
+        }
+        if device is not None:
+            overrides["deviceId"] = device
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                _page("https://shop.example.test/a", visits=visits, clicks=2),
+                **overrides,
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    listing = payload(client.get("/api/admin/browser-activity/daily", headers=_bearer(admin_token)))
+    assert listing["total"] == 3
+
+    by_device = {row["deviceId"]: row for row in listing["items"]}
+    alpha = by_device["a" * 32]
+    # Proxy and direct sessions of the same day and device share one row.
+    assert alpha["sessions"] == 2
+    assert alpha["visits"] == 4
+    assert alpha["clicks"] == 4
+    assert alpha["date"] == _expected_local_day()
+    assert alpha["username"] == "browsing-user"
+    assert alpha["platformName"] == "reported-platform"
+    assert alpha["firstAt"] and alpha["lastAt"]
+
+    assert by_device["b" * 32]["sessions"] == 1
+    assert by_device["b" * 32]["visits"] == 5
+    # Clients too old to report a device still count, under their own key.
+    assert by_device[None]["sessions"] == 1
+    assert by_device[None]["visits"] == 7
+
+
+def test_daily_activity_filters_by_day_range(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page("https://shop.example.test/a", visits=1), platformId=platform_id),
+    )
+    assert response.status_code == 200, response.text
+
+    day = _expected_local_day()
+    before = (datetime.fromisoformat(day) - timedelta(days=1)).isoformat()
+    after = (datetime.fromisoformat(day) + timedelta(days=1)).isoformat()
+
+    def listed(**params: Any) -> list[dict[str, Any]]:
+        result = client.get(
+            "/api/admin/browser-activity/daily", headers=_bearer(admin_token), params=params
+        )
+        assert result.status_code == 200, result.text
+        return payload(result)["items"]
+
+    assert len(listed(startAt=day, endAt=day)) == 1
+    assert len(listed(endAt=day)) == 1
+    assert len(listed(startAt=after)) == 0
+    assert len(listed(endAt=before)) == 0
+
+
+def test_daily_activity_respects_admin_scope(api: Any) -> None:
+    """绑定管理员只能聚合到自己名下用户的会话，越界不可见。"""
+
+    client, _module = api
+    super_token = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    beijing = client.post(
+        "/api/admin/admins",
+        headers=_bearer(super_token),
+        json={
+            "username": "daily-scope-admin",
+            "password": "daily-scope-admin-password",
+            "name": "daily-scope-admin",
+            "role": "admin",
+        },
+    )
+    assert beijing.status_code == 201, beijing.text
+    mine = _create_user(
+        client, super_token, "daily-mine", boundAdminId=payload(beijing)["id"]
+    )
+    _create_user(client, super_token, "daily-theirs")
+
+    for username, key in (("daily-mine", SESSION_KEY), ("daily-theirs", OTHER_SESSION_KEY)):
+        token = _login(client, "/api/user/auth/login", username, f"{username}-password")
+        platform = _create_platform(client, super_token, f"platform-{username}")
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(token),
+            json=_report(
+                _page("https://shop.example.test/a", visits=2),
+                sessionKey=key,
+                platformId=int(platform["id"]),
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    headers = _bearer(
+        _login(
+            client, "/api/admin/auth/login", "daily-scope-admin", "daily-scope-admin-password"
+        )
+    )
+    scoped = payload(client.get("/api/admin/browser-activity/daily", headers=headers))
+    assert scoped["total"] == 1
+    assert scoped["items"][0]["username"] == "daily-mine"
+
+    everything = payload(
+        client.get("/api/admin/browser-activity/daily", headers=_bearer(super_token))
+    )
+    assert everything["total"] == 2
