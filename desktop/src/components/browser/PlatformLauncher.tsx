@@ -63,7 +63,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
         <div>
           <h2 className="text-lg font-semibold text-foreground">选择平台</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            点击系统已启用的平台，在独立浏览器窗口中打开。
+            点击系统已启用的平台，在独立的浏览器窗口中打开；登录状态会保存在这台电脑上。
           </p>
         </div>
         {!proxyEnabled && (
@@ -184,7 +184,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
 
       {status.browser_open && (
         <p className="mt-4 text-center text-xs text-muted-foreground">
-          浏览器窗口已打开；可继续打开任意入口，也可重复打开同一平台。
+          浏览器已在运行；再次点击同一平台会在它里面新开一个窗口，别的平台照常独立打开。
         </p>
       )}
     </section>

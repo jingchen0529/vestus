@@ -21,7 +21,9 @@ Vestus 现在分成两个明确入口：
 
 管理员可以给每条代理配置一份「直连域名」清单（例如 `lf3-ad-platform.byteadverts.com`、`*.byteadverts.com`）。命中清单的请求由客户端直接连接，不经过代理；未命中的一律走代理。两条路径互不回退：代理失败回 502/407，直连失败回 502。规则、校验和安全边界见 [docs/backend.md](docs/backend.md#直连域名bypasshosts)。
 
-桌面端只负责「登录后按服务端下发的平台打开浏览器」，和 OA 的语义一致：Rust 把起始网址作为命令行参数交给独立 Chromium，不与浏览器建立任何控制通道，也不开调试端点。打开之后页面完全由用户自己操作，客户端不做页面自动化。
+桌面端只负责「登录后按服务端下发的平台打开浏览器」：Rust 把起始网址作为命令行参数交给独立 Chromium，打开之后页面完全由用户自己操作，客户端不做页面自动化。Chromium 会开一个只绑 127.0.0.1、端口随机的调试端点，用途只有三个：采集访问过的页面与操作次数（管理端「会话追踪」）、在已打开的浏览器里新开窗口、以及关闭时请浏览器正常退出。
+
+浏览器环境是**持久**的：每个平台在每台电脑上有一套单独保存的 Chromium profile，关掉浏览器后 Cookie 与登录状态保留，下次打开平台看到的还是同一台设备。环境按「服务器 × 桌面账号 × 平台 × 代理/直连」隔离——同一台电脑上登录多个账号时彼此不可见；同一账号在多台电脑上登录时每台电脑各有一套，互不同步。细节见 [docs/desktop-user-guide.md](docs/desktop-user-guide.md#72-浏览器环境)。
 
 ## 目录结构
 
@@ -100,8 +102,10 @@ VESTUS_API_BASE_URL='https://api.example.com' npm run desktop:build
 x86_64（deb / AppImage）。随包 Chromium 不能跨平台也不能跨架构，因此每个目标都在对应的
 GitHub runner 上原生构建，构建时下载锁定版本（Playwright 1.63.0）的浏览器资源并放进安装包；
 不需要上传 OA 的 `bin/`、`packages/` 等大型产物。`oa/` 仅作为只读参考，不参与 Rust 客户端
-编译。每次点击平台都会启动一个新的进程和临时 Profile；同平台及不同平台均可并行，关闭后
-清理本次 Profile，不保存 Cookie。
+编译。每个平台的浏览器环境持久保存在应用数据目录（macOS `~/Library/Application Support/com.zhixi.vestus/browser-profiles/`、
+Windows `%LOCALAPPDATA%\com.zhixi.vestus\browser-profiles\`、Linux `~/.local/share/com.zhixi.vestus/browser-profiles/`）；
+不同平台、同一平台的代理与直连可以并行运行，同一环境再次打开时在已开的浏览器里新开窗口。
+「系统配置 → 浏览器环境」可以清除当前账号在本机的全部环境。
 
 平台差异：macOS 包未做 Apple 签名与公证，首次打开需右键 →「打开」；Linux 未启用系统钥匙串
 后端，登录状态只保留在应用运行期间，重启客户端要重新登录。

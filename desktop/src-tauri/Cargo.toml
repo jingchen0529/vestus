@@ -42,6 +42,9 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = [
 futures-util = { version = "0.3", default-features = false, features = [
   "sink",
 ] }
+# 持久浏览器环境的目录名取摘要，服务端下发的字符串不直接进路径。已经在依赖树里
+# （tauri-codegen 用它），不引入新的下载。
+sha2 = "0.10"
 
 # keyring 按平台启用原生后端，避免在 macOS 上牵入 Windows 依赖
 [target.'cfg(target_os = "macos")'.dependencies]

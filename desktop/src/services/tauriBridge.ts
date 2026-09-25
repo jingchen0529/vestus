@@ -33,6 +33,13 @@ export interface StatusView {
 export interface BrowserHandleView {
   /** 仅用于把状态机里的会话和 Chromium 进程对上，前端不需要它做别的事。 */
   browser_id: number;
+  /** 这个平台的浏览器本来就开着，这次是在它里面新开了一个窗口。 */
+  reused: boolean;
+}
+
+export interface BrowserProfileResetView {
+  /** 删掉的平台环境个数（代理与直连分开计）。 */
+  removed: number;
 }
 
 // 检查是否运行在桌面原生 Tauri 环境
@@ -67,6 +74,11 @@ export const tauriBridge = {
 
   async getDirectIp(): Promise<string> {
     return await invokeDesktop<string>("get_direct_ip");
+  },
+
+  /** 删掉当前账号在这台电脑上的全部浏览器环境；已打开的浏览器会先被关掉。 */
+  async resetBrowserProfiles(): Promise<BrowserProfileResetView> {
+    return await invokeDesktop<BrowserProfileResetView>("reset_browser_profiles");
   },
 
   async getStatus(): Promise<StatusView> {

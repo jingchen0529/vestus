@@ -1,30 +1,49 @@
 //! 外置 Chromium 多会话管理。
 //!
-//! OA 的浏览器语义是「每次点击都创建一个新的、临时的 Chromium 环境」。
-//! 这里保留 Tauri 作为登录壳，只把业务网站交给随应用发布的 Chromium。
+//! Tauri 只做登录壳，业务网站交给随应用发布的 Chromium。每个平台在本机有一套
+//! **持久**的浏览器环境（profile），按服务器、账号、平台、代理/直连隔离；它放在哪、
+//! 归谁、怎么认出被别人占着，见 [`crate::profile`]。
 //!
 //! 起始网址作为命令行最后一个参数交给 Chromium 直接打开。
+//!
+//! # 一个环境一个进程
+//!
+//! Chromium 一个 user-data-dir 同时只允许一个进程：再起一个，它会把自己的命令行转交
+//! 给已在运行的那个然后退出，自己带的开关全部作废。所以同一个环境已经开着时，「再
+//! 打开一次」就是有意利用这个转交：带上 `--new-window` 再起一次，让原来那个浏览器新开
+//! 一个窗口（[`BrowserSessionManager::hand_off`]）。这和用户在桌面上再点一次浏览器图标
+//! 是同一回事，不需要调试端点——采集通道是只读的，不给它开窗口的能力。不同平台、同一
+//! 平台的代理与直连是不同的环境，照样各自独立运行。
+//!
+//! # 关闭
+//!
+//! 我们主动关浏览器（同步配置、租约失效、登出、退出应用、重置环境）时先请它正常
+//! 退出——有调试端点就发 `Browser.close`，没有就发 SIGTERM / WM_CLOSE——等到
+//! [`GRACEFUL_CLOSE_TIMEOUT`] 还没退才强杀。临时 profile 时代强杀无所谓，现在却会丢
+//! 数据：Chromium 的 Cookie 库大约每 30 秒才批量落一次盘，刚登录拿到的登录态就在
+//! 这一批里。用户自己关窗口本来就是正常退出，不受影响。
 //!
 //! # 调试端点
 //!
 //! 本模块**会**开 DevTools 端点（`--remote-debugging-port=0`），因为管理台要求
 //! 记录客户在浏览器里访问了哪些页面、做了多少次操作，而这是唯一能同时拿到
-//! 完整 URL 和页面内事件的通道。收敛措施：
+//! 完整 URL 和页面内事件的通道；持久环境下的正常关闭也借它发一条 `Browser.close`。
+//! 收敛措施：
 //!
-//! * 端口传 `0` 让内核分配，实际端口只出现在 profile 目录里的
-//!   `DevToolsActivePort`，profile 名字本身带纳秒时间戳，外部无法预测；
+//! * 端口传 `0` 让内核分配，每次启动都换一个，只写在 profile 目录里的
+//!   `DevToolsActivePort`；
 //! * 不传 `--remote-debugging-address`，沿用 Chromium 只绑 127.0.0.1 的默认；
 //! * 不传 `--remote-allow-origins`，所以带 `Origin` 头的请求（也就是被打开的
 //!   网页自己发起的那些）会被 Chromium 直接拒绝，网页拿不到这个通道。
 //!
 //! 无法消除的残余风险：**本机同用户的其他进程**只要能读到 profile 目录就能连上
-//! 这个端点。这是开调试端口的固有代价，接受它是记录页面级操作日志的前提。
+//! 这个端点。这是开调试端口的固有代价，接受它是记录页面级操作日志的前提。profile
+//! 的位置现在是固定的，但这并没有让情况变坏：同用户进程以前也列得出临时目录，现在
+//! 和以前一样本来就读得到 profile 里的 Cookie 库。
 //!
-//! 「临时环境」由每次新建的 `--user-data-dir` 加退出时的 [`cleanup_profile`]
-//! 保证，不依赖 `--incognito`：profile 本来就用完即焚，隐身模式换不来额外的
-//! 隐私，却会限制站点的 localStorage/IndexedDB，还让目标站点能直接识别出
-//! 隐身特征。同理也不传 `--new-window`——每个会话都是独立 user-data-dir 上
-//! 的全新进程，本来就只会开出一个新窗口。
+//! 不用 `--incognito`：隐身模式和持久环境正好相反，还会限制站点的 localStorage/
+//! IndexedDB，并让目标站点直接识别出隐身特征。`--new-window` 只出现在转交用的那次
+//! 启动里（见上文），正式启动一个环境时不带它。
 //!
 //! 窗口几何**总是**显式下发，从不使用 `--start-maximized`：后者要等窗口建好再
 //! 最大化，这次 resize 和渲染器首帧存在竞态，在远程桌面/无独显的机器上会停在空白
@@ -71,9 +90,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use tauri::{AppHandle, Manager, Runtime};
+
+use crate::cdp;
+use crate::profile::{self, ProfileSpec, DEVTOOLS_PORT_FILE};
+use crate::rt;
 
 #[cfg(any(debug_assertions, test))]
 const CHROMIUM_PATH_ENV: &str = "VESTUS_CHROMIUM_PATH";
@@ -81,11 +104,22 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Chromium 写 `DevToolsActivePort` 的等待上限。超时就放弃采集，浏览器照常用。
 const DEVTOOLS_PORT_TIMEOUT: Duration = Duration::from_secs(20);
 const DEVTOOLS_PORT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
+/// 只认这次启动之后写出的 `DevToolsActivePort`；留一点余量给文件系统时间戳的粒度。
+const DEVTOOLS_PORT_CLOCK_SLACK: Duration = Duration::from_secs(2);
+/// 主动关闭时，从请 Chromium 退出到强杀之间最多等多久。正常退出一两秒就完，这里是
+/// 它被卡住时的上限——登出、切换账号和退出应用都在等它。
+const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+const CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// 转交用的那次启动最多等多久。正常几百毫秒就把命令行交出去退出了；到点还在，说明
+/// 原来那个浏览器没接住（卡住了，或恰好在这一瞬间退出、这个进程于是自己当了浏览器）。
+const HAND_OFF_TIMEOUT: Duration = Duration::from_secs(15);
+const HAND_OFF_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// 低于这个边长的工作区当作读数异常，退回 [`FALLBACK_WINDOW`]。
 const MIN_WINDOW_EDGE: u32 = 320;
 type ProcessSlot = Arc<Mutex<Option<Child>>>;
-type BrowserCloseEntry = (ProcessSlot, PathBuf);
+/// 读到之前是 `None`；读不到（超时或进程先没了）也一直是 `None`。
+type EndpointSlot = Arc<Mutex<Option<DevToolsEndpoint>>>;
+type BrowserCloseEntry = (ProcessSlot, Option<DevToolsEndpoint>);
 
 /// 一个 Chromium 进程的 browser 级 DevTools 入口。
 ///
@@ -113,8 +147,16 @@ pub enum BrowserError {
     InvalidOverride,
     #[error("未找到可用的 Chromium。请确认安装包包含浏览器资源")]
     ChromiumMissing,
-    #[error("无法创建临时浏览器环境：{0}")]
+    #[error("无法准备浏览器环境目录：{0}")]
     ProfileDirectory(String),
+    #[error("这个平台的浏览器环境正被另一个浏览器占用（同一账号在另一个 Vestus 窗口里打开了它，或是上次异常退出后残留的浏览器），请先关闭那个浏览器再试")]
+    ProfileBusy,
+    #[error("这个平台的浏览器已经在运行")]
+    AlreadyRunning,
+    #[error("浏览器已经关闭，请重新打开")]
+    NotRunning,
+    #[error("无法在已打开的浏览器里新建窗口：{0}")]
+    OpenWindow(String),
     #[error("无法启动 Chromium：{0}")]
     Spawn(String),
     #[error("客户端正在退出，不能再启动浏览器")]
@@ -134,6 +176,19 @@ struct BrowserSessionInner {
 struct ManagedBrowser {
     process: ProcessSlot,
     profile_dir: PathBuf,
+    endpoint: EndpointSlot,
+}
+
+/// 解析好的一次启动：用哪个 Chromium、开哪个持久环境。
+pub struct PreparedProfile {
+    executable: PathBuf,
+    dir: PathBuf,
+}
+
+impl PreparedProfile {
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
 }
 
 /// 启动时直接下发给 Chromium 的窗口几何。
@@ -186,7 +241,74 @@ impl Default for BrowserSessionManager {
 }
 
 impl BrowserSessionManager {
-    /// Start one independent Chromium process with a fresh profile.
+    /// 解析一个环境：定位 Chromium，算出它的持久 profile 目录并确保目录存在。
+    ///
+    /// 只算路径、建空目录，不碰里面的数据；是复用已在运行的进程还是新起一个，由
+    /// 调用方拿 [`Self::running_browser`] 决定。
+    pub fn prepare_profile<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        spec: &ProfileSpec<'_>,
+    ) -> Result<PreparedProfile, BrowserError> {
+        let (executable, root) = resolve_executable_and_root(app)?;
+        let dir = profile::profile_dir(&root, spec);
+        create_private_dir(&dir)?;
+        Ok(PreparedProfile { executable, dir })
+    }
+
+    /// 一个账号在本机全部环境所在的目录（按这次会用的 Chromium 解析根目录）。
+    pub fn account_profiles_dir<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        api_base: &str,
+        profile_key: &str,
+    ) -> Result<PathBuf, BrowserError> {
+        let (_, root) = resolve_executable_and_root(app)?;
+        Ok(profile::account_dir(&root, api_base, profile_key))
+    }
+
+    /// 这个环境是否有一个本实例托管、仍在运行的进程；有就返回它的会话号。
+    pub fn running_browser(&self, profile_dir: &Path) -> Option<u64> {
+        let sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+        live_session_on(&sessions, profile_dir)
+    }
+
+    /// 让这个环境里已在运行的浏览器新开一个窗口打开 `target_url`。
+    ///
+    /// 做法是带上 `--new-window` 在同一个 user-data-dir 上再起一次 Chromium：它发现目录
+    /// 已经有主人，就把命令行转交过去然后自己退出。转交用的命令行和正式启动一模一样
+    /// （代理、沙箱开关一个不少）——万一在检查之后那一瞬间原来的进程恰好退出，这次
+    /// 启动会自己当上浏览器，那样至少代理不会丢；它随后会被 [`wait_for_hand_off`] 收走，
+    /// 不会留下一个不归我们管、也没有采集的浏览器。
+    ///
+    /// 返回转交进程，调用方把它交给 [`wait_for_hand_off`]。
+    pub fn hand_off<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        profile: &PreparedProfile,
+        local_proxy: Option<&str>,
+        target_url: &str,
+        disable_sandbox: bool,
+    ) -> Result<Child, BrowserError> {
+        if !self.inner.accepting_launches.load(Ordering::Acquire) {
+            return Err(BrowserError::ShuttingDown);
+        }
+        if self.running_browser(&profile.dir).is_none() {
+            return Err(BrowserError::NotRunning);
+        }
+        let arguments = hand_off_arguments(
+            &profile.dir,
+            local_proxy,
+            target_url,
+            primary_window_geometry(app),
+            disable_sandbox,
+        );
+        chromium_command(&profile.executable, arguments)
+            .spawn()
+            .map_err(|error| BrowserError::Spawn(error.to_string()))
+    }
+
+    /// Start one Chromium process on a persistent profile.
     ///
     /// `on_ready` fires once the DevTools endpoint is readable, `on_exit` once
     /// the process is gone. Both run on this session's monitor thread, so a slow
@@ -196,6 +318,7 @@ impl BrowserSessionManager {
         &self,
         app: &AppHandle<R>,
         session_id: u64,
+        profile: PreparedProfile,
         local_proxy: Option<&str>,
         target_url: &str,
         disable_sandbox: bool,
@@ -210,13 +333,11 @@ impl BrowserSessionManager {
         if !self.inner.accepting_launches.load(Ordering::Acquire) {
             return Err(BrowserError::ShuttingDown);
         }
-        let executable = resolve_chromium_executable(app)?;
-        let profile_dir = create_profile_dir(app, session_id)?;
         let window = primary_window_geometry(app);
         self.launch_process(
             session_id,
-            &executable,
-            profile_dir,
+            &profile.executable,
+            profile.dir,
             local_proxy,
             target_url,
             window,
@@ -280,6 +401,12 @@ impl BrowserSessionManager {
             window,
             disable_sandbox,
         } = request;
+        // 先认自己的：本实例已经开着这个环境时，调用方本该走 open_window。这一步必须
+        // 排在 prepare_for_launch 前面——后者会清掉端口文件，那是我们自己那个进程的。
+        if self.running_browser(&profile_dir).is_some() {
+            return Err(BrowserError::AlreadyRunning);
+        }
+        profile::prepare_for_launch(&profile_dir).map_err(|_| BrowserError::ProfileBusy)?;
         let arguments = chromium_arguments(
             &profile_dir,
             local_proxy,
@@ -288,33 +415,27 @@ impl BrowserSessionManager {
             disable_sandbox,
         );
 
-        let mut command = Command::new(executable);
-        command
-            .args(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(directory) = executable.parent() {
-            command.current_dir(directory);
-        }
+        let mut command = chromium_command(executable, arguments);
 
+        let endpoint: EndpointSlot = Arc::new(Mutex::new(None));
+        let launched_at = SystemTime::now();
         // Spawning and publishing a process is one critical section with
         // shutdown. Therefore shutdown either drains this exact child or makes
         // the launch reject before any process exists.
+        //
+        // 任何失败路径都不删 profile：那是用户在这个平台上的登录态。
         let process = {
             let mut sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
             if !self.inner.accepting_launches.load(Ordering::Acquire) {
-                let _ = std::fs::remove_dir_all(&profile_dir);
                 return Err(BrowserError::ShuttingDown);
             }
+            if live_session_on(&sessions, &profile_dir).is_some() {
+                return Err(BrowserError::AlreadyRunning);
+            }
             on_launch_lock();
-            let child = match command.spawn() {
-                Ok(child) => child,
-                Err(error) => {
-                    let _ = std::fs::remove_dir_all(&profile_dir);
-                    return Err(BrowserError::Spawn(error.to_string()));
-                }
-            };
+            let child = command
+                .spawn()
+                .map_err(|error| BrowserError::Spawn(error.to_string()))?;
 
             let process = Arc::new(Mutex::new(Some(child)));
             sessions.insert(
@@ -322,6 +443,7 @@ impl BrowserSessionManager {
                 ManagedBrowser {
                     process: Arc::clone(&process),
                     profile_dir: profile_dir.clone(),
+                    endpoint: Arc::clone(&endpoint),
                 },
             );
             process
@@ -337,12 +459,14 @@ impl BrowserSessionManager {
                     // 端口先读：Chromium 启动几百毫秒内就会写出这个文件，而
                     // `wait_for_process_exit` 本来也是轮询，晚一点开始无影响。
                     // 读不到就只是没有采集，浏览器本身照常使用。
-                    if let Some(endpoint) = read_devtools_endpoint(&profile_dir, &process) {
-                        on_ready(endpoint);
+                    if let Some(ready) =
+                        read_devtools_endpoint(&profile_dir, &process, launched_at)
+                    {
+                        *endpoint.lock().expect("调试端点锁已中毒") = Some(ready.clone());
+                        on_ready(ready);
                     }
                     wait_for_process_exit(&process);
                     manager.remove_finished(session_id);
-                    cleanup_profile(&profile_dir);
                     on_exit();
                 }
             })
@@ -355,7 +479,6 @@ impl BrowserSessionManager {
                 .remove(&session_id);
             if let Some(session) = session {
                 stop_process(&session.process);
-                cleanup_profile(&session.profile_dir);
             }
             return Err(BrowserError::Spawn(format!(
                 "无法创建浏览器监控线程：{error}"
@@ -366,42 +489,53 @@ impl BrowserSessionManager {
     }
 
     /// Close every Chromium process owned by the current desktop session.
-    pub fn close_all(&self) -> usize {
-        let sessions: Vec<BrowserCloseEntry> = self
-            .inner
-            .sessions
-            .lock()
-            .expect("浏览器会话锁已中毒")
-            .drain()
-            .map(|(_, session)| (session.process, session.profile_dir))
-            .collect();
-
-        for (process, profile_dir) in &sessions {
-            stop_process(process);
-            cleanup_profile(profile_dir);
-        }
-        sessions.len()
+    ///
+    /// 先请每个浏览器正常退出，统一等到 [`GRACEFUL_CLOSE_TIMEOUT`]，还活着的强杀。
+    /// 返回时这些进程都已经不在了，于是调用方可以放心地删它们的 profile，或者在同一个
+    /// 环境上立刻再起一个进程。
+    pub async fn close_all(&self) -> usize {
+        let sessions = self.take_sessions(false);
+        let count = sessions.len();
+        close_gracefully(sessions).await;
+        count
     }
 
     /// Permanently reject new launches and close every owned process. Used by
     /// the Tauri exit path to close the small launch-vs-exit race window.
+    ///
+    /// 它跑在 Tauri 主线程的退出回调里，不在任何 Tokio 运行时之内，所以可以就地
+    /// `block_on` 等正常退出走完：各浏览器并行地等，总共最多 [`GRACEFUL_CLOSE_TIMEOUT`]。
     pub fn shutdown(&self) -> usize {
-        let sessions: Vec<BrowserCloseEntry> = {
-            let mut sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+        let sessions = self.take_sessions(true);
+        let count = sessions.len();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // 在运行时里 block_on 会直接 panic。只有调用方写错了才会走到这里：退回
+            // 强杀，至少不留下进程。
+            for (process, _) in &sessions {
+                stop_process(process);
+            }
+        } else if count > 0 {
+            rt::runtime().block_on(close_gracefully(sessions));
+        }
+        count
+    }
+
+    /// 把全部会话从表里摘下来，连同它们此刻已知的调试端点。`stop_accepting` 为真时
+    /// 在同一个临界区里永久拒绝新的启动，见 [`Self::launch_process_with_hook`]。
+    fn take_sessions(&self, stop_accepting: bool) -> Vec<BrowserCloseEntry> {
+        let mut sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+        if stop_accepting {
             self.inner
                 .accepting_launches
                 .store(false, Ordering::Release);
-            sessions
-                .drain()
-                .map(|(_, session)| (session.process, session.profile_dir))
-                .collect()
-        };
-
-        for (process, profile_dir) in &sessions {
-            stop_process(process);
-            cleanup_profile(profile_dir);
         }
-        sessions.len()
+        sessions
+            .drain()
+            .map(|(_, session)| {
+                let endpoint = session.endpoint.lock().expect("调试端点锁已中毒").clone();
+                (session.process, endpoint)
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -422,19 +556,36 @@ impl BrowserSessionManager {
     }
 }
 
+/// 表里开着这个环境、而且进程还活着的那个会话。
+///
+/// 进程已经退出、只是监视线程还没来得及摘掉的会话不算：否则用户关掉浏览器后马上再点，
+/// 会被当成「已经在运行」挡回去。
+fn live_session_on(sessions: &HashMap<u64, ManagedBrowser>, profile_dir: &Path) -> Option<u64> {
+    sessions
+        .iter()
+        .find(|(_, session)| {
+            session.profile_dir == profile_dir && !process_has_exited(&session.process)
+        })
+        .map(|(session_id, _)| *session_id)
+}
+
 /// Poll the profile for Chromium's `DevToolsActivePort` until it parses.
 ///
 /// Returns `None` when the process dies first or the wait times out. Both are
 /// non-fatal: the browser is fully usable without a telemetry channel, so a
 /// failure here must never surface to the user as a launch error.
-fn read_devtools_endpoint(profile_dir: &Path, process: &ProcessSlot) -> Option<DevToolsEndpoint> {
+fn read_devtools_endpoint(
+    profile_dir: &Path,
+    process: &ProcessSlot,
+    launched_at: SystemTime,
+) -> Option<DevToolsEndpoint> {
     let deadline = SystemTime::now() + DEVTOOLS_PORT_TIMEOUT;
     let port_file = profile_dir.join(DEVTOOLS_PORT_FILE);
+    let not_before = launched_at
+        .checked_sub(DEVTOOLS_PORT_CLOCK_SLACK)
+        .unwrap_or(launched_at);
     loop {
-        if let Some(endpoint) = std::fs::read_to_string(&port_file)
-            .ok()
-            .and_then(|contents| parse_devtools_active_port(&contents))
-        {
+        if let Some(endpoint) = read_fresh_port_file(&port_file, not_before) {
             return Some(endpoint);
         }
         if process_has_exited(process) || SystemTime::now() >= deadline {
@@ -442,6 +593,134 @@ fn read_devtools_endpoint(profile_dir: &Path, process: &ProcessSlot) -> Option<D
         }
         thread::sleep(DEVTOOLS_PORT_POLL_INTERVAL);
     }
+}
+
+/// 只认这次启动之后写出来的端口文件。
+///
+/// 启动前已经删过上一次运行留下的那份（[`profile::prepare_for_launch`]），但删除可能
+/// 失败——Windows 上杀毒软件正好开着它就删不掉。旧文件指向一个早已关闭、甚至已经换了
+/// 主人的端口，连上去轻则没有采集，重则把控制命令发给别的程序。
+fn read_fresh_port_file(port_file: &Path, not_before: SystemTime) -> Option<DevToolsEndpoint> {
+    let modified = std::fs::metadata(port_file).and_then(|meta| meta.modified()).ok()?;
+    if modified < not_before {
+        return None;
+    }
+    parse_devtools_active_port(&std::fs::read_to_string(port_file).ok()?)
+}
+
+/// 请每个浏览器正常退出，并行等到 [`GRACEFUL_CLOSE_TIMEOUT`]，还活着的强杀。
+async fn close_gracefully(sessions: Vec<BrowserCloseEntry>) {
+    if sessions.is_empty() {
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
+    let closing: Vec<_> = sessions
+        .into_iter()
+        .map(|(process, endpoint)| rt::runtime().spawn(close_one(process, endpoint, deadline)))
+        .collect();
+    for task in closing {
+        let _ = task.await;
+    }
+}
+
+async fn close_one(
+    process: ProcessSlot,
+    endpoint: Option<DevToolsEndpoint>,
+    deadline: tokio::time::Instant,
+) {
+    // 首选 Browser.close：它不理会 beforeunload，走 Chromium 完整的退出流程。没有调试
+    // 端点（进程刚起，或者端口一直没读到）时退而求其次，发一个同样会触发正常退出的
+    // 系统信号或窗口关闭消息。
+    let asked = match &endpoint {
+        Some(endpoint) => cdp::request_exit(endpoint).await.is_ok(),
+        None => false,
+    };
+    if !asked {
+        request_polite_exit(&process);
+    }
+    while !process_has_exited(&process) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(CLOSE_POLL_INTERVAL).await;
+    }
+    // 已经退出时这是空操作；到点还活着就是卡住了，只能强杀。
+    stop_process(&process);
+}
+
+/// 请子进程自己正常退出：POSIX 发 SIGTERM（Chromium 收到后走和关窗口一样的退出流程），
+/// Windows 用不带 `/F` 的 taskkill 给它的窗口发 WM_CLOSE。
+///
+/// 拿着进程锁发：监视线程回收子进程也要这把锁，于是发出去的那一刻这个 pid 一定还
+/// 属于我们的子进程（最多是还没回收的僵尸），不会误伤一个复用了同一 pid 的陌生进程。
+fn request_polite_exit(process: &ProcessSlot) {
+    let guard = process.lock().expect("浏览器进程锁已中毒");
+    let Some(child) = guard.as_ref() else {
+        return;
+    };
+    let pid = child.id().to_string();
+
+    #[cfg(unix)]
+    {
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &pid])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+
+        let _ = Command::new(profile::system_tool("taskkill.exe"))
+            .args(["/PID", &pid, "/T"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(profile::CREATE_NO_WINDOW)
+            .status();
+    }
+}
+
+/// 等转交用的那次启动把命令行交出去、自己退出。
+///
+/// 不看退出码：Chromium 转交成功后的退出码在各版本、各平台上并不一致，而这里只关心
+/// 「它走了」。到点还没走，就是原来那个浏览器没有接住——它要么卡住了，要么恰好在检查
+/// 之后退出、这个进程于是自己当上了浏览器。后一种它不归我们管、也没有采集，不能留着。
+pub async fn wait_for_hand_off(child: Child) -> Result<(), BrowserError> {
+    wait_for_hand_off_within(child, HAND_OFF_TIMEOUT).await
+}
+
+async fn wait_for_hand_off_within(mut child: Child, limit: Duration) -> Result<(), BrowserError> {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(HAND_OFF_POLL_INTERVAL).await;
+            }
+            _ => {
+                terminate_child(child);
+                return Err(BrowserError::OpenWindow(
+                    "浏览器没有响应，请稍后再试".to_string(),
+                ));
+            }
+        }
+    }
+}
+
+/// Spawn configuration shared by real launches and hand-offs: no stdio, and run
+/// from the browser's own directory.
+fn chromium_command(executable: &Path, arguments: Vec<OsString>) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(directory) = executable.parent() {
+        command.current_dir(directory);
+    }
+    command
 }
 
 /// Whether the child is already gone, without consuming the exit status.
@@ -522,14 +801,18 @@ fn stop_process(process: &ProcessSlot) {
 fn terminate_child(mut child: Child) {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt as _;
+
         // Chromium is a process tree. `taskkill /T` closes renderers and popup
         // children as well as the browser process; fall back to Child::kill if
-        // the system command is unavailable or rejects the request.
-        let status = Command::new("taskkill")
+        // the system command is unavailable or rejects the request. The absolute
+        // path keeps a planted taskkill.exe in the install directory out.
+        let status = Command::new(profile::system_tool("taskkill.exe"))
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .creation_flags(profile::CREATE_NO_WINDOW)
             .status();
         if !status.is_ok_and(|status| status.success()) {
             let _ = child.kill();
@@ -544,40 +827,31 @@ fn terminate_child(mut child: Child) {
     }
 }
 
-fn cleanup_profile(profile_dir: &Path) {
-    // Chromium 的辅助进程在主进程退出后可能短暂持有文件。只重试当前
-    // 会话的精确目录，绝不扩大删除范围。
-    for _ in 0..5 {
-        match std::fs::remove_dir_all(profile_dir) {
-            Ok(()) => return,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Err(_) => thread::sleep(Duration::from_millis(100)),
-        }
+/// 建环境目录。Unix 上只给当前用户权限：profile 里是各平台的登录态。
+fn create_private_dir(dir: &Path) -> Result<(), BrowserError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
     }
+    builder
+        .create(dir)
+        .map_err(|error| BrowserError::ProfileDirectory(error.to_string()))
 }
 
-fn create_profile_dir<R: Runtime>(
+/// 这次会用的 Chromium，以及它对应的持久环境根目录。
+fn resolve_executable_and_root<R: Runtime>(
     app: &AppHandle<R>,
-    session_id: u64,
-) -> Result<PathBuf, BrowserError> {
-    let root = app
+) -> Result<(PathBuf, PathBuf), BrowserError> {
+    let (executable, bundled) = resolve_chromium_executable(app)?;
+    let local_data = app
         .path()
-        .app_cache_dir()
-        .map_err(|error| BrowserError::ProfileDirectory(error.to_string()))?
-        .join("browser-sessions");
-    std::fs::create_dir_all(&root)
+        .app_local_data_dir()
         .map_err(|error| BrowserError::ProfileDirectory(error.to_string()))?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let profile_dir = root.join(format!(
-        "session-{}-{timestamp}-{session_id}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&profile_dir)
-        .map_err(|error| BrowserError::ProfileDirectory(error.to_string()))?;
-    Ok(profile_dir)
+    let root = profile::profiles_root(&local_data, &executable, bundled);
+    Ok((executable, root))
 }
 
 /// 该给哪个目录补沙箱权限：随包的那份返回 chromium 目录，其他情况返回 `None`。
@@ -652,7 +926,11 @@ fn ensure_sandbox_access(chromium_dir: &Path) {
 #[cfg(not(target_os = "windows"))]
 fn ensure_sandbox_access(_chromium_dir: &Path) {}
 
-fn resolve_chromium_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, BrowserError> {
+/// 定位这次要启动的 Chromium。第二个返回值表示它是不是随包的那份——持久环境的根目录
+/// 按它分开，见 [`profile::profiles_root`]。
+fn resolve_chromium_executable<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(PathBuf, bool), BrowserError> {
     #[cfg(any(debug_assertions, test))]
     {
         if let Some(raw) = std::env::var_os(CHROMIUM_PATH_ENV) {
@@ -660,7 +938,7 @@ fn resolve_chromium_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf
             if !path.is_absolute() || !path.is_file() {
                 return Err(BrowserError::InvalidOverride);
             }
-            return Ok(path);
+            return Ok((path, false));
         }
     }
 
@@ -700,10 +978,12 @@ fn resolve_chromium_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf
         .ok_or(BrowserError::ChromiumMissing)?;
 
     let bundled_root = resources.join("chromium");
-    if let Some(root) = sandbox_fixup_root(&executable, &bundled_root) {
+    let bundled_fixup = sandbox_fixup_root(&executable, &bundled_root);
+    let bundled = bundled_fixup.is_some();
+    if let Some(root) = bundled_fixup {
         ensure_sandbox_access(root);
     }
-    Ok(executable)
+    Ok((executable, bundled))
 }
 
 /// 随包 macOS 浏览器的候选可执行文件。
@@ -783,10 +1063,8 @@ fn chromium_arguments(
     window: Option<WindowGeometry>,
     disable_sandbox: bool,
 ) -> Vec<OsString> {
-    let mut args = vec![OsString::from(format!(
-        "--user-data-dir={}",
-        profile_dir.display()
-    ))];
+    // 占用检测按这个参数去认进程，所以必须和 profile 模块用同一个函数拼。
+    let mut args = vec![OsString::from(profile::user_data_dir_argument(profile_dir))];
     if let Some(proxy) = local_proxy {
         args.push(OsString::from(format!("--proxy-server={proxy}")));
         args.push(OsString::from("--proxy-bypass-list=<-loopback>"));
@@ -799,8 +1077,8 @@ fn chromium_arguments(
         args.push(OsString::from("--no-sandbox"));
     }
     args.extend(vec![
-        // 端口 0 = 由内核分配。实际端口只写进这个 profile 的
-        // DevToolsActivePort，而 profile 名带纳秒时间戳，外部无法预测。
+        // 端口 0 = 由内核分配，每次启动都换一个，只写进这个 profile 的
+        // DevToolsActivePort。
         // 不传 --remote-debugging-address（默认只绑 127.0.0.1），也不传
         // --remote-allow-origins（于是带 Origin 的网页请求会被 Chromium 拒绝）。
         OsString::from("--remote-debugging-port=0"),
@@ -809,6 +1087,10 @@ fn chromium_arguments(
         OsString::from("--disable-background-mode"),
         OsString::from("--no-first-run"),
         OsString::from("--no-default-browser-check"),
+        // 持久 profile 被强杀过（等不到它正常退出，或客户端自己崩了）之后，下次启动
+        // Chromium 会弹「要恢复页面吗」。起始网址已经由我们给定，这个气泡只会诱人点回
+        // 上一次的标签页。
+        OsString::from("--hide-crash-restore-bubble"),
     ]);
     // 几何总是显式下发。读不到显示器就用兜底值，绝不回退到 --start-maximized：
     // 那次 resize 和渲染器首帧的竞态就是灰屏的来源。
@@ -825,14 +1107,38 @@ fn chromium_arguments(
     args
 }
 
+/// 转交用的那次启动：参数和正式启动完全一样，只在起始网址前多一个 `--new-window`，
+/// 让已在运行的浏览器开一个新窗口，而不是在它当前的窗口里塞一个标签页。
+fn hand_off_arguments(
+    profile_dir: &Path,
+    local_proxy: Option<&str>,
+    target_url: &str,
+    window: Option<WindowGeometry>,
+    disable_sandbox: bool,
+) -> Vec<OsString> {
+    let mut args = chromium_arguments(
+        profile_dir,
+        local_proxy,
+        target_url,
+        window,
+        disable_sandbox,
+    );
+    // 起始网址必须留在最后一个。
+    let url = args.pop();
+    args.push(OsString::from("--new-window"));
+    args.extend(url);
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc;
+    use std::time::UNIX_EPOCH;
 
     #[test]
-    fn chromium_arguments_use_only_loopback_proxy_and_fresh_profile() {
+    fn chromium_arguments_use_only_loopback_proxy_and_the_given_profile() {
         let profile = Path::new("/tmp/vestus-profile-test");
         let arguments = chromium_arguments(
             profile,
@@ -846,14 +1152,12 @@ mod tests {
             .map(|value| value.to_string_lossy().into_owned())
             .collect();
 
-        assert!(rendered
-            .iter()
-            .any(|argument| argument.starts_with("--user-data-dir=")
-                && argument.contains("vestus-profile-test")));
+        // 必须和占用检测认进程用的是同一个字符串，差一个字就认不出自己的环境。
+        assert_eq!(rendered[0], profile::user_data_dir_argument(profile));
         assert!(rendered.contains(&"--proxy-server=http://127.0.0.1:51234".into()));
         assert!(rendered.contains(&"--proxy-bypass-list=<-loopback>".into()));
         // 调试端点必须请内核分配端口：写死端口会让任何本机进程直接猜到控制通道，
-        // 端口 0 则把它藏进带纳秒时间戳的 profile 里。
+        // 端口 0 则每次启动都换一个。
         assert!(rendered.contains(&"--remote-debugging-port=0".into()));
         // 这两个开关会把控制通道分别暴露给外部主机和被打开的网页自身。
         assert!(!rendered
@@ -863,6 +1167,8 @@ mod tests {
             .iter()
             .any(|argument| argument.starts_with("--remote-allow-origins")));
         assert!(rendered.contains(&"--disable-quic".into()));
+        // 被强杀过的持久 profile 不能在下次启动时诱人恢复上一次的标签页。
+        assert!(rendered.contains(&"--hide-crash-restore-bubble".into()));
         assert_eq!(rendered.last().unwrap(), "https://platform.example.test/");
         assert!(!rendered.join(" ").contains("proxy-password"));
         // 默认保留沙箱：不显式关闭时绝不能出现 --no-sandbox。
@@ -914,8 +1220,8 @@ mod tests {
             .any(|arg| arg.starts_with("--proxy-server=")));
     }
 
-    /// 临时环境靠 user-data-dir 加退出清理保证。隐身模式不增加隐私、又会被站点
-    /// 识别，`--new-window` 在独立 profile 上也是多余的，两个都不能再出现。
+    /// 隐身模式和持久环境正好相反，还会被站点识别；`--new-window` 只对转交给已在
+    /// 运行的进程的启动有意义，而我们从不那样启动。两个都不能出现。
     #[test]
     fn chromium_arguments_omit_incognito_and_new_window() {
         let rendered: Vec<String> = chromium_arguments(
@@ -1090,33 +1396,69 @@ mod tests {
     fn empty_manager_closes_nothing() {
         let manager = BrowserSessionManager::default();
         assert_eq!(manager.active_count(), 0);
-        assert_eq!(manager.close_all(), 0);
+        assert_eq!(rt::runtime().block_on(manager.close_all()), 0);
+        assert_eq!(manager.shutdown(), 0);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn manager_tracks_multiple_processes_and_cleans_each_profile() {
-        use std::os::unix::fs::PermissionsExt as _;
-
+    fn scratch_dir(label: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "vestus-browser-manager-test-{}-{unique}",
+            "vestus-browser-{label}-{}-{unique}",
             std::process::id()
         ));
         std::fs::create_dir(&root).unwrap();
+        root
+    }
+
+    /// 在 `root` 下放一个假 Chromium 脚本。
+    #[cfg(unix)]
+    fn fake_chromium(root: &Path, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let executable = root.join("fake-chromium.sh");
-        std::fs::write(&executable, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::write(&executable, script).unwrap();
         let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&executable, permissions).unwrap();
+        executable
+    }
+
+    #[cfg(unix)]
+    fn launch_fake(
+        manager: &BrowserSessionManager,
+        session_id: u64,
+        executable: &Path,
+        profile: &Path,
+    ) -> Result<u64, BrowserError> {
+        manager.launch_process(
+            session_id,
+            executable,
+            profile.to_path_buf(),
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            None,
+            false,
+            |_| {},
+            || {},
+        )
+    }
+
+    /// 关浏览器不等于删环境：进程收走之后 profile 里的数据必须原样留着。
+    #[cfg(unix)]
+    #[test]
+    fn manager_tracks_multiple_processes_and_keeps_each_profile() {
+        let root = scratch_dir("manager");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
 
         let first_profile = root.join("profile-one");
         let second_profile = root.join("profile-two");
-        std::fs::create_dir(&first_profile).unwrap();
-        std::fs::create_dir(&second_profile).unwrap();
+        for profile in [&first_profile, &second_profile] {
+            std::fs::create_dir(profile).unwrap();
+            std::fs::write(profile.join("Cookies"), b"logged-in").unwrap();
+        }
         let callbacks = Arc::new(AtomicUsize::new(0));
         let manager = BrowserSessionManager::default();
 
@@ -1140,7 +1482,7 @@ mod tests {
         }
 
         assert_eq!(manager.active_count(), 2);
-        assert_eq!(manager.close_all(), 2);
+        assert_eq!(rt::runtime().block_on(manager.close_all()), 2);
         assert_eq!(manager.active_count(), 0);
 
         for _ in 0..40 {
@@ -1150,30 +1492,234 @@ mod tests {
             thread::sleep(Duration::from_millis(25));
         }
         assert_eq!(callbacks.load(Ordering::SeqCst), 2);
-        assert!(!first_profile.exists());
-        assert!(!second_profile.exists());
+        for profile in [&first_profile, &second_profile] {
+            assert_eq!(std::fs::read(profile.join("Cookies")).unwrap(), b"logged-in");
+        }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 主动关闭必须先请浏览器自己退出（这样 Cookie 才会落盘），而不是上来就强杀。
+    /// 假浏览器在收到 SIGTERM 时留下记号——强杀是收不到信号的。
+    #[cfg(unix)]
+    #[test]
+    fn closing_asks_the_browser_to_exit_before_killing_it() {
+        let root = scratch_dir("graceful");
+        let marker = root.join("exited-gracefully");
+        let executable = fake_chromium(
+            &root,
+            &format!(
+                "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\nwhile :; do sleep 0.05; done\n",
+                marker.display()
+            ),
+        );
+        let profile = root.join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let manager = BrowserSessionManager::default();
+        launch_fake(&manager, 1, &executable, &profile).unwrap();
+        // 给 sh 一点时间装好 trap。
+        thread::sleep(Duration::from_millis(200));
+
+        let started = std::time::Instant::now();
+        assert_eq!(rt::runtime().block_on(manager.close_all()), 1);
+        assert!(started.elapsed() < GRACEFUL_CLOSE_TIMEOUT);
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().trim(),
+            "graceful"
+        );
+        assert!(profile.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 不肯退出的浏览器到点必须被强杀，关闭流程不能跟着卡住。
+    #[cfg(unix)]
+    #[test]
+    fn a_browser_that_ignores_the_request_is_killed_at_the_deadline() {
+        let root = scratch_dir("stubborn");
+        let executable = fake_chromium(
+            &root,
+            "#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 0.05; done\n",
+        );
+        let profile = root.join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let manager = BrowserSessionManager::default();
+        launch_fake(&manager, 1, &executable, &profile).unwrap();
+        thread::sleep(Duration::from_millis(200));
+
+        let started = std::time::Instant::now();
+        assert_eq!(manager.shutdown(), 1);
+        let elapsed = started.elapsed();
+        assert!(elapsed >= GRACEFUL_CLOSE_TIMEOUT);
+        assert!(elapsed < GRACEFUL_CLOSE_TIMEOUT + Duration::from_secs(3));
+        assert_eq!(manager.active_count(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 同一个环境只能有一个进程：本实例已经开着它时，再启动必须被拒绝（调用方改走
+    /// open_window），而且不能碰那个进程的端口文件。
+    #[cfg(unix)]
+    #[test]
+    fn a_running_environment_is_reused_not_relaunched() {
+        let root = scratch_dir("reuse");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
+        let profile = root.join("profile");
+        let other = root.join("other-profile");
+        std::fs::create_dir(&profile).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let manager = BrowserSessionManager::default();
+
+        launch_fake(&manager, 1, &executable, &profile).unwrap();
+        assert_eq!(manager.running_browser(&profile), Some(1));
+        assert_eq!(manager.running_browser(&other), None);
+
+        // 内容故意不合法：只关心它会不会被删，不想让监视线程真的去连一个端口。
+        std::fs::write(profile.join(DEVTOOLS_PORT_FILE), "not a port file").unwrap();
+        assert!(matches!(
+            launch_fake(&manager, 2, &executable, &profile),
+            Err(BrowserError::AlreadyRunning)
+        ));
+        assert!(profile.join(DEVTOOLS_PORT_FILE).exists());
+        assert_eq!(manager.active_count(), 1);
+
+        // 别的环境不受影响，照样独立启动。
+        launch_fake(&manager, 3, &executable, &other).unwrap();
+        assert_eq!(manager.active_count(), 2);
+
+        assert_eq!(rt::runtime().block_on(manager.close_all()), 2);
+        assert_eq!(manager.running_browser(&profile), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 环境被另一个进程开着（另一个 Vestus 实例、崩溃残留的浏览器）时不能启动：
+    /// Chromium 会把我们的命令行转交给它，窗口开进一个我们既不采集、代理也不归我们
+    /// 管的浏览器里。
+    #[cfg(unix)]
+    #[test]
+    fn launch_refuses_an_environment_held_by_another_process() {
+        let root = scratch_dir("busy");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
+        let profile = root.join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let mut owner = Command::new("/bin/sh")
+            .args(["-c", "sleep 30; :", "vestus-test"])
+            .arg(profile::user_data_dir_argument(&profile))
+            .spawn()
+            .unwrap();
+        std::os::unix::fs::symlink(
+            format!("testhost-{}", owner.id()),
+            profile.join("SingletonLock"),
+        )
+        .unwrap();
+
+        let manager = BrowserSessionManager::default();
+        assert!(matches!(
+            launch_fake(&manager, 1, &executable, &profile),
+            Err(BrowserError::ProfileBusy)
+        ));
+        assert_eq!(manager.active_count(), 0);
+
+        owner.kill().unwrap();
+        owner.wait().unwrap();
+        // 占用者没了，残留的锁不能再挡路。
+        launch_fake(&manager, 2, &executable, &profile).unwrap();
+        assert_eq!(rt::runtime().block_on(manager.close_all()), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 持久 profile 里上一次运行留下的端口文件绝不能被当成这一次的。
+    #[test]
+    fn a_port_file_from_a_previous_run_is_ignored() {
+        let root = scratch_dir("port-file");
+        let port_file = root.join(DEVTOOLS_PORT_FILE);
+        std::fs::write(&port_file, "51234\n/devtools/browser/previous\n").unwrap();
+        let launched_at = SystemTime::now();
+        let hour_ago = launched_at - Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&port_file)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+
+        let not_before = launched_at - DEVTOOLS_PORT_CLOCK_SLACK;
+        assert_eq!(read_fresh_port_file(&port_file, not_before), None);
+
+        std::fs::write(&port_file, "51235\n/devtools/browser/current\n").unwrap();
+        assert_eq!(
+            read_fresh_port_file(&port_file, not_before),
+            Some(DevToolsEndpoint {
+                port: 51235,
+                browser_path: "/devtools/browser/current".to_string(),
+            })
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 转交用的启动必须和正式启动带同一套参数（代理一个字都不能差），只多一个
+    /// `--new-window`，起始网址仍然在最后。
+    #[test]
+    fn hand_off_arguments_are_a_launch_plus_new_window() {
+        let profile = Path::new("/tmp/vestus-profile-test");
+        let launch = chromium_arguments(
+            profile,
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            None,
+            true,
+        );
+        let hand_off = hand_off_arguments(
+            profile,
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            None,
+            true,
+        );
+        assert_eq!(hand_off.len(), launch.len() + 1);
+        assert_eq!(hand_off.last(), launch.last());
+        assert_eq!(hand_off[hand_off.len() - 2], OsString::from("--new-window"));
+        assert_eq!(hand_off[..launch.len() - 1], launch[..launch.len() - 1]);
+    }
+
+    /// A hand-off process that passes its command line on and exits is a success;
+    /// its exit code does not matter.
+    #[cfg(unix)]
+    #[test]
+    fn a_hand_off_that_exits_is_a_success() {
+        let child = Command::new("/bin/sh").args(["-c", "exit 3"]).spawn().unwrap();
+        assert!(rt::runtime()
+            .block_on(wait_for_hand_off_within(child, Duration::from_secs(5)))
+            .is_ok());
+    }
+
+    /// A hand-off process that lingers past the deadline must be reaped: it may
+    /// have become a browser of its own that we neither manage nor observe.
+    #[cfg(unix)]
+    #[test]
+    fn a_hand_off_that_lingers_is_killed() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30; :"])
+            .spawn()
+            .unwrap();
+        let pid = child.id().to_string();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            rt::runtime().block_on(wait_for_hand_off_within(child, Duration::from_millis(300))),
+            Err(BrowserError::OpenWindow(_))
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let still_alive = Command::new("/bin/kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!still_alive);
     }
 
     #[cfg(unix)]
     #[test]
     fn shutdown_cannot_miss_a_launch_holding_the_session_lock() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "vestus-browser-shutdown-test-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        let executable = root.join("fake-chromium.sh");
-        std::fs::write(&executable, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&executable, permissions).unwrap();
+        let root = scratch_dir("shutdown");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
         let profile = root.join("profile");
         std::fs::create_dir(&profile).unwrap();
 
@@ -1218,7 +1764,8 @@ mod tests {
         shutdown.join().unwrap();
 
         assert_eq!(manager.active_count(), 0);
-        assert!(!profile.exists());
+        // 持久环境：进程收走了，环境本身必须留着。
+        assert!(profile.exists());
         let rejected_profile = root.join("rejected-profile");
         std::fs::create_dir(&rejected_profile).unwrap();
         assert!(matches!(
@@ -1235,7 +1782,8 @@ mod tests {
             ),
             Err(BrowserError::ShuttingDown)
         ));
-        assert!(!rejected_profile.exists());
+        // 被拒绝的启动同样不能删别人的环境。
+        assert!(rejected_profile.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

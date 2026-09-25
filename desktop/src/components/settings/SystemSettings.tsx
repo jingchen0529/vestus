@@ -14,6 +14,8 @@ import {
   Layers,
   ShieldCheck,
   ShieldAlert,
+  Fingerprint,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -48,6 +50,8 @@ interface SystemSettingsProps {
   onProxyEnabledChange?: (enabled: boolean) => void;
   sandboxEnabled?: boolean;
   onSandboxEnabledChange?: (enabled: boolean) => void;
+  /** 删掉当前账号在本机的全部浏览器环境。调用方负责提示结果，这里只管按钮状态。 */
+  onResetBrowserProfiles?: () => Promise<void>;
   onSyncConfig: () => void;
 }
 
@@ -62,11 +66,26 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
   onProxyEnabledChange,
   sandboxEnabled = true,
   onSandboxEnabledChange,
+  onResetBrowserProfiles,
   onSyncConfig,
 }) => {
   const { accentColor, setAccentColor } = useTheme();
   const [directIp, setDirectIp] = React.useState<string | null>(null);
   const [directIpLoading, setDirectIpLoading] = React.useState(false);
+  // 重置是删数据的操作：先点一次展开确认，再点确认才真正执行。
+  const [resetConfirming, setResetConfirming] = React.useState(false);
+  const [resetting, setResetting] = React.useState(false);
+
+  const handleConfirmReset = async () => {
+    if (!onResetBrowserProfiles) return;
+    setResetting(true);
+    try {
+      await onResetBrowserProfiles();
+    } finally {
+      setResetting(false);
+      setResetConfirming(false);
+    }
+  };
 
   // Version check state
   const [currentVersion, setCurrentVersion] = React.useState(UNKNOWN_VERSION);
@@ -352,7 +371,72 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
         </CardContent>
       </Card>
 
-      {/* 3. 外观主题设置 */}
+      {/* 3. 浏览器环境（持久保存） */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Fingerprint className="w-4 h-4 text-primary" />
+              <CardTitle className="text-sm">浏览器环境</CardTitle>
+            </div>
+            {!resetConfirming && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1.5 px-2.5"
+                onClick={() => setResetConfirming(true)}
+                disabled={!onResetBrowserProfiles || resetting}
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>重置本机环境</span>
+              </Button>
+            )}
+          </div>
+          <CardDescription className="text-xs">
+            每个平台在这台电脑上都有一套单独保存的浏览器环境，关掉浏览器后登录状态依然保留
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {resetConfirming ? (
+            <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-xs leading-relaxed text-foreground">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-3.5 h-3.5 mt-0.5 text-destructive shrink-0" />
+                <span>
+                  将清除本账号在这台电脑上所有平台的浏览器环境（代理与直连都会清除），已打开的浏览器会先关闭。
+                  清除后各平台需要重新登录，平台也会把这台电脑当成一台新设备。其他账号、其他电脑不受影响。
+                </span>
+              </div>
+              <div className="mt-2.5 flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs px-2.5"
+                  onClick={() => setResetConfirming(false)}
+                  disabled={resetting}
+                >
+                  取消
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-7 text-xs px-2.5"
+                  onClick={handleConfirmReset}
+                  disabled={resetting}
+                >
+                  {resetting ? "正在重置…" : "确认重置"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3 rounded-lg border border-border/60 bg-muted/40 text-xs leading-relaxed text-muted-foreground">
+              环境按账号、平台和网络模式分开保存：不同账号之间互不可见，代理模式与直连模式也是两套环境。
+              同一账号在另一台电脑上登录时，那台电脑有它自己的一套。
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 4. 外观主题设置 */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
@@ -412,7 +496,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
         </CardContent>
       </Card>
 
-      {/* 4. 软件版本与在线更新 */}
+      {/* 5. 软件版本与在线更新 */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">

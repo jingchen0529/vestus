@@ -922,7 +922,7 @@ pub async fn desktop_login<R: Runtime>(
     // An account switch must never leave the previous user's browser active
     // while the new login request is in flight.
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
-    app.state::<BrowserSessionManager>().close_all();
+    app.state::<BrowserSessionManager>().close_all().await;
     proxy_state.teardown();
     state.login(username, password).await
 }
@@ -930,10 +930,10 @@ pub async fn desktop_login<R: Runtime>(
 async fn perform_desktop_restore(
     proxy_state: &AppState,
     state: &DesktopAuthState,
-    close_browser: impl FnOnce(),
+    close_browser: impl std::future::Future<Output = ()>,
 ) -> AuthResult<Option<DesktopUser>> {
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
-    close_browser();
+    close_browser.await;
     proxy_state.teardown();
     state.restore_session().await
 }
@@ -946,8 +946,9 @@ pub async fn desktop_restore_session<R: Runtime>(
 ) -> AuthResult<Option<DesktopUser>> {
     // Restore is a lifecycle transition too: a repeated IPC call must not
     // change auth generation underneath a published adapter or browser.
-    perform_desktop_restore(proxy_state.inner(), state.inner(), || {
-        app.state::<BrowserSessionManager>().close_all();
+    let browsers = app.state::<BrowserSessionManager>().inner().clone();
+    perform_desktop_restore(proxy_state.inner(), state.inner(), async move {
+        browsers.close_all().await;
     })
     .await
 }
@@ -955,10 +956,10 @@ pub async fn desktop_restore_session<R: Runtime>(
 async fn perform_desktop_logout(
     proxy_state: &AppState,
     state: &DesktopAuthState,
-    close_browser: impl FnOnce(),
+    close_browser: impl std::future::Future<Output = ()>,
 ) -> AuthResult<()> {
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
-    close_browser();
+    close_browser.await;
     proxy_state.teardown();
     state.logout().await
 }
@@ -972,8 +973,9 @@ pub async fn desktop_logout<R: Runtime>(
     // Serialize local route revocation with `sync_desktop_config`. Once any
     // in-flight sync finishes, close the browser and adapter before the
     // best-effort server revoke, and prevent a late adapter publication.
-    perform_desktop_logout(proxy_state.inner(), state.inner(), || {
-        app.state::<BrowserSessionManager>().close_all();
+    let browsers = app.state::<BrowserSessionManager>().inner().clone();
+    perform_desktop_logout(proxy_state.inner(), state.inner(), async move {
+        browsers.close_all().await;
     })
     .await
 }
@@ -989,7 +991,7 @@ pub async fn desktop_change_password<R: Runtime>(
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
     let result = state.change_password(current_password, new_password).await;
     if result.is_ok() {
-        app.state::<BrowserSessionManager>().close_all();
+        app.state::<BrowserSessionManager>().close_all().await;
         proxy_state.teardown();
     }
     result
@@ -1320,7 +1322,7 @@ mod tests {
             let auth_state = auth_state.clone();
             let browser_closed = Arc::clone(&browser_closed);
             async move {
-                perform_desktop_logout(&proxy_state, &auth_state, || {
+                perform_desktop_logout(&proxy_state, &auth_state, async {
                     browser_closed.store(true, Ordering::SeqCst);
                 })
                 .await
@@ -1362,7 +1364,7 @@ mod tests {
             let auth_state = auth_state.clone();
             let browser_closed = Arc::clone(&browser_closed);
             async move {
-                perform_desktop_restore(&proxy_state, &auth_state, || {
+                perform_desktop_restore(&proxy_state, &auth_state, async {
                     browser_closed.store(true, Ordering::SeqCst);
                 })
                 .await

@@ -264,14 +264,33 @@ function MainLayout() {
     try {
       const directMode = !proxyEnabled;
       const disableSandbox = !sandboxEnabled;
-      await tauriBridge.openBrowser(platformId, directMode, disableSandbox);
-      if (directMode) {
-        success("直连浏览器已启动", "已在新的临时浏览器环境中直接打开平台（本机直连）");
+      const handle = await tauriBridge.openBrowser(platformId, directMode, disableSandbox);
+      if (handle.reused) {
+        success(
+          "已在打开的浏览器中新建窗口",
+          directMode ? "这个平台的直连浏览器已在运行" : "这个平台的代理浏览器已在运行"
+        );
+      } else if (directMode) {
+        success("直连浏览器已启动", "已在本机的直连浏览器环境中打开平台，登录状态会保留");
       } else {
-        success("代理浏览器已启动", "已在新的临时浏览器环境中打开平台（全局代理）");
+        success("代理浏览器已启动", "已在本机的代理浏览器环境中打开平台，登录状态会保留");
       }
     } catch (err: any) {
       error("打开浏览器失败", err.message || "请稍后重试或联系管理员");
+    }
+  };
+
+  const handleResetBrowserProfiles = async () => {
+    try {
+      const { removed } = await tauriBridge.resetBrowserProfiles();
+      success(
+        "浏览器环境已重置",
+        removed > 0
+          ? `已清除本账号在这台电脑上的 ${removed} 个平台环境，再打开时需要重新登录`
+          : "本账号在这台电脑上还没有保存过浏览器环境"
+      );
+    } catch (err: any) {
+      error("重置浏览器环境失败", err?.message || "请关闭所有浏览器后重试");
     }
   };
 
@@ -346,6 +365,7 @@ function MainLayout() {
             onProxyEnabledChange={handleProxyEnabledChange}
             sandboxEnabled={sandboxEnabled}
             onSandboxEnabledChange={handleSandboxEnabledChange}
+            onResetBrowserProfiles={handleResetBrowserProfiles}
             onSyncConfig={() => syncDesktopConfig(true)}
           />
         )}

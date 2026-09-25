@@ -33,7 +33,7 @@ pub enum Phase {
 impl Phase {
     /// 是否允许打开浏览器。
     pub fn can_open_browser(self) -> bool {
-        // OA 允许在已有窗口运行时继续打开新的独立浏览器。
+        // 浏览器开着时仍可打开别的平台，或在同一平台的浏览器里再开窗口。
         matches!(self, Phase::Ready | Phase::BrowserRunning)
     }
 }
@@ -302,7 +302,9 @@ impl AppState {
     }
 
     /// Reserve one browser slot before spawning Chromium. Multiple slots may
-    /// coexist, including several launches of the same platform.
+    /// coexist, one per running persistent environment; reopening an
+    /// environment that is already running reuses its slot instead (see
+    /// `commands::open_browser`).
     pub fn mark_browser_opened(&self, direct_mode: bool) -> Option<u64> {
         let mut guard = self.inner.lock().expect("状态锁已中毒");
         if guard.shutting_down {

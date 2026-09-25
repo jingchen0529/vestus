@@ -16,10 +16,11 @@ use url::Url;
 
 use crate::activity::{ActivityCollector, SessionKey as ActivitySessionKey};
 use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
-use crate::browser::BrowserSessionManager;
+use crate::browser::{BrowserError, BrowserSessionManager};
 use crate::bypass::DirectHosts;
 use crate::config::{self, DesktopPlatform, ProxyForm, ValidatedConfig};
 use crate::probe;
+use crate::profile::{self, ProfileSpec};
 use crate::rt;
 use crate::state::{AppState, Session, StatusView};
 use crate::{adapter, upstream::UpstreamProxy};
@@ -121,6 +122,15 @@ pub struct DesktopConfigSyncReport {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrowserHandleView {
     pub browser_id: u64,
+    /// 这个平台的浏览器本来就开着，这次只是在里面新开了一个窗口。
+    pub reused: bool,
+}
+
+/// 重置本机浏览器环境的结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BrowserProfileResetView {
+    /// 删掉的平台环境个数（代理与直连分开计）。
+    pub removed: usize,
 }
 
 struct ValidatedDesktopConfig {
@@ -294,7 +304,7 @@ pub async fn sync_desktop_config<R: Runtime>(
 
     // A refresh is fail-closed: no old proxy/browser may keep running if the
     // server rejects this token or the new assignment cannot be validated.
-    browsers.close_all();
+    browsers.close_all().await;
     state.teardown();
 
     let wire = match auth.fetch_desktop_config::<DesktopConfigWire>().await {
@@ -516,7 +526,8 @@ fn spawn_session_watchdog<R: Runtime>(
                         auth_generation,
                         assignment_revision,
                     ) {
-                        app.state::<BrowserSessionManager>().close_all();
+                        let browsers = app.state::<BrowserSessionManager>().inner().clone();
+                        browsers.close_all().await;
                         let _ = app.emit("status-changed", state.snapshot());
                     }
                     break;
@@ -535,7 +546,8 @@ fn spawn_session_watchdog<R: Runtime>(
                         auth_generation,
                         assignment_revision,
                     ) {
-                        app.state::<BrowserSessionManager>().close_all();
+                        let browsers = app.state::<BrowserSessionManager>().inner().clone();
+                        browsers.close_all().await;
                         let _ = app.emit("status-changed", state.snapshot());
                     }
                     break;
@@ -581,9 +593,12 @@ async fn start_adapter(
         .map_err(|e| CommandError::new(format!("本地代理适配器启动失败：{e}"), "adapter_start"))
 }
 
-/// 用管理员启用的全局代理启动一个新的外置 Chromium。
+/// 打开一个平台：它在本机的持久环境没在运行就启动一个 Chromium，已经在运行就让那个
+/// 浏览器新开一个窗口。
 ///
-/// 每次调用都会创建新的临时 profile，同一平台也允许多开。
+/// 同一个环境同时只能有一个 Chromium 进程（见 [`crate::browser`] 模块文档），所以
+/// 「重复打开同一平台」是在同一个浏览器里再开一个窗口；不同平台、同一平台的代理与直连，
+/// 仍然是各自独立的浏览器。
 // Tauri 注入的 State 参数就占了 5 个，再加平台 ID 与两个本机开关（直连、关沙箱）
 // 必然超过 clippy 的 7 个阈值；这是 IPC 命令的固有形态，不是设计问题。
 #[allow(clippy::too_many_arguments)]
@@ -602,7 +617,7 @@ pub async fn open_browser<R: Runtime>(
     // 本机偏好：沙箱拉不起来的机器由用户在「系统配置」里关闭。默认保留沙箱。
     // 只影响 --no-sandbox，与代理链路正交。
     let disable_sandbox = disable_sandbox.unwrap_or(false);
-    let _lifecycle_guard = state.lock_desktop_sync().await;
+    let lifecycle_guard = state.lock_desktop_sync().await;
     require_desktop_auth(&auth)?;
     let (user_id, profile_key, auth_generation) =
         auth.current_identity().map_err(auth_command_error)?;
@@ -620,13 +635,55 @@ pub async fn open_browser<R: Runtime>(
                 "platform_not_allowed",
             )
         })?;
+    // 先解析起始网址：下面分配浏览器槽位之后再失败，那个槽位就回收不了了。
+    let target = Url::parse(&launch.target_url)
+        .map_err(|error| CommandError::new(format!("起始网址无法解析：{error}"), "invalid_form"))?;
+    // resolve_browser_launch 刚确认过它与这次同步下发的一致，走到这里不可能为空。
+    let profile_key = profile_key
+        .ok_or_else(|| CommandError::new("请先同步桌面配置，再打开浏览器", "not_ready"))?;
+    let api_base = auth.api_base_url().map_err(auth_command_error)?.to_string();
+    let profile = browsers
+        .prepare_profile(
+            &app,
+            &ProfileSpec {
+                api_base: &api_base,
+                profile_key: &profile_key,
+                platform_id,
+                direct_mode,
+            },
+        )
+        .map_err(browser_command_error)?;
+
+    let local_proxy = launch.port.map(|p| format!("http://127.0.0.1:{p}"));
+
+    if let Some(browser_id) = browsers.running_browser(profile.dir()) {
+        let hand_off = browsers
+            .hand_off(
+                &app,
+                &profile,
+                local_proxy.as_deref(),
+                target.as_str(),
+                disable_sandbox,
+            )
+            .map_err(browser_command_error)?;
+        // 等转交进程退出最多要几秒，先放开生命周期锁：这段时间里登出或重新同步照常
+        // 进行，最坏不过是新窗口开在一个正被关掉的浏览器里，随它一起关掉。
+        drop(lifecycle_guard);
+        rt::runtime()
+            .spawn(crate::browser::wait_for_hand_off(hand_off))
+            .await
+            .map_err(|error| CommandError::new(format!("内部任务失败：{error}"), "internal"))?
+            .map_err(browser_command_error)?;
+        return Ok(BrowserHandleView {
+            browser_id,
+            reused: true,
+        });
+    }
+
     let browser_id = state.mark_browser_opened(direct_mode).ok_or_else(|| {
         CommandError::new("请先同步并测试代理，通过后才能打开浏览器", "not_ready")
     })?;
 
-    let local_proxy = launch.port.map(|p| format!("http://127.0.0.1:{p}"));
-    let target = Url::parse(&launch.target_url)
-        .map_err(|error| CommandError::new(format!("起始网址无法解析：{error}"), "invalid_form"))?;
     let state_for_exit = state.inner().clone();
     let app_for_exit = app.clone();
     // 采集通道：调试端点可读时才开，开不起来也只是这次会话没有日志。
@@ -640,6 +697,7 @@ pub async fn open_browser<R: Runtime>(
     if let Err(error) = browsers.launch(
         &app,
         browser_id,
+        profile,
         local_proxy.as_deref(),
         target.as_str(),
         disable_sandbox,
@@ -653,11 +711,63 @@ pub async fn open_browser<R: Runtime>(
     ) {
         state.mark_browser_closed_for(browser_id);
         emit_status(&app, &state);
-        return Err(CommandError::new(error.to_string(), "browser_start"));
+        return Err(browser_command_error(error));
     }
 
     emit_status(&app, &state);
-    Ok(BrowserHandleView { browser_id })
+    Ok(BrowserHandleView {
+        browser_id,
+        reused: false,
+    })
+}
+
+/// 浏览器层的错误翻给前端。被别的进程占着单独给一个代码，前端据此提示用户去关那个
+/// 浏览器，而不是让他反复重试。
+fn browser_command_error(error: BrowserError) -> CommandError {
+    let code = match error {
+        BrowserError::ProfileBusy => "profile_busy",
+        _ => "browser_start",
+    };
+    CommandError::new(error.to_string(), code)
+}
+
+/// 删掉当前账号在本机的全部浏览器环境（各平台，代理与直连）。
+///
+/// 用于环境坏了、或者需要让平台把这台电脑当成一台新设备的时候。已打开的浏览器先按
+/// 正常流程关掉：Windows 上删不掉正在用的文件，macOS 上则会把跑着的浏览器弄坏。别的
+/// Vestus 实例还开着其中某个环境时一个都不删。其他账号、其他服务器的环境不受影响。
+#[tauri::command]
+pub async fn reset_browser_profiles<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    auth: tauri::State<'_, DesktopAuthState>,
+    browsers: tauri::State<'_, BrowserSessionManager>,
+) -> CmdResult<BrowserProfileResetView> {
+    let _lifecycle_guard = state.lock_desktop_sync().await;
+    require_desktop_auth(&auth)?;
+    let (_, profile_key, _) = auth.current_identity().map_err(auth_command_error)?;
+    let profile_key = profile_key.ok_or_else(|| {
+        CommandError::new("请先同步桌面配置，再重置浏览器环境", "not_ready")
+    })?;
+    let api_base = auth.api_base_url().map_err(auth_command_error)?.to_string();
+    let account_dir = browsers
+        .account_profiles_dir(&app, &api_base, &profile_key)
+        .map_err(browser_command_error)?;
+
+    // 本实例里开着的浏览器都属于当前账号：换账号必先关掉全部浏览器。
+    browsers.close_all().await;
+    let removed = rt::runtime()
+        .spawn_blocking(move || profile::remove_account(&account_dir))
+        .await
+        .map_err(|error| CommandError::new(format!("内部任务失败：{error}"), "internal"))?
+        .map_err(|error| match error {
+            profile::ResetError::Busy => browser_command_error(BrowserError::ProfileBusy),
+            profile::ResetError::Io(detail) => CommandError::new(
+                format!("浏览器环境没能全部删除：{detail}"),
+                "reset_failed",
+            ),
+        })?;
+    Ok(BrowserProfileResetView { removed })
 }
 
 /// 获取用户当前本机的公网出口 IP（直连模式下展示）。

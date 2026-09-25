@@ -26,6 +26,13 @@
 //!
 //! 注入脚本在文档最前面运行，拿到 binding 的函数引用后立刻 `delete` 掉那个全局
 //! 属性。于是页面自己的脚本既看不见这个通道，也没法伪造上报。
+//!
+//! # 唯一的控制命令
+//!
+//! 采集通道只读（边界见 `desktop/scripts/check-surface-boundaries.mjs`）。唯一的例外
+//! 是 [`request_exit`]：持久 profile 必须让浏览器按正常流程退出才能把 Cookie 落盘，
+//! 而 `Browser.close` 做的正是这件事——它的能力比我们本来就在用的强杀进程还小，
+//! 也碰不到任何页面。它走一条用完就断的短连接，不碰采集那一条。
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
@@ -38,6 +45,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::client_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 use url::Url;
 
 use crate::browser::DevToolsEndpoint;
@@ -51,6 +59,13 @@ const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// 连接 DevTools 端点的超时。端口是从 `DevToolsActivePort` 读出来的，连不上说明
 /// 浏览器已经不在了，等下去没有意义。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 一次性控制命令从连接到收到回执的总上限。都在本机回环上，正常几毫秒就完；
+/// 调用方（关浏览器、开窗口）还在后面等着，不能被一个卡住的端点拖太久。
+const CONTROL_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// 控制连接上唯一一条命令的 id。连接只发这一条，用完即断。
+const CONTROL_COMMAND_ID: i64 = 1;
 
 /// 剥掉 query 之后仍然超长的 URL 直接不记：截断会产出一个并不存在的地址，
 /// 而完整保留会让内存和数据库列被一条病态路径占住。
@@ -247,16 +262,14 @@ pub enum CdpError {
     Handshake(String),
     #[error("调试通道中断：{0}")]
     Transport(String),
+    #[error("浏览器拒绝了调试命令：{0}")]
+    Command(String),
+    #[error("等待浏览器回执超时")]
+    Timeout,
 }
 
-/// 把一个 Chromium 进程的活动采集到 `sink`，直到调试通道关闭（通常就是浏览器退出）。
-///
-/// 返回 `Ok(())` 表示通道正常结束。任何错误都不该冒到用户面前：浏览器本身不依赖
-/// 这条通道，采集失败只意味着这次会话没有日志。
-pub async fn collect(
-    endpoint: DevToolsEndpoint,
-    sink: UnboundedSender<PageReport>,
-) -> Result<(), CdpError> {
+/// 连上一个 browser 级端点。
+async fn connect(endpoint: &DevToolsEndpoint) -> Result<WebSocketStream<TcpStream>, CdpError> {
     let stream = timeout(
         CONNECT_TIMEOUT,
         TcpStream::connect(("127.0.0.1", endpoint.port)),
@@ -272,6 +285,18 @@ pub async fn collect(
     let (socket, _) = client_async_with_config(endpoint.websocket_url(), stream, Some(config))
         .await
         .map_err(|error| CdpError::Handshake(error.to_string()))?;
+    Ok(socket)
+}
+
+/// 把一个 Chromium 进程的活动采集到 `sink`，直到调试通道关闭（通常就是浏览器退出）。
+///
+/// 返回 `Ok(())` 表示通道正常结束。任何错误都不该冒到用户面前：浏览器本身不依赖
+/// 这条通道，采集失败只意味着这次会话没有日志。
+pub async fn collect(
+    endpoint: DevToolsEndpoint,
+    sink: UnboundedSender<PageReport>,
+) -> Result<(), CdpError> {
+    let socket = connect(&endpoint).await?;
 
     let (mut writer, mut reader) = socket.split();
     let mut collector = Collector::default();
@@ -305,6 +330,76 @@ pub async fn collect(
         }
     }
     Ok(())
+}
+
+/// 请浏览器正常退出。
+///
+/// Chromium 对 `Browser.close` 的实现是忽略 beforeunload 的正常退出：页面的「确定要
+/// 离开吗」拦不住它，走的是和用户退出一样的完整流程，Cookie 与站点存储都会落盘。
+/// 它可能来不及回执就断开连接，那本身就说明它已经在退出了。
+pub async fn request_exit(endpoint: &DevToolsEndpoint) -> Result<(), CdpError> {
+    match control_command(endpoint, "Browser.close", json!({})).await {
+        Ok(_) | Err(CdpError::Transport(_)) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// 在一条独立的短连接上发一条 browser 级命令，等到它的回执为止。
+///
+/// 不借用采集连接：那条连接跑在活动上报的后台任务里，没有往里递命令的通道，命令 id
+/// 也归 [`Collector`] 管。Chromium 允许同时挂多条 DevTools 连接，另起一条最简单，
+/// 采集那边完全不受影响。
+async fn control_command(
+    endpoint: &DevToolsEndpoint,
+    method: &str,
+    params: Value,
+) -> Result<Value, CdpError> {
+    let exchange = async {
+        let socket = connect(endpoint).await?;
+        let (mut writer, mut reader) = socket.split();
+        writer
+            .send(Message::Text(
+                control_command_message(method, params).into(),
+            ))
+            .await
+            .map_err(|error| CdpError::Transport(error.to_string()))?;
+        while let Some(frame) = reader.next().await {
+            let text = match frame.map_err(|error| CdpError::Transport(error.to_string()))? {
+                Message::Text(text) => text,
+                Message::Close(_) => break,
+                _ => continue,
+            };
+            // 回执之前可能先到几条事件，跳过就是。
+            if let Some(outcome) = control_command_outcome(&text) {
+                return outcome;
+            }
+        }
+        Err(CdpError::Transport("调试通道在回执之前关闭".to_string()))
+    };
+    match timeout(CONTROL_COMMAND_TIMEOUT, exchange).await {
+        Ok(outcome) => outcome,
+        Err(_) => Err(CdpError::Timeout),
+    }
+}
+
+fn control_command_message(method: &str, params: Value) -> String {
+    json!({ "id": CONTROL_COMMAND_ID, "method": method, "params": params }).to_string()
+}
+
+/// 认出控制命令的回执：成功给 `result`，协议错误给错误信息，别的消息一律 `None`。
+fn control_command_outcome(text: &str) -> Option<Result<Value, CdpError>> {
+    let message: Value = serde_json::from_str(text).ok()?;
+    if message.get("id").and_then(Value::as_i64) != Some(CONTROL_COMMAND_ID) {
+        return None;
+    }
+    if let Some(error) = message.get("error") {
+        let detail = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("未知错误");
+        return Some(Err(CdpError::Command(detail.to_string())));
+    }
+    Some(Ok(message.get("result").cloned().unwrap_or(Value::Null)))
 }
 
 /// 注入脚本一次批量上报能有的最大计数。脚本按 1 秒批量，真人操作差着几个数量级；
@@ -1414,5 +1509,64 @@ mod tests {
         assert!(COLLECTOR_SCRIPT.contains("else dwellBase = performance.now();"));
         // 心跳兜住「开着不动」的页面：浏览器被强杀时 pagehide 不一定跑得到
         assert!(COLLECTOR_SCRIPT.contains("setInterval"));
+    }
+
+    /// 控制命令是 browser 级的：带固定 id、不带 sessionId。
+    #[test]
+    fn control_commands_are_browser_level_requests() {
+        let message: Value =
+            serde_json::from_str(&control_command_message("Browser.close", json!({}))).unwrap();
+        assert_eq!(message["id"], CONTROL_COMMAND_ID);
+        assert_eq!(message["method"], "Browser.close");
+        assert!(message.get("sessionId").is_none());
+    }
+
+    /// 回执之前到的事件、别的 id 的回执都不是它；协议错误要原样带出来。
+    #[test]
+    fn control_command_outcome_matches_only_its_own_reply() {
+        assert!(control_command_outcome(
+            &json!({ "method": "Target.targetDestroyed", "params": {} }).to_string()
+        )
+        .is_none());
+        assert!(control_command_outcome(
+            &json!({ "id": CONTROL_COMMAND_ID + 1, "result": {} }).to_string()
+        )
+        .is_none());
+        assert!(control_command_outcome("not json").is_none());
+
+        let closed = control_command_outcome(
+            &json!({ "id": CONTROL_COMMAND_ID, "result": {} }).to_string(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(closed.as_object().unwrap().is_empty());
+
+        let refused = control_command_outcome(
+            &json!({ "id": CONTROL_COMMAND_ID, "error": { "code": -32000, "message": "Browser is closing" } })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(refused, Err(CdpError::Command(detail)) if detail == "Browser is closing"));
+    }
+
+    /// 端点已经没了（浏览器不在了）时，控制命令必须很快失败，调用方才能马上改发信号，
+    /// 而不是卡在这里。
+    #[tokio::test]
+    async fn control_commands_fail_fast_when_nobody_listens() {
+        // 先占一个端口再放掉：短时间内这个端口上没有监听者。
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let endpoint = DevToolsEndpoint {
+            port,
+            browser_path: "/devtools/browser/gone".to_string(),
+        };
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            request_exit(&endpoint).await,
+            Err(CdpError::Connect(_))
+        ));
+        assert!(started.elapsed() < CONTROL_COMMAND_TIMEOUT);
     }
 }
