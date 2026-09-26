@@ -273,6 +273,15 @@ impl BrowserSessionManager {
         live_session_on(&sessions, profile_dir)
     }
 
+    /// 一个运行中会话的调试端点。端点还没读到（进程刚起，或端口一直没等到）时是
+    /// `None`，调用方退回命令行转交。
+    pub fn session_endpoint(&self, session_id: u64) -> Option<DevToolsEndpoint> {
+        let sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+        sessions
+            .get(&session_id)
+            .and_then(|session| session.endpoint.lock().expect("调试端点锁已中毒").clone())
+    }
+
     /// 让这个环境里已在运行的浏览器新开一个窗口打开 `target_url`。
     ///
     /// 做法是带上 `--new-window` 在同一个 user-data-dir 上再起一次 Chromium：它发现目录
@@ -737,7 +746,7 @@ fn process_has_exited(process: &ProcessSlot) -> bool {
 /// Chromium creates the file before finishing the write, so a torn read is
 /// normal rather than exceptional -- every field is validated and a partial file
 /// simply yields `None` so the caller polls again.
-fn parse_devtools_active_port(contents: &str) -> Option<DevToolsEndpoint> {
+pub(crate) fn parse_devtools_active_port(contents: &str) -> Option<DevToolsEndpoint> {
     let mut lines = contents.lines();
     let port: u16 = lines.next()?.trim().parse().ok()?;
     if port == 0 {

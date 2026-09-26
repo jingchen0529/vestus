@@ -254,7 +254,7 @@ impl PageReport {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum CdpError {
     #[error("连接调试端点失败：{0}")]
     Connect(String),
@@ -400,6 +400,82 @@ fn control_command_outcome(text: &str) -> Option<Result<Value, CdpError>> {
         return Some(Err(CdpError::Command(detail.to_string())));
     }
     Some(Ok(message.get("result").cloned().unwrap_or(Value::Null)))
+}
+
+/// 在已运行的浏览器里打开一个平台地址的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageOutcome {
+    /// 已有该平台的标签页，把它切到了最前（页面内容原样保留）。
+    Activated,
+    /// 没有找到该平台的标签页，在现有浏览器里新开了一个。
+    Created,
+}
+
+/// 在已运行的浏览器里打开 `platform_url`：有同域名的标签页就切回，没有就新开。
+///
+/// 「同域名」看的是 host 相等——平台入口页和它域名下的业务页都算同一平台的标签；
+/// `chrome://`、`about:blank` 这类没有 host 的页面永远不匹配。切回用的是
+/// `Target.activateTarget`，与用户手动点那个标签等效，不读也不改页面内容。
+pub async fn open_or_activate_page(
+    endpoint: &DevToolsEndpoint,
+    platform_url: &str,
+) -> Result<PageOutcome, CdpError> {
+    let platform = url::Url::parse(platform_url)
+        .map_err(|error| CdpError::Command(format!("平台地址无法解析：{error}")))?;
+    let targets = page_targets(endpoint).await?;
+    let matched = targets
+        .iter()
+        .find(|(_, page_url)| page_url_matches(page_url, &platform));
+    if let Some((target_id, _)) = matched {
+        let activate = control_command(
+            endpoint,
+            "Target.activateTarget",
+            json!({ "targetId": target_id }),
+        )
+        .await;
+        if activate.is_ok() {
+            return Ok(PageOutcome::Activated);
+        }
+        // 标签在列举和切换之间被用户关掉了：当作没有，走新开。
+    }
+    control_command(endpoint, "Target.createTarget", json!({ "url": platform_url }))
+        .await
+        .map(|_| PageOutcome::Created)
+}
+
+/// 当前浏览器里全部页面级标签页的 `(targetId, url)`。
+async fn page_targets(endpoint: &DevToolsEndpoint) -> Result<Vec<(String, String)>, CdpError> {
+    let result = control_command(endpoint, "Target.getTargets", json!({})).await?;
+    Ok(page_targets_from_result(&result))
+}
+
+/// 从 `Target.getTargets` 的回执里挑出页面级标签。独立成纯函数便于测试。
+fn page_targets_from_result(result: &Value) -> Vec<(String, String)> {
+    result
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .map(|infos| {
+            infos
+                .iter()
+                .filter_map(|info| {
+                    if info.get("type").and_then(Value::as_str) != Some("page") {
+                        return None;
+                    }
+                    let id = info.get("targetId").and_then(Value::as_str)?.to_string();
+                    let url = info.get("url").and_then(Value::as_str)?.to_string();
+                    Some((id, url))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 标签页地址与平台入口是否属于同一个站点：host 相等即算，query 无关。
+fn page_url_matches(page_url: &str, platform: &url::Url) -> bool {
+    url::Url::parse(page_url)
+        .ok()
+        .zip(platform.host_str())
+        .is_some_and(|(page, platform_host)| page.host_str() == Some(platform_host))
 }
 
 /// 注入脚本一次批量上报能有的最大计数。脚本按 1 秒批量，真人操作差着几个数量级；
@@ -844,6 +920,42 @@ impl Collector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_target_parsing_keeps_only_page_entries() {
+        let result = json!({
+            "targetInfos": [
+                {"targetId": "T1", "type": "page", "url": "https://shop.example.test/a"},
+                {"targetId": "T2", "type": "iframe", "url": "https://shop.example.test/frame"},
+                {"targetId": "T3", "type": "page", "url": "chrome://newtab/"},
+                {"targetId": "T4", "type": "service_worker", "url": "https://shop.example.test/sw.js"}
+            ]
+        });
+        let targets = page_targets_from_result(&result);
+        assert_eq!(
+            targets,
+            vec![
+                ("T1".to_string(), "https://shop.example.test/a".to_string()),
+                ("T3".to_string(), "chrome://newtab/".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn page_urls_match_by_host_regardless_of_query() {
+        let platform = url::Url::parse("https://localads.example.cn/lamp/pc/home").unwrap();
+        assert!(page_url_matches(
+            "https://localads.example.cn/lamp/pc/cdp/promote?advid=1",
+            &platform
+        ));
+        // 同一平台导航后的任何路径都算
+        assert!(page_url_matches("https://localads.example.cn/", &platform));
+        // 别的域名、chrome 内部页、无效地址都不算
+        assert!(!page_url_matches("https://other.example.cn/", &platform));
+        assert!(!page_url_matches("chrome://newtab/", &platform));
+        assert!(!page_url_matches("not a url", &platform));
+    }
+
 
     fn method_of(command: &str) -> String {
         serde_json::from_str::<Value>(command).unwrap()["method"]
@@ -1568,5 +1680,64 @@ mod tests {
             Err(CdpError::Connect(_))
         ));
         assert!(started.elapsed() < CONTROL_COMMAND_TIMEOUT);
+    }
+
+    /// 用本机真浏览器把 Target 命令整条链路过一遍：新开标签 → 再来一次必须切回。
+    /// 没装 Chrome 的环境（CI、Linux）直接通过，不阻塞其他测试。
+    #[test]
+    fn target_commands_work_against_a_real_browser() {
+        use std::process::{Command, Stdio};
+        use std::time::Duration;
+
+        let chrome = std::path::Path::new(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        );
+        if !chrome.is_file() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "vestus-cdp-smoke-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut child = Command::new(chrome)
+            .arg(format!("--user-data-dir={}", dir.display()))
+            .args(["--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
+            .arg("about:blank")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let port_file = dir.join("DevToolsActivePort");
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let endpoint = loop {
+            if let Ok(text) = std::fs::read_to_string(&port_file) {
+                if let Some(endpoint) = crate::browser::parse_devtools_active_port(&text) {
+                    break endpoint;
+                }
+            }
+            if matches!(child.try_wait(), Ok(Some(_))) && !port_file.exists() {
+                panic!("浏览器提前退出");
+            }
+            assert!(std::time::Instant::now() < deadline, "等待调试端点超时");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+
+        let outcome = crate::rt::runtime().block_on(async {
+            let first = open_or_activate_page(&endpoint, "https://example.org/").await;
+            let second = open_or_activate_page(&endpoint, "https://example.org/other/path").await;
+            (first, second)
+        });
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (first, second) = outcome;
+        assert_eq!(first, Ok(PageOutcome::Created), "首次打开应新开标签");
+        assert_eq!(second, Ok(PageOutcome::Activated), "同域再次打开应切回已有标签");
     }
 }

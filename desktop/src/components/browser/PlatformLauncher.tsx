@@ -184,7 +184,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
 
       {status.browser_open && (
         <p className="mt-4 text-center text-xs text-muted-foreground">
-          浏览器已在运行；再次点击同一平台会在它里面新开一个窗口，别的平台照常独立打开。
+          浏览器已在运行；再次点击同一平台会切回它的标签页（页面原样保留），别的平台照常独立打开。
         </p>
       )}
     </section>

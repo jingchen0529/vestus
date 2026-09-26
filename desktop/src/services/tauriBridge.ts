@@ -33,8 +33,10 @@ export interface StatusView {
 export interface BrowserHandleView {
   /** 仅用于把状态机里的会话和 Chromium 进程对上，前端不需要它做别的事。 */
   browser_id: number;
-  /** 这个平台的浏览器本来就开着，这次是在它里面新开了一个窗口。 */
+  /** 这个平台的浏览器本来就开着，这次没有启动新的浏览器进程。 */
   reused: boolean;
+  /** reused 时的进入方式：切回已有标签 / 在已开的浏览器里新开标签 / 命令行转交新窗口。 */
+  tab_action?: "activated" | "created" | null;
 }
 
 export interface BrowserProfileResetView {

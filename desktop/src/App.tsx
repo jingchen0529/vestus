@@ -266,10 +266,13 @@ function MainLayout() {
       const disableSandbox = !sandboxEnabled;
       const handle = await tauriBridge.openBrowser(platformId, directMode, disableSandbox);
       if (handle.reused) {
-        success(
-          "已在打开的浏览器中新建窗口",
-          directMode ? "这个平台的直连浏览器已在运行" : "这个平台的代理浏览器已在运行"
-        );
+        const messages = {
+          activated: ["已切回该平台的标签页", "浏览器里已有的页面原样保留，不会重复开新标签"],
+          created: ["已在打开的浏览器中打开平台", "这个平台的浏览器已在运行，开了一个新的标签页"],
+          window: ["已在打开的浏览器中新建窗口", "这个平台的浏览器已在运行"],
+        } as const;
+        const [title, detail] = messages[handle.tab_action ?? "window"];
+        success(title, detail);
       } else if (directMode) {
         success("直连浏览器已启动", "已在本机的直连浏览器环境中打开平台，登录状态会保留");
       } else {

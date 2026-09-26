@@ -18,6 +18,7 @@ use crate::activity::{ActivityCollector, SessionKey as ActivitySessionKey};
 use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
 use crate::browser::{BrowserError, BrowserSessionManager};
 use crate::bypass::DirectHosts;
+use crate::cdp;
 use crate::config::{self, DesktopPlatform, ProxyForm, ValidatedConfig};
 use crate::probe;
 use crate::profile::{self, ProfileSpec};
@@ -122,8 +123,12 @@ pub struct DesktopConfigSyncReport {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrowserHandleView {
     pub browser_id: u64,
-    /// 这个平台的浏览器本来就开着，这次只是在里面新开了一个窗口。
+    /// 这个平台的浏览器本来就开着，这次没有启动新的浏览器进程。
     pub reused: bool,
+    /// `reused` 为真时说明这次是怎么进入平台的：`activated` 是把已有的同域标签
+    /// 切到了最前（页面原样保留），`created` 是在已开的浏览器里新开一个标签，
+    /// 为空表示走的是命令行转交（新开了一个窗口）——调试端点不可用时的兜底。
+    pub tab_action: Option<String>,
 }
 
 /// 重置本机浏览器环境的结果。
@@ -657,6 +662,25 @@ pub async fn open_browser<R: Runtime>(
     let local_proxy = launch.port.map(|p| format!("http://127.0.0.1:{p}"));
 
     if let Some(browser_id) = browsers.running_browser(profile.dir()) {
+        // 调试端点可用时优先在已有浏览器里解决：有同域名的标签就切到最前（用户离开
+        // 时的页面原样保留），一个都没有才开新标签——不再每次点击都 --new-window
+        // 堆一层重复的起始页。端点还没读到或命令失败时，退回命令行转交（行为与
+        // 旧版一致）。
+        let tab_action = match browsers.session_endpoint(browser_id) {
+            Some(endpoint) => match cdp::open_or_activate_page(&endpoint, target.as_str()).await {
+                Ok(cdp::PageOutcome::Activated) => Some("activated"),
+                Ok(cdp::PageOutcome::Created) => Some("created"),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        if let Some(action) = tab_action {
+            return Ok(BrowserHandleView {
+                browser_id,
+                reused: true,
+                tab_action: Some(action.to_string()),
+            });
+        }
         let hand_off = browsers
             .hand_off(
                 &app,
@@ -677,6 +701,7 @@ pub async fn open_browser<R: Runtime>(
         return Ok(BrowserHandleView {
             browser_id,
             reused: true,
+            tab_action: None,
         });
     }
 
@@ -718,6 +743,7 @@ pub async fn open_browser<R: Runtime>(
     Ok(BrowserHandleView {
         browser_id,
         reused: false,
+        tab_action: None,
     })
 }
 
