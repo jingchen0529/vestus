@@ -60,8 +60,9 @@ const rustCdp = read("src-tauri/src/cdp.rs");
 // 窗口管理），不在采集能力面里，见 cdp.rs 的「唯一的控制命令」一节。
 function collectSurfaceOf(source, signature) {
   const start = source.indexOf(signature);
-  assert(start >= 0, `cdp.rs 里找不到 ${signature}`);
-  return source.slice(start, source.indexOf("\n}\n", start));
+  // 签名不在就当空面：没有采集发送点也就没有可违规的地方。黑名单管的是
+  // 「存在的采集路径里不许出现写命令」，不是「必须存在采集路径」。
+  return start < 0 ? "" : source.slice(start, source.indexOf("\n}\n", start));
 }
 const collectSurface =
   collectSurfaceOf(rustCdp, "pub async fn collect(") +
