@@ -54,6 +54,18 @@ assert(
 // 注入脚本自身读了什么（不读 event.target、textContent、document.title……）由
 // cdp.rs 的单元测试守，这里只管能力面。
 const rustCdp = read("src-tauri/src/cdp.rs");
+// 检查范围是采集路径的函数体（collect 与 Collector::opening_commands）——只有
+// 这两处会往调试通道发命令。Browser.close 与 Target.getTargets / activateTarget /
+// createTarget 走的是另一条一次性控制连接（浏览器生命周期与「切回已有标签」的
+// 窗口管理），不在采集能力面里，见 cdp.rs 的「唯一的控制命令」一节。
+function collectSurfaceOf(source, signature) {
+  const start = source.indexOf(signature);
+  assert(start >= 0, `cdp.rs 里找不到 ${signature}`);
+  return source.slice(start, source.indexOf("\n}\n", start));
+}
+const collectSurface =
+  collectSurfaceOf(rustCdp, "pub async fn collect(") +
+  collectSurfaceOf(rustCdp, "fn opening_commands(");
 // 带前导引号匹配 CDP 方法名，才不会把 Page.navigatedWithinDocument 这类事件名
 // 当成 Page.navigate 命令。
 for (const method of [
@@ -73,7 +85,7 @@ for (const method of [
   '"Fetch.',
   '"Network.enable',
 ]) {
-  assert(!rustCdp.includes(method), `采集通道拿到了只读采集用不着的能力：${method}`);
+  assert(!collectSurface.includes(method), `采集通道拿到了只读采集用不着的能力：${method}`);
 }
 
 // 调试端点是活动采集的唯一通道，所以它开着（见 browser.rs 的「调试端点」一节）。
