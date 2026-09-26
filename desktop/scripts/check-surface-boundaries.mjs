@@ -53,7 +53,7 @@ assert(
 // 计数脚本，不可以发驱动页面的命令——多出来的能力迟早会被当成现成的工具用。
 // 注入脚本自身读了什么（不读 event.target、textContent、document.title……）由
 // cdp.rs 的单元测试守，这里只管能力面。
-const rustCdp = read("src-tauri/src/cdp.rs");
+const rustCdp = read("src-tauri/src/cdp.rs").replace(/\r\n?/g, "\n");
 // 检查范围是采集路径的函数体（collect 与 Collector::opening_commands）——只有
 // 这两处会往调试通道发命令。Browser.close 与 Target.getTargets / activateTarget /
 // createTarget 走的是另一条一次性控制连接（浏览器生命周期与「切回已有标签」的
@@ -62,7 +62,9 @@ function collectSurfaceOf(source, signature) {
   const start = source.indexOf(signature);
   // 签名不在就当空面：没有采集发送点也就没有可违规的地方。黑名单管的是
   // 「存在的采集路径里不许出现写命令」，不是「必须存在采集路径」。
-  return start < 0 ? "" : source.slice(start, source.indexOf("\n}\n", start));
+  if (start < 0) return "";
+  const end = source.indexOf("\n}\n", start);
+  return end < 0 ? source.slice(start) : source.slice(start, end);
 }
 const collectSurface =
   collectSurfaceOf(rustCdp, "pub async fn collect(") +
