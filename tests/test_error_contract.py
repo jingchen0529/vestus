@@ -11,7 +11,10 @@ envelope was found leaking a different shape, kept as regressions:
 * the unhandled 500, which must carry a correlation id in both the envelope and
   the header without saying anything about the cause;
 * ``/healthz``, which is contractually *outside* the envelope and has to stay
-  bare even when the database handle blows up.
+  bare even when the database handle blows up;
+* the same probe's trailing-slash form, which has to answer directly instead of
+  307-ing back to ``/healthz``: the reverse proxy normalizes the other way
+  round, so the pair redirected into each other until the probe gave up.
 """
 
 from __future__ import annotations
@@ -175,3 +178,28 @@ def test_healthz_stays_bare_when_the_database_handle_raises(
     body = response.json()
     assert response.status_code == 503
     assert body == {"status": "degraded", "database": "unavailable"}
+
+
+def test_healthz_answers_the_trailing_slash_form_directly(
+    api: Tuple[TestClient, Any],
+) -> None:
+    """``/healthz/`` must be served, not redirected back to ``/healthz``.
+
+    nginx normalizes the bare path into the trailing-slash one, and Starlette's
+    default answers that with a 307 to the bare path -- two redirects pointing at
+    each other, which is what an external probe hitting the domain saw instead of
+    the probe body.
+    """
+
+    client, _ = api
+    app = served_app(client)
+
+    slashless = client.get("/healthz", follow_redirects=False)
+    slash = client.get("/healthz/", follow_redirects=False)
+
+    assert slashless.status_code == 200
+    assert slash.status_code == 200
+    assert slash.json() == slashless.json()
+    # 两种写法是同一条路由：OpenAPI 里只多不得，仍然只有不带斜杠的那条。
+    assert "/healthz" in app.openapi()["paths"]
+    assert "/healthz/" not in app.openapi()["paths"]

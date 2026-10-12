@@ -27,6 +27,10 @@ router = APIRouter(route_class=EnvelopeRoute)
 #: proxy, the container probe and external monitoring -- none of which know about
 #: the envelope, and all of which would have to be reconfigured to read
 #: ``data.status`` instead of ``status``.
+#:
+#: 两个写法都要直接命中，见 [`healthz`]：线上 nginx 会把 ``/healthz`` 规范化成带尾
+#: 斜杠的 ``/healthz/``，而 Starlette 默认把 ``/healthz/`` 307 跳回不带斜杠的那条，
+#: 两者一来一回成了死循环（外部探针跟满跳转后放弃）。
 probe_router = APIRouter()
 
 
@@ -52,7 +56,13 @@ async def network_ip(request: Request, response: Response) -> Dict[str, str]:
 
 
 @probe_router.get("/healthz", tags=["system"])
+@probe_router.get("/healthz/", include_in_schema=False)
 def healthz(response: Response, db: Database = Depends(get_db)) -> Dict[str, Any]:
+    # 两个路径都挂在同一个函数上：``/healthz/`` 只是同一条路由的另一种写法，形状、
+    # 状态码完全一致（``include_in_schema`` 关掉，OpenAPI 里仍然只有 ``/healthz``）。
+    # 少了后面这一条，Starlette 会把 ``/healthz/`` 307 跳回 ``/healthz``，和 nginx
+    # 加尾斜杠的 301 互指，外部探针只能跟到放弃。
+    #
     # 反向代理会把这个端点暴露在公网且不带鉴权，所以只回存活状态。
     # 数据库地址、库名一律不外泄；本机排障请看 journalctl。
     #
