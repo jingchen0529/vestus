@@ -133,7 +133,7 @@ class UploadBodyLimitMiddleware:
             request_limit = upload_max_bytes() + UPLOAD_MULTIPART_OVERHEAD_BYTES
             too_large_message = "上传请求体超过大小限制"
             too_large_error = UploadRequestTooLarge
-        elif route_path == ACTIVITY_ROUTE_PATH:
+        elif route_path in {ACTIVITY_ROUTE_PATH, ACTIVITY_ROUTE_PATH + "/v2"}:
             request_limit = ACTIVITY_BODY_MAX_BYTES
             too_large_message = "浏览器活动请求体超过大小限制"
             too_large_error = ActivityRequestTooLarge

@@ -17,6 +17,8 @@ The recording side has three jobs beyond the obvious write:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -29,9 +31,9 @@ from app.db.session import Database
 from app.repositories import browser_activity as activity_repo
 from app.repositories import platforms as platforms_repo
 from app.repositories import users as users_repo
-from app.schemas.browser_activity import BrowserActivityReport, BrowserPageReport
+from app.schemas.browser_activity import BrowserActivityReport, BrowserActivityReportV2, BrowserPageReport
 from app.schemas.serializers import browser_page_visit_dict, browser_session_dict
-from app.services.errors import NotFoundError
+from app.services.errors import ConflictError, ForbiddenFieldError, NotFoundError
 
 MISSING_SESSION_DETAIL = "浏览器会话记录不存在"
 
@@ -145,8 +147,28 @@ def record_activity(
 ) -> Dict[str, Any]:
     """Merge one batch of deltas into its session.  Returns what was accepted."""
 
+    if isinstance(report, BrowserActivityReportV2) and report.owner_user_id != user_id:
+        raise ForbiddenFieldError("浏览器活动所属账号与当前登录账号不一致")
+    digest = ""
+    if isinstance(report, BrowserActivityReportV2):
+        canonical_payload = json.dumps(
+            report.model_dump(mode="json", by_alias=True),
+            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        )
+        digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
     now = utc_now()
     with database.session() as session:
+        activity_repo.lock_reporting_user(session, user_id)
+        if isinstance(report, BrowserActivityReportV2):
+            receipt = activity_repo.get_receipt(session, user_id, report.batch_id)
+            if receipt is not None:
+                if receipt.payload_hash != digest:
+                    raise ConflictError("该浏览器活动批次标识已用于不同内容")
+                return {
+                    "sessionId": receipt.session_id, "acceptedPages": len(report.pages),
+                    "newPages": 0, "batchId": report.batch_id,
+                    "protocolVersion": 2, "acknowledged": True,
+                }
         item = _session_for_report(
             session, report, user_id=user_id, username=username, ip=ip, now=now
         )
@@ -189,7 +211,15 @@ def record_activity(
             ip=ip,
         )
         session.flush()
-        return {"sessionId": item.id, "acceptedPages": len(report.pages), "newPages": new_pages}
+        result: Dict[str, Any] = {"sessionId": item.id, "acceptedPages": len(report.pages), "newPages": new_pages}
+        if isinstance(report, BrowserActivityReportV2):
+            activity_repo.add_receipt(
+                session, user_id=user_id, batch_id=report.batch_id,
+                payload_hash=digest, session_id=item.id,
+            )
+            session.flush()
+            result.update(batchId=report.batch_id, protocolVersion=2, acknowledged=True)
+        return result
 
 
 def _scoped_user_ids(session: Session, user_id: Optional[int], visible_admin_id: Optional[int]) -> Optional[List[int]]:

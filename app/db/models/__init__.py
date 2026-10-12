@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from app.db.models.admin import Admin
 from app.db.models.assignment import UserPlatformAssignment, UserProxyAssignment
-from app.db.models.browser_activity import BrowserPageVisit, BrowserSession
+from app.db.models.browser_activity import BrowserActivityReceipt, BrowserPageVisit, BrowserSession
 from app.db.models.log import UserLog
 from app.db.models.platform import Platform
 from app.db.models.proxy import Proxy
@@ -18,6 +18,7 @@ from app.db.models.user import User
 
 __all__ = [
     "Admin",
+    "BrowserActivityReceipt",
     "BrowserPageVisit",
     "BrowserSession",
     "Platform",

@@ -131,3 +131,20 @@ class BrowserPageVisit(Base):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime6, nullable=False, default=utc_now, index=True
     )
+
+
+class BrowserActivityReceipt(Base):
+    """Keep acknowledgements independently of session retention for safe replay."""
+
+    __tablename__ = "browser_activity_receipt"
+    __table_args__ = (
+        UniqueConstraint("user_id", "batch_id", name="uq_browser_activity_receipt_batch"),
+        {**TABLE_ARGS},
+    )
+
+    id: Mapped[int] = mapped_column(IdType, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(IdType, nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[int] = mapped_column(IdType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)

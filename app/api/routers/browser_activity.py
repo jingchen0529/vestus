@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from app.api.deps import admin_auth, audit_context, get_db, user_auth, user_scope_admin_id
 from app.api.envelope import EnvelopeRoute
 from app.db.session import Database
-from app.schemas.browser_activity import BrowserActivityReport
+from app.schemas.browser_activity import BrowserActivityReport, BrowserActivityReportV2
 from app.services import browser_activity as activity_service
 from app.services.audit import record_standalone
 
@@ -55,6 +55,17 @@ def report_browser_activity(
             target_id=result["sessionId"],
         )
     return result
+
+
+@router.post("/api/user/browser-activity/v2", tags=["browser-activity"])
+def report_browser_activity_v2(
+    request: Request,
+    report: BrowserActivityReportV2,
+    auth: Dict[str, Any] = Depends(user_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    """Acknowledge only atomically committed or already committed durable batches."""
+    return report_browser_activity(request, report, auth, db)
 
 
 @router.get("/api/admin/browser-sessions", tags=["browser-activity"])

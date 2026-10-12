@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -240,6 +240,14 @@ class BrowserActivityReport(BaseModel):
         return normalize_device_id(value)
 
 
+class BrowserActivityReportV2(BrowserActivityReport):
+    """Durable batches have an immutable identity and an authenticated owner."""
+
+    batch_id: str = Field(alias="batchId", pattern=r"^[0-9a-f]{64}$")
+    owner_user_id: int = Field(alias="ownerUserId", gt=0, le=2**63 - 1)
+    protocol_version: Literal[2] = Field(alias="protocolVersion")
+
+
 __all__ = [
     "MAX_COUNT_PER_PAGE",
     "MAX_DWELL_MS_PER_PAGE",
@@ -248,6 +256,7 @@ __all__ = [
     "MAX_URL_LENGTH",
     "MAX_URL_PARAMS_LENGTH",
     "BrowserActivityReport",
+    "BrowserActivityReportV2",
     "BrowserPageReport",
     "is_sensitive_field_name",
     "normalize_reported_url",

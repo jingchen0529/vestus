@@ -1,9 +1,9 @@
 """Browser-activity reads and the delta-merging writes.
 
 Every write here is additive: a report carries what happened since the previous
-one, so the row either does not exist yet or has its counters increased.  Nothing
-in this module overwrites a counter, which is what makes a re-sent batch harmless
-and a lost one recoverable.
+one, so the row either does not exist yet or has its counters increased.
+V2 batches are deduplicated by durable receipts before entering the merge path.
+Legacy batches remain additive and cannot be safely replayed.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qsl
 
-from sqlalchemy import and_, asc, desc, func, select
+from sqlalchemy import and_, asc, desc, func, select, update
 from sqlalchemy.orm import Session
 
 from app.db.base import ip_bytes, parse_datetime
-from app.db.models import BrowserPageVisit, BrowserSession
+from app.db.models import BrowserActivityReceipt, BrowserPageVisit, BrowserSession, User
 
 #: Counter columns shared by both tables, in report order.
 _COUNTERS = ("visits", "clicks", "inputs", "submits", "scrolls", "dwell_ms")
@@ -143,6 +143,9 @@ def merge_page(
                 **{name: int(deltas.get(name, 0)) for name in _COUNTERS},
             )
         )
+        # Later rows in this batch may normalize to this same address. Sessions
+        # disable autoflush, so make the inserted row visible before their reads.
+        session.flush()
         return True
     for name in _COUNTERS:
         setattr(item, name, int(getattr(item, name) or 0) + int(deltas.get(name, 0)))
@@ -405,3 +408,29 @@ __all__ = [
     "merge_page",
     "url_hash",
 ]
+
+
+def lock_reporting_user(session: Session, user_id: int) -> None:
+    """Serialize batches before any reads, including a session's first insert.
+
+    A no-op UPDATE takes a MySQL row lock and a SQLite write lock. Keeping the
+    existing updated_at avoids modifying account metadata on each report.
+    """
+    session.execute(
+        update(User).where(User.id == user_id)
+        .values(id=User.id, updated_at=User.updated_at)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def get_receipt(session: Session, user_id: int, batch_id: str) -> Optional[BrowserActivityReceipt]:
+    return session.scalar(select(BrowserActivityReceipt).where(
+        BrowserActivityReceipt.user_id == user_id,
+        BrowserActivityReceipt.batch_id == batch_id,
+    ))
+
+
+def add_receipt(session: Session, *, user_id: int, batch_id: str, payload_hash: str, session_id: int) -> None:
+    session.add(BrowserActivityReceipt(
+        user_id=user_id, batch_id=batch_id, payload_hash=payload_hash, session_id=session_id,
+    ))
