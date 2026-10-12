@@ -11,7 +11,8 @@
     "desktop:dev": "node scripts/tauri-with-api.mjs dev",
     "desktop:build": "node scripts/tauri-with-api.mjs build",
     "preview": "vite preview",
-    "check:surfaces": "node scripts/check-surface-boundaries.mjs"
+    "check:surfaces": "node scripts/check-surface-boundaries.mjs",
+    "test:persistence": "node scripts/test-browser-persistence.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.2",

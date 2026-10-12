@@ -66,7 +66,7 @@ Vestus 是一套「带认证的受控浏览器」系统：广告代理公司的�
 
 ### 桌面端 Rust 内核 `desktop/src-tauri/src/`
 
-Tauri 2 应用：React 只做登录壳与界面，所有安全敏感逻辑都在 Rust。15 个模块各有专责：
+Tauri 2 应用：React 只做登录壳与界面，所有安全敏感逻辑都在 Rust。16 个模块各有专责：
 
 | 模块 | 职责 |
 | --- | --- |
@@ -78,10 +78,11 @@ Tauri 2 应用：React 只做登录壳与界面，所有安全敏感逻辑都在
 | `config` | 服务端下发的代理/平台配置的内存校验（结构、类型、合法性） |
 | `device` | 操作系统机器标识：macOS `IOPlatformUUID`、Windows `MachineGuid`、Linux `/etc/machine-id`，best-effort 读取 |
 | `auth` | 桌面用户认证：登录/恢复/登出/改密，令牌仅存 Rust 进程与系统钥匙串（Linux 降级为进程内存） |
-| `profile` | 持久浏览器环境：profile 目录按「服务器 × 账号 × 平台 × 代理/直连」隔离；单例占用检测与残留锁清理；按账号重置 |
+| `profile` | 持久浏览器环境：profile 目录按「服务器 × 账号 × 平台 × 代理/直连」隔离；单例占用检测与残留锁清理；启动前清掉上次会话（不让 Chromium 恢复旧标签页）；按账号重置 |
 | `browser` | Chromium 多会话管理：一个环境一个进程、命令行转交复用、优雅关闭（CDP → SIGTERM → 强杀）保 Cookie 落盘 |
 | `cdp` | DevTools 协议：只读采集页面地址与操作计数（autoAttach + 注入固定计数脚本）；另有一条一次性控制连接负责 `Browser.close` 与「切回已有标签页」的 Target 命令 |
-| `activity` | 采集结果的内存聚合与 30 秒批量上报（失败合回下批，不丢数据） |
+| `activity` | 采集结果先落盘，按账号聚合为固定批次，收到 v2 确认后移除；失败保留原批重试 |
+| `activity_outbox` | SQLite 持久队列、原子转批与容量保护，支持重启和升级后补报 |
 | `state` | 运行状态机：未配置 → 就绪 → 浏览器运行；会话槽位与关停顺序 |
 | `commands` | 暴露给 React 的全部 IPC 命令（同步配置、打开/重置浏览器、直连 IP、状态查询） |
 | `rt` | 应用自有 Tokio 运行时（本地代理适配器与上报在 Tauri 事件循环之外长驻） |
@@ -201,16 +202,28 @@ cd src-tauri
 cargo test --all-targets
 ```
 
+真实浏览器持久化另行验收：在 `desktop/` 执行 `npm run test:persistence`，使用随包 Chromium
+验证 Cookie、站点存储、关闭重启、强杀恢复、环境隔离及账号重置。缺少浏览器会失败，不会静默跳过。
+版本升级/回滚命令与覆盖边界见 [持久化验收说明](docs/browser-persistence-testing.md)。
+
 ## 关键行为与安全边界
 
 **持久浏览器环境**：每个平台在每台电脑上有一套单独保存的 Chromium profile，关掉浏览器后
 Cookie 与登录状态保留，下次打开平台看到的还是同一台设备。环境按「服务器 × 桌面账号 × 平台 ×
 代理/直连」隔离——同一台电脑上登录多个账号时彼此不可见；同一账号在多台电脑上登录时每台
-电脑各有一套，互不同步。重复点击同一平台会切回已打开的标签页（页面原样保留），而不是再开
+电脑各有一套，互不同步。每次冷启动只打开平台入口页：Chromium 默认会「继续浏览上次打开的
+网页」（那个偏好是 HMAC 保护项，关不掉），客户端在启动前清掉它的会话数据，否则每次打开都会
+把上次的标签页整批恢复出来、再叠加上入口页，用户看到同平台两个标签页、采集里也会多出他没
+打开过的页面。重复点击同一平台会切回已打开的标签页（页面原样保留），而不是再开
 一个起始页。环境保存在应用数据目录（macOS `~/Library/Application Support/com.zhixi.vestus/browser-profiles/`、
 Windows `%LOCALAPPDATA%\com.zhixi.vestus\browser-profiles\`、Linux `~/.local/share/com.zhixi.vestus/browser-profiles/`）；
 「系统配置 → 浏览器环境」可以清除当前账号在本机的全部环境。细节见
 [docs/desktop-user-guide.md](docs/desktop-user-guide.md#72-浏览器环境)。
+
+多个客户端实例通过系统文件锁协调环境使用：每个浏览器持有账号共享锁与平台环境独占锁，
+重置持有账号独占锁，直到删除结束。锁文件保存在 profile 根目录的 `.locks/` 中，不随重置删除；
+锁被占用时立即提示重试，不等待。不同平台仍可并行使用。所有参与的客户端都需升级到支持此锁的版本；
+旧版客户端不参与文件锁协调，但启动与重置仍会检查 Chromium 的占用标记。
 
 **代理与直连**：桌面端不提供手工填写代理的入口。代理口令在服务端数据库中加密保存，下发后
 只存在于当前 Rust 会话内存；不会进入 React、代理 URL 或本地配置文件。代理不可用时本地适配器
@@ -222,6 +235,8 @@ Windows `%LOCALAPPDATA%\com.zhixi.vestus\browser-profiles\`、Linux `~/.local/sh
 后的 query）与操作次数；页面标题、点击元素、按键、凭据与敏感表单字段一律不进采集范围，输入/
 提交只保留最近一条字段名快照（值不保存）。这条边界由 `npm run check:surfaces` 与 cdp.rs 单测
 共同守护。管理端「会话追踪」能看到明细与按天汇总（用户 × 设备 × 平台 × 东八区自然日）。
+日志可靠投递、断网与切账号行为，以及新旧客户端的更新顺序见
+[docs/browser-activity-delivery.md](docs/browser-activity-delivery.md)。
 
 **设备标识**：桌面端上报操作系统暴露的机器标识（macOS `IOPlatformUUID`、Windows `MachineGuid`、
 Linux `/etc/machine-id`），用于会话归属与审计展示。读取失败或值不合规时上报为空，采集绝不

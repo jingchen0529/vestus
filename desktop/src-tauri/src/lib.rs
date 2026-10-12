@@ -17,6 +17,7 @@
 //! - [`commands`] 暴露给前端的 IPC
 
 mod activity;
+mod activity_outbox;
 mod adapter;
 mod auth;
 mod browser;
@@ -48,6 +49,12 @@ pub fn run() {
         .manage(BrowserSessionManager::default())
         .manage(ActivityCollector::default())
         .setup(|app| {
+            match app.path().app_local_data_dir() {
+                Ok(root) => app
+                    .state::<ActivityCollector>()
+                    .initialize(&root, app.state::<DesktopAuthState>().inner().clone()),
+                Err(error) => eprintln!("activity queue unavailable: {error}"),
+            }
             // 旧版本的临时 profile 只会在崩溃后残留（审计 F-13）。放到后台线程清：
             // 目录可能很大，不能拖慢启动。
             if let Ok(cache_dir) = app.path().app_cache_dir() {

@@ -14,7 +14,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
 
-use crate::activity::{ActivityCollector, SessionKey as ActivitySessionKey};
+use crate::activity::{ActivityCollector, ActivityOwner, SessionKey as ActivitySessionKey};
 use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
 use crate::browser::{BrowserError, BrowserSessionManager};
 use crate::bypass::DirectHosts;
@@ -713,7 +713,7 @@ pub async fn open_browser<R: Runtime>(
     let app_for_exit = app.clone();
     // 采集通道：调试端点可读时才开，开不起来也只是这次会话没有日志。
     let activity_collector = activity.inner().clone();
-    let activity_auth = auth.inner().clone();
+    let activity_owner = ActivityOwner::new(&api_base, &profile_key, user_id);
     let activity_key = ActivitySessionKey {
         browser_id,
         platform_id,
@@ -727,7 +727,7 @@ pub async fn open_browser<R: Runtime>(
         target.as_str(),
         disable_sandbox,
         move |endpoint| {
-            activity_collector.start(activity_key, endpoint, activity_auth);
+            activity_collector.start(activity_key, endpoint, activity_owner);
         },
         move || {
             state_for_exit.mark_browser_closed_for(browser_id);
@@ -752,6 +752,7 @@ pub async fn open_browser<R: Runtime>(
 fn browser_command_error(error: BrowserError) -> CommandError {
     let code = match error {
         BrowserError::ProfileBusy => "profile_busy",
+        BrowserError::ProfileCheckFailed => "profile_check_failed",
         _ => "browser_start",
     };
     CommandError::new(error.to_string(), code)
@@ -772,9 +773,8 @@ pub async fn reset_browser_profiles<R: Runtime>(
     let _lifecycle_guard = state.lock_desktop_sync().await;
     require_desktop_auth(&auth)?;
     let (_, profile_key, _) = auth.current_identity().map_err(auth_command_error)?;
-    let profile_key = profile_key.ok_or_else(|| {
-        CommandError::new("请先同步桌面配置，再重置浏览器环境", "not_ready")
-    })?;
+    let profile_key = profile_key
+        .ok_or_else(|| CommandError::new("请先同步桌面配置，再重置浏览器环境", "not_ready"))?;
     let api_base = auth.api_base_url().map_err(auth_command_error)?.to_string();
     let account_dir = browsers
         .account_profiles_dir(&app, &api_base, &profile_key)
@@ -788,10 +788,12 @@ pub async fn reset_browser_profiles<R: Runtime>(
         .map_err(|error| CommandError::new(format!("内部任务失败：{error}"), "internal"))?
         .map_err(|error| match error {
             profile::ResetError::Busy => browser_command_error(BrowserError::ProfileBusy),
-            profile::ResetError::Io(detail) => CommandError::new(
-                format!("浏览器环境没能全部删除：{detail}"),
-                "reset_failed",
-            ),
+            profile::ResetError::CheckFailed => {
+                browser_command_error(BrowserError::ProfileCheckFailed)
+            }
+            profile::ResetError::Io(detail) => {
+                CommandError::new(format!("浏览器环境没能全部删除：{detail}"), "reset_failed")
+            }
         })?;
     Ok(BrowserProfileResetView { removed })
 }
@@ -1057,6 +1059,16 @@ fn emit_status<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_check_failure_is_distinct_from_a_busy_environment() {
+        let unknown =
+            browser_command_error(BrowserError::from(profile::ProfileCheckError::Unknown));
+        assert_eq!(unknown.code, "profile_check_failed");
+        assert!(unknown.message.contains("无法确认"));
+        let busy = browser_command_error(BrowserError::from(profile::ProfileCheckError::Busy));
+        assert_eq!(busy.code, "profile_busy");
+    }
 
     const TEST_API_BASE: &str = "https://api.example.test/vestus";
 

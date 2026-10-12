@@ -30,7 +30,7 @@ const CHANGE_PASSWORD_PATH: &str = "/api/user/auth/change-password";
 const DESKTOP_CONFIG_PATH: &str = "/api/user/desktop-config";
 const DESKTOP_CONFIG_LEASE_PATH: &str = "/api/user/desktop-config/lease";
 const PRODUCT_NAME_PATH: &str = "/api/product";
-const ACTIVITY_REPORT_PATH: &str = "/api/user/browser-activity";
+const ACTIVITY_REPORT_PATH: &str = "/api/user/browser-activity/v2";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -757,16 +757,16 @@ impl DesktopAuthState {
     /// A 401/403 is reported but does **not** clear the local session. Reporting
     /// is a background activity and must not eject the user from the UI; the
     /// next foreground request discovers an expired login on its own.
-    pub(crate) async fn report_browser_activity<T: Serialize + ?Sized>(
+    pub(crate) async fn report_browser_activity(
         &self,
-        payload: &T,
+        owner_user_id: i64,
+        owner_profile_key: &str,
+        batch_id: &str,
+        payload: &serde_json::Value,
     ) -> AuthResult<()> {
-        let token = self
-            .in_memory_token()?
-            .filter(|token| !token.trim().is_empty())
-            .ok_or_else(|| {
-                DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录")
-            })?;
+        // Identity and token are read under the same lock. A logout/login between
+        // queue selection and this call can never substitute another user's token.
+        let token = self.activity_token(owner_user_id, owner_profile_key)?;
         let response = self
             .client()?
             .post(self.endpoint(ACTIVITY_REPORT_PATH)?)
@@ -775,7 +775,30 @@ impl DesktopAuthState {
             .send()
             .await
             .map_err(network_error)?;
-        ensure_success(response).await
+        let ack: ActivityAcknowledgement =
+            decode_success_json(response, "活动上报确认格式错误").await?;
+        validate_activity_acknowledgement(&ack, batch_id)
+    }
+
+    fn activity_token(&self, owner_user_id: i64, owner_profile_key: &str) -> AuthResult<String> {
+        let state = self.session_guard()?;
+        let matches = state.user.as_ref().is_some_and(|user| {
+            user.id == owner_user_id && user.role == "client" && user.status == "active"
+        }) && state.profile_key.as_deref() == Some(owner_profile_key)
+            && state
+                .expires_at_unix
+                .is_some_and(|expiry| expiry > now_unix());
+        if !matches {
+            return Err(DesktopAuthError::new(
+                "session_changed",
+                "活动记录所属账号当前未登录",
+            ));
+        }
+        state
+            .token
+            .clone()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录"))
     }
 
     fn client(&self) -> AuthResult<&Client> {
@@ -1053,6 +1076,26 @@ fn keyring_error(_error: String) -> DesktopAuthError {
     DesktopAuthError::new("keyring", "无法访问系统安全存储，请解锁系统钥匙串后重试")
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivityAcknowledgement {
+    batch_id: String,
+    protocol_version: u32,
+    acknowledged: bool,
+}
+
+fn validate_activity_acknowledgement(
+    ack: &ActivityAcknowledgement,
+    batch_id: &str,
+) -> AuthResult<()> {
+    if ack.protocol_version != 2 || !ack.acknowledged || ack.batch_id != batch_id {
+        return Err(DesktopAuthError::invalid_response(
+            "服务端未确认这一批活动记录",
+        ));
+    }
+    Ok(())
+}
+
 /// The envelope every Vestus JSON endpoint answers with.
 ///
 /// `data` stays generic so each caller still deserializes straight into its own
@@ -1178,6 +1221,179 @@ mod tests {
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&payload).unwrap());
         format!("{encoded}.test-signature")
+    }
+
+    #[test]
+    fn activity_batches_require_the_original_account_and_profile_but_allow_relogin() {
+        let state = DesktopAuthState::with_credentials(
+            DEFAULT_API_BASE_URL,
+            Arc::new(MemoryCredentialStore::default()),
+        );
+        state
+            .persist_session(valid_test_token(), client_user())
+            .unwrap();
+        state.set_profile_key(7, "profile-a".into()).unwrap();
+        assert!(state.activity_token(7, "profile-a").is_ok());
+
+        state.clear_memory().unwrap();
+        assert_eq!(
+            state.activity_token(7, "profile-a").unwrap_err().code,
+            "session_changed"
+        );
+        let mut account_b = client_user();
+        account_b.id = 8;
+        state
+            .persist_session(valid_test_token(), account_b)
+            .unwrap();
+        state.set_profile_key(8, "profile-b".into()).unwrap();
+        assert_eq!(
+            state.activity_token(7, "profile-a").unwrap_err().code,
+            "session_changed"
+        );
+
+        state
+            .persist_session(valid_test_token(), client_user())
+            .unwrap();
+        state
+            .set_profile_key(7, "different-server-profile".into())
+            .unwrap();
+        assert_eq!(
+            state.activity_token(7, "profile-a").unwrap_err().code,
+            "session_changed"
+        );
+
+        // A fresh authentication generation may drain A's durable old batches,
+        // provided both its account id and server-derived profile match again.
+        let new_token = test_token("user", now_unix() + 7200);
+        state
+            .persist_session(new_token.clone(), client_user())
+            .unwrap();
+        state.set_profile_key(7, "profile-a".into()).unwrap();
+        assert_eq!(state.activity_token(7, "profile-a").unwrap(), new_token);
+    }
+
+    #[tokio::test]
+    async fn activity_upload_requires_exact_v2_ack_and_never_falls_back_to_legacy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let batch_id = "a".repeat(64);
+        let cases = [
+            (200, serde_json::json!({"acceptedPages": 1}), false),
+            (
+                200,
+                serde_json::json!({"batchId": "b".repeat(64), "protocolVersion": 2,
+                                     "acknowledged": true}),
+                false,
+            ),
+            (
+                200,
+                serde_json::json!({"batchId": batch_id, "protocolVersion": 2,
+                                     "acknowledged": false}),
+                false,
+            ),
+            (
+                200,
+                serde_json::json!({"batchId": batch_id, "protocolVersion": 1,
+                                     "acknowledged": true}),
+                false,
+            ),
+            (404, serde_json::Value::Null, false),
+            (
+                200,
+                serde_json::json!({"batchId": batch_id, "protocolVersion": 2,
+                                     "acknowledged": true}),
+                true,
+            ),
+        ];
+        for (status, data, expected_success) in cases {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+            let recorded = Arc::clone(&requests);
+            let body = serde_json::json!({
+                "code": if status == 200 { 0 } else { 40400 }, "data": data,
+            })
+            .to_string();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        if count == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buffer[..count]);
+                        if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                            let header = String::from_utf8_lossy(&request[..end]);
+                            let content_length = header
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if request.len() >= end + 4 + content_length {
+                                break;
+                            }
+                        }
+                    }
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8(request).unwrap());
+                    let response = format!(
+                        "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len(),
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.shutdown().await.unwrap();
+                }
+            });
+            let state = DesktopAuthState::with_credentials(
+                &base,
+                Arc::new(MemoryCredentialStore::default()),
+            );
+            let token = valid_test_token();
+            state.persist_session(token.clone(), client_user()).unwrap();
+            state.set_profile_key(7, "profile-a".into()).unwrap();
+            let report = serde_json::json!({"batchId": batch_id, "ownerUserId": 7,
+                                           "protocolVersion": 2, "pages": []});
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                state.report_browser_activity(7, "profile-a", &batch_id, &report),
+            )
+            .await
+            .unwrap();
+            server.abort();
+            assert_eq!(
+                result.is_ok(),
+                expected_success,
+                "status={status}, result={result:?}"
+            );
+            let requests = requests.lock().unwrap();
+            assert_eq!(
+                requests.len(),
+                1,
+                "never retry the legacy additive endpoint"
+            );
+            assert!(requests[0].starts_with("POST /api/user/browser-activity/v2 HTTP/1.1\r\n"));
+            assert!(requests[0]
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {token}").to_ascii_lowercase()));
+            let (_, sent_body) = requests[0].split_once("\r\n\r\n").unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(sent_body).unwrap(),
+                report
+            );
+            assert!(
+                state.is_authenticated(),
+                "background reporting must not log the user out"
+            );
+        }
     }
 
     #[test]

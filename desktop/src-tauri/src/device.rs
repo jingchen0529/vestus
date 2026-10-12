@@ -35,7 +35,9 @@ static DEVICE_ID: OnceLock<Option<String>> = OnceLock::new();
 ///
 /// `None` when the platform read failed or produced something unusable.
 pub fn device_id() -> Option<&'static str> {
-    DEVICE_ID.get_or_init(|| normalize(read_machine_id())).as_deref()
+    DEVICE_ID
+        .get_or_init(|| normalize(read_machine_id()))
+        .as_deref()
 }
 
 /// The value for a request body, or `None` when nothing usable was read.

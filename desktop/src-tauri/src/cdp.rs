@@ -438,9 +438,13 @@ pub async fn open_or_activate_page(
         }
         // 标签在列举和切换之间被用户关掉了：当作没有，走新开。
     }
-    control_command(endpoint, "Target.createTarget", json!({ "url": platform_url }))
-        .await
-        .map(|_| PageOutcome::Created)
+    control_command(
+        endpoint,
+        "Target.createTarget",
+        json!({ "url": platform_url }),
+    )
+    .await
+    .map(|_| PageOutcome::Created)
 }
 
 /// 当前浏览器里全部页面级标签页的 `(targetId, url)`。
@@ -955,7 +959,6 @@ mod tests {
         assert!(!page_url_matches("chrome://newtab/", &platform));
         assert!(!page_url_matches("not a url", &platform));
     }
-
 
     fn method_of(command: &str) -> String {
         serde_json::from_str::<Value>(command).unwrap()["method"]
@@ -1646,11 +1649,10 @@ mod tests {
         .is_none());
         assert!(control_command_outcome("not json").is_none());
 
-        let closed = control_command_outcome(
-            &json!({ "id": CONTROL_COMMAND_ID, "result": {} }).to_string(),
-        )
-        .unwrap()
-        .unwrap();
+        let closed =
+            control_command_outcome(&json!({ "id": CONTROL_COMMAND_ID, "result": {} }).to_string())
+                .unwrap()
+                .unwrap();
         assert!(closed.as_object().unwrap().is_empty());
 
         let refused = control_command_outcome(
@@ -1658,7 +1660,9 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        assert!(matches!(refused, Err(CdpError::Command(detail)) if detail == "Browser is closing"));
+        assert!(
+            matches!(refused, Err(CdpError::Command(detail)) if detail == "Browser is closing")
+        );
     }
 
     /// 端点已经没了（浏览器不在了）时，控制命令必须很快失败，调用方才能马上改发信号，
@@ -1689,9 +1693,8 @@ mod tests {
         use std::process::{Command, Stdio};
         use std::time::Duration;
 
-        let chrome = std::path::Path::new(
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        );
+        let chrome =
+            std::path::Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
         if !chrome.is_file() {
             return;
         }
@@ -1706,7 +1709,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut child = Command::new(chrome)
             .arg(format!("--user-data-dir={}", dir.display()))
-            .args(["--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
+            .args([
+                "--remote-debugging-port=0",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ])
             .arg("about:blank")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1738,6 +1745,10 @@ mod tests {
 
         let (first, second) = outcome;
         assert_eq!(first, Ok(PageOutcome::Created), "首次打开应新开标签");
-        assert_eq!(second, Ok(PageOutcome::Activated), "同域再次打开应切回已有标签");
+        assert_eq!(
+            second,
+            Ok(PageOutcome::Activated),
+            "同域再次打开应切回已有标签"
+        );
     }
 }

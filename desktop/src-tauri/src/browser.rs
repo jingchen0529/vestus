@@ -119,7 +119,11 @@ const MIN_WINDOW_EDGE: u32 = 320;
 type ProcessSlot = Arc<Mutex<Option<Child>>>;
 /// 读到之前是 `None`；读不到（超时或进程先没了）也一直是 `None`。
 type EndpointSlot = Arc<Mutex<Option<DevToolsEndpoint>>>;
-type BrowserCloseEntry = (ProcessSlot, Option<DevToolsEndpoint>);
+type BrowserCloseEntry = (
+    ProcessSlot,
+    Option<DevToolsEndpoint>,
+    Arc<profile::ProfileLease>,
+);
 
 /// 一个 Chromium 进程的 browser 级 DevTools 入口。
 ///
@@ -149,8 +153,10 @@ pub enum BrowserError {
     ChromiumMissing,
     #[error("无法准备浏览器环境目录：{0}")]
     ProfileDirectory(String),
-    #[error("这个平台的浏览器环境正被另一个浏览器占用（同一账号在另一个 Vestus 窗口里打开了它，或是上次异常退出后残留的浏览器），请先关闭那个浏览器再试")]
+    #[error("浏览器环境正在使用或重置（另一个客户端正在启动、使用或重置环境，或上次异常退出后残留的浏览器仍未关闭），请稍后重试；若浏览器仍在使用，请先关闭它")]
     ProfileBusy,
+    #[error("无法确认浏览器环境是否被占用，已停止操作以保护现有数据。请关闭相关浏览器后重试；如仍失败，请联系管理员检查系统进程查询和目录访问权限")]
+    ProfileCheckFailed,
     #[error("这个平台的浏览器已经在运行")]
     AlreadyRunning,
     #[error("浏览器已经关闭，请重新打开")]
@@ -161,6 +167,15 @@ pub enum BrowserError {
     Spawn(String),
     #[error("客户端正在退出，不能再启动浏览器")]
     ShuttingDown,
+}
+
+impl From<profile::ProfileCheckError> for BrowserError {
+    fn from(error: profile::ProfileCheckError) -> Self {
+        match error {
+            profile::ProfileCheckError::Busy => Self::ProfileBusy,
+            profile::ProfileCheckError::Unknown => Self::ProfileCheckFailed,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -177,6 +192,24 @@ struct ManagedBrowser {
     process: ProcessSlot,
     profile_dir: PathBuf,
     endpoint: EndpointSlot,
+    lease: Arc<profile::ProfileLease>,
+}
+
+/// 转交进程也可能成为浏览器；收走它之前必须继续持有环境锁。
+pub struct BrowserHandOff {
+    child: Option<Child>,
+    _lease: Arc<profile::ProfileLease>,
+}
+
+impl Drop for BrowserHandOff {
+    fn drop(&mut self) {
+        // 等待任务被取消时也先收走子进程，再由字段析构释放锁。
+        if let Some(mut child) = self.child.take() {
+            if !matches!(child.try_wait(), Ok(Some(_))) {
+                terminate_child(child);
+            }
+        }
+    }
 }
 
 /// 解析好的一次启动：用哪个 Chromium、开哪个持久环境。
@@ -241,9 +274,9 @@ impl Default for BrowserSessionManager {
 }
 
 impl BrowserSessionManager {
-    /// 解析一个环境：定位 Chromium，算出它的持久 profile 目录并确保目录存在。
+    /// 解析一个环境：定位 Chromium，算出它的持久 profile 目录。
     ///
-    /// 只算路径、建空目录，不碰里面的数据；是复用已在运行的进程还是新起一个，由
+    /// 这里只算路径；目录在拿到跨进程锁后才创建。是复用还是新起进程，由
     /// 调用方拿 [`Self::running_browser`] 决定。
     pub fn prepare_profile<R: Runtime>(
         &self,
@@ -252,7 +285,6 @@ impl BrowserSessionManager {
     ) -> Result<PreparedProfile, BrowserError> {
         let (executable, root) = resolve_executable_and_root(app)?;
         let dir = profile::profile_dir(&root, spec);
-        create_private_dir(&dir)?;
         Ok(PreparedProfile { executable, dir })
     }
 
@@ -298,13 +330,15 @@ impl BrowserSessionManager {
         local_proxy: Option<&str>,
         target_url: &str,
         disable_sandbox: bool,
-    ) -> Result<Child, BrowserError> {
+    ) -> Result<BrowserHandOff, BrowserError> {
         if !self.inner.accepting_launches.load(Ordering::Acquire) {
             return Err(BrowserError::ShuttingDown);
         }
-        if self.running_browser(&profile.dir).is_none() {
-            return Err(BrowserError::NotRunning);
-        }
+        let lease = {
+            let sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+            let id = live_session_on(&sessions, &profile.dir).ok_or(BrowserError::NotRunning)?;
+            Arc::clone(&sessions[&id].lease)
+        };
         let arguments = hand_off_arguments(
             &profile.dir,
             local_proxy,
@@ -312,9 +346,13 @@ impl BrowserSessionManager {
             primary_window_geometry(app),
             disable_sandbox,
         );
-        chromium_command(&profile.executable, arguments)
+        let child = chromium_command(&profile.executable, arguments)
             .spawn()
-            .map_err(|error| BrowserError::Spawn(error.to_string()))
+            .map_err(|error| BrowserError::Spawn(error.to_string()))?;
+        Ok(BrowserHandOff {
+            child: Some(child),
+            _lease: lease,
+        })
     }
 
     /// Start one Chromium process on a persistent profile.
@@ -415,7 +453,11 @@ impl BrowserSessionManager {
         if self.running_browser(&profile_dir).is_some() {
             return Err(BrowserError::AlreadyRunning);
         }
-        profile::prepare_for_launch(&profile_dir).map_err(|_| BrowserError::ProfileBusy)?;
+        // 在创建目录、检测 Chromium 锁或清理任何文件之前取得跨实例互斥。
+        // 锁跟随会话，直到浏览器真正退出，不能在 spawn 返回时就释放。
+        let lease = Arc::new(profile::acquire_profile_lease(&profile_dir)?);
+        create_private_dir(&profile_dir)?;
+        profile::prepare_for_launch(&profile_dir).map_err(BrowserError::from)?;
         let arguments = chromium_arguments(
             &profile_dir,
             local_proxy,
@@ -453,6 +495,7 @@ impl BrowserSessionManager {
                     process: Arc::clone(&process),
                     profile_dir: profile_dir.clone(),
                     endpoint: Arc::clone(&endpoint),
+                    lease: Arc::clone(&lease),
                 },
             );
             process
@@ -468,8 +511,7 @@ impl BrowserSessionManager {
                     // 端口先读：Chromium 启动几百毫秒内就会写出这个文件，而
                     // `wait_for_process_exit` 本来也是轮询，晚一点开始无影响。
                     // 读不到就只是没有采集，浏览器本身照常使用。
-                    if let Some(ready) =
-                        read_devtools_endpoint(&profile_dir, &process, launched_at)
+                    if let Some(ready) = read_devtools_endpoint(&profile_dir, &process, launched_at)
                     {
                         *endpoint.lock().expect("调试端点锁已中毒") = Some(ready.clone());
                         on_ready(ready);
@@ -520,7 +562,7 @@ impl BrowserSessionManager {
         if tokio::runtime::Handle::try_current().is_ok() {
             // 在运行时里 block_on 会直接 panic。只有调用方写错了才会走到这里：退回
             // 强杀，至少不留下进程。
-            for (process, _) in &sessions {
+            for (process, _, _) in &sessions {
                 stop_process(process);
             }
         } else if count > 0 {
@@ -542,7 +584,7 @@ impl BrowserSessionManager {
             .drain()
             .map(|(_, session)| {
                 let endpoint = session.endpoint.lock().expect("调试端点锁已中毒").clone();
-                (session.process, endpoint)
+                (session.process, endpoint, session.lease)
             })
             .collect()
     }
@@ -610,7 +652,9 @@ fn read_devtools_endpoint(
 /// 失败——Windows 上杀毒软件正好开着它就删不掉。旧文件指向一个早已关闭、甚至已经换了
 /// 主人的端口，连上去轻则没有采集，重则把控制命令发给别的程序。
 fn read_fresh_port_file(port_file: &Path, not_before: SystemTime) -> Option<DevToolsEndpoint> {
-    let modified = std::fs::metadata(port_file).and_then(|meta| meta.modified()).ok()?;
+    let modified = std::fs::metadata(port_file)
+        .and_then(|meta| meta.modified())
+        .ok()?;
     if modified < not_before {
         return None;
     }
@@ -625,7 +669,12 @@ async fn close_gracefully(sessions: Vec<BrowserCloseEntry>) {
     let deadline = tokio::time::Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
     let closing: Vec<_> = sessions
         .into_iter()
-        .map(|(process, endpoint)| rt::runtime().spawn(close_one(process, endpoint, deadline)))
+        .map(|(process, endpoint, lease)| {
+            rt::runtime().spawn(async move {
+                close_one(process, endpoint, deadline).await;
+                drop(lease);
+            })
+        })
         .collect();
     for task in closing {
         let _ = task.await;
@@ -695,11 +744,25 @@ fn request_polite_exit(process: &ProcessSlot) {
 /// 不看退出码：Chromium 转交成功后的退出码在各版本、各平台上并不一致，而这里只关心
 /// 「它走了」。到点还没走，就是原来那个浏览器没有接住——它要么卡住了，要么恰好在检查
 /// 之后退出、这个进程于是自己当上了浏览器。后一种它不归我们管、也没有采集，不能留着。
-pub async fn wait_for_hand_off(child: Child) -> Result<(), BrowserError> {
-    wait_for_hand_off_within(child, HAND_OFF_TIMEOUT).await
+pub async fn wait_for_hand_off(mut hand_off: BrowserHandOff) -> Result<(), BrowserError> {
+    wait_for_hand_off_exit(
+        hand_off.child.as_mut().expect("转交进程存在"),
+        HAND_OFF_TIMEOUT,
+    )
+    .await
 }
 
-async fn wait_for_hand_off_within(mut child: Child, limit: Duration) -> Result<(), BrowserError> {
+#[cfg(all(test, unix))]
+async fn wait_for_hand_off_within(child: Child, limit: Duration) -> Result<(), BrowserError> {
+    let mut child = child;
+    let result = wait_for_hand_off_exit(&mut child, limit).await;
+    if result.is_err() {
+        terminate_child(child);
+    }
+    result
+}
+
+async fn wait_for_hand_off_exit(child: &mut Child, limit: Duration) -> Result<(), BrowserError> {
     let deadline = tokio::time::Instant::now() + limit;
     loop {
         match child.try_wait() {
@@ -708,10 +771,9 @@ async fn wait_for_hand_off_within(mut child: Child, limit: Duration) -> Result<(
                 tokio::time::sleep(HAND_OFF_POLL_INTERVAL).await;
             }
             _ => {
-                terminate_child(child);
                 return Err(BrowserError::OpenWindow(
                     "浏览器没有响应，请稍后再试".to_string(),
-                ));
+                ))
             }
         }
     }
@@ -1502,9 +1564,88 @@ mod tests {
         }
         assert_eq!(callbacks.load(Ordering::SeqCst), 2);
         for profile in [&first_profile, &second_profile] {
-            assert_eq!(std::fs::read(profile.join("Cookies")).unwrap(), b"logged-in");
+            assert_eq!(
+                std::fs::read(profile.join("Cookies")).unwrap(),
+                b"logged-in"
+            );
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn environment_lease_survives_launch_and_is_released_after_close() {
+        let root = scratch_dir("lease-lifecycle");
+        let account = root.join("account");
+        let profile = account.join("p1-proxy");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
+        let manager = BrowserSessionManager::default();
+        launch_fake(&manager, 1, &executable, &profile).unwrap();
+        assert!(matches!(
+            profile::acquire_profile_lease(&profile),
+            Err(profile::ProfileCheckError::Busy)
+        ));
+        assert_eq!(
+            profile::remove_account(&account),
+            Err(profile::ResetError::Busy)
+        );
+        let other = BrowserSessionManager::default();
+        assert!(matches!(
+            launch_fake(&other, 1, &executable, &profile),
+            Err(BrowserError::ProfileBusy)
+        ));
+        let other_platform = profile::acquire_profile_lease(&account.join("p2-proxy")).unwrap();
+        drop(other_platform);
+        let closing = manager.take_sessions(false);
+        assert_eq!(closing.len(), 1);
+        // 从管理表摘掉还不代表进程已经退出，关闭任务仍须持锁。
+        assert!(matches!(
+            profile::acquire_profile_lease(&profile),
+            Err(profile::ProfileCheckError::Busy)
+        ));
+        rt::runtime().block_on(close_gracefully(closing));
+        let lease = profile::acquire_profile_lease(&profile).unwrap();
+        drop(lease);
+        assert_eq!(profile::remove_account(&account), Ok(1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_spawn_releases_environment_lease_and_keeps_data() {
+        let root = scratch_dir("lease-spawn-failure");
+        let profile = root.join("account/p1-proxy");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("Cookies"), b"keep").unwrap();
+        let manager = BrowserSessionManager::default();
+        assert!(matches!(
+            launch_fake(&manager, 1, &root.join("missing-browser"), &profile),
+            Err(BrowserError::Spawn(_))
+        ));
+        let lease = profile::acquire_profile_lease(&profile).unwrap();
+        assert_eq!(std::fs::read(profile.join("Cookies")).unwrap(), b"keep");
+        drop(lease);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 新写入的可执行脚本可能启动较慢；必须等 trap 安装完成，不能靠固定延时猜测。
+    #[cfg(unix)]
+    fn wait_for_fake_browser_ready(manager: &BrowserSessionManager, profile: &Path, ready: &Path) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                manager.running_browser(profile).is_some(),
+                "假浏览器在安装信号处理前退出"
+            );
+            if ready.exists() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "假浏览器未在期限内安装信号处理"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// 主动关闭必须先请浏览器自己退出（这样 Cookie 才会落盘），而不是上来就强杀。
@@ -1514,27 +1655,25 @@ mod tests {
     fn closing_asks_the_browser_to_exit_before_killing_it() {
         let root = scratch_dir("graceful");
         let marker = root.join("exited-gracefully");
+        let ready = root.join("ready");
         let executable = fake_chromium(
             &root,
             &format!(
-                "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\nwhile :; do sleep 0.05; done\n",
-                marker.display()
+                "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\necho ready > \"{}\"\nwhile :; do sleep 0.05; done\n",
+                marker.display(),
+                ready.display()
             ),
         );
         let profile = root.join("profile");
         std::fs::create_dir(&profile).unwrap();
         let manager = BrowserSessionManager::default();
         launch_fake(&manager, 1, &executable, &profile).unwrap();
-        // 给 sh 一点时间装好 trap。
-        thread::sleep(Duration::from_millis(200));
+        wait_for_fake_browser_ready(&manager, &profile, &ready);
 
         let started = std::time::Instant::now();
         assert_eq!(rt::runtime().block_on(manager.close_all()), 1);
         assert!(started.elapsed() < GRACEFUL_CLOSE_TIMEOUT);
-        assert_eq!(
-            std::fs::read_to_string(&marker).unwrap().trim(),
-            "graceful"
-        );
+        assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "graceful");
         assert!(profile.exists());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1544,15 +1683,19 @@ mod tests {
     #[test]
     fn a_browser_that_ignores_the_request_is_killed_at_the_deadline() {
         let root = scratch_dir("stubborn");
+        let ready = root.join("ready");
         let executable = fake_chromium(
             &root,
-            "#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 0.05; done\n",
+            &format!(
+                "#!/bin/sh\ntrap '' TERM\necho ready > \"{}\"\nwhile :; do sleep 0.05; done\n",
+                ready.display()
+            ),
         );
         let profile = root.join("profile");
         std::fs::create_dir(&profile).unwrap();
         let manager = BrowserSessionManager::default();
         launch_fake(&manager, 1, &executable, &profile).unwrap();
-        thread::sleep(Duration::from_millis(200));
+        wait_for_fake_browser_ready(&manager, &profile, &ready);
 
         let started = std::time::Instant::now();
         assert_eq!(manager.shutdown(), 1);
@@ -1688,12 +1831,43 @@ mod tests {
         assert_eq!(hand_off[..launch.len() - 1], launch[..launch.len() - 1]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn dropped_hand_off_stops_child_before_releasing_environment() {
+        let root = scratch_dir("hand-off-lease");
+        let profile = root.join("account/p1-proxy");
+        let lease = Arc::new(profile::acquire_profile_lease(&profile).unwrap());
+        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let hand_off = BrowserHandOff {
+            child: Some(child),
+            _lease: lease,
+        };
+        assert!(matches!(
+            profile::acquire_profile_lease(&profile),
+            Err(profile::ProfileCheckError::Busy)
+        ));
+        drop(hand_off);
+        assert!(!Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        let lease = profile::acquire_profile_lease(&profile).unwrap();
+        drop(lease);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// A hand-off process that passes its command line on and exits is a success;
     /// its exit code does not matter.
     #[cfg(unix)]
     #[test]
     fn a_hand_off_that_exits_is_a_success() {
-        let child = Command::new("/bin/sh").args(["-c", "exit 3"]).spawn().unwrap();
+        let child = Command::new("/bin/sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .unwrap();
         assert!(rt::runtime()
             .block_on(wait_for_hand_off_within(child, Duration::from_secs(5)))
             .is_ok());
@@ -1871,3 +2045,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+#[cfg(test)]
+mod persistence_tests;

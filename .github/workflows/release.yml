@@ -63,7 +63,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config curl wget file patchelf libfuse2 \
             libssl-dev librsvg2-dev libxdo-dev \
-            libgtk-3-dev libayatana-appindicator3-dev
+            libgtk-3-dev libayatana-appindicator3-dev \
+            xvfb xauth libnss3 libnspr4 libatk-bridge2.0-0 libcups2 \
+            libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 libxkbcommon0
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
             || sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
 
@@ -152,6 +154,25 @@ jobs:
       - name: Test Rust core
         working-directory: desktop/src-tauri
         run: cargo test --all-targets
+
+      - name: Verify real Chromium persistence
+        timeout-minutes: 15
+        shell: bash
+        working-directory: desktop
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:persistence
+          else
+            npm run test:persistence
+          fi
+
+      - name: Upload persistence test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-persistence-${{ matrix.label }}
+          path: desktop/test-results/browser-persistence/
+          if-no-files-found: ignore
 
       # bundle 目标来自 tauri.<platform>.conf.json：nsis / dmg / deb+appimage。
       - name: Tauri build

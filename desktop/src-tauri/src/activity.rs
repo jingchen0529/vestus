@@ -1,22 +1,15 @@
-//! 浏览器活动的聚合与上报。
-//!
-//! [`cdp`](crate::cdp) 只负责把一个 Chromium 进程翻译成一串 [`PageReport`]；这里
-//! 负责把它们按地址合并、按批次上报，并保证「采集这件事永远不影响浏览」：
-//!
-//! - 上报走后台任务，从不阻塞 `open_browser`；
-//! - 上报失败会把这一批**合回聚合表**并退避重试，而不是丢掉；
-//! - 采集通道连不上、握手失败、中途断开，都只是这次会话没有日志。
-//!
-//! 每一批发的都是**增量**（次数和停留时长都是自上次上报以来的量），所以服务端只
-//! 需要按 `(sessionKey, url)` 累加。这样即使某一批重发或丢失，也不会让历史数据
-//! 互相覆盖。
+//! Browser activity is committed locally before delivery. Staged observations are
+//! atomically converted into immutable v2 batches; only a matching server ACK
+//! removes a batch. Account-scoped queues survive offline exits and app upgrades.
+//! CDP events not yet delivered to this process, and disk/quota failures, remain
+//! explicit limits to durability. No credential is stored in the queue.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::auth::DesktopAuthState;
@@ -24,7 +17,7 @@ use crate::browser::DevToolsEndpoint;
 use crate::cdp::{self, FormSnapshot, PageReport};
 use crate::rt;
 
-/// 攒够一批就发的间隔。太短会把一次正常浏览打成几十个请求，太长则退出时丢得多。
+/// 后台检查持久队列的间隔，采集事件落盘不等待此定时器。
 const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// 上报失败后的退避。第 n 次重试等 `RETRY_BACKOFF * n`，上限 `MAX_RETRY_BACKOFF`。
@@ -43,7 +36,7 @@ const MAX_TRACKED_PAGES: usize = 500;
 /// 页数的 JSON 体积相差几个数量级，因此每批按实际序列化长度分割。
 const MAX_ACTIVITY_REPORT_BYTES: usize = 4 * 1024 * 1024;
 
-/// 关应用时等各会话把最后一批发完的上限。等不到就放弃，不能让用户卡在退出上。
+/// 关应用时等待采集事件提交本地队列的上限，不等待网络上传。
 const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 随每批上报一起发的客户端版本号，由 `build.rs` 从 `tauri.conf.json` 读出。
@@ -82,7 +75,7 @@ impl SessionKey {
 }
 
 /// 一批上报的线格式。字段名与后端 `BrowserActivityReport` 一一对应。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ActivityReport {
     /// 这次会话的去重键，见 [`SessionKey::wire_key`]。同一次会话的每一批都相同。
@@ -104,7 +97,7 @@ struct ActivityReport {
 }
 
 /// 一个地址在这一批里的增量。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PageRow {
     url: String,
@@ -252,141 +245,322 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// 会话结束后最后一批的重试次数。会话已经没了，不能无限重试下去。
-const FINAL_FLUSH_ATTEMPTS: u32 = 3;
+/// The owner is captured while opening the browser, before asynchronous CDP startup.
+/// Queue namespaces are stable across app upgrades and separate servers and users.
+#[derive(Debug, Clone)]
+pub(crate) struct ActivityOwner {
+    user_id: i64,
+    profile_key: String,
+    namespace: String,
+}
 
-/// 浏览器活动采集的入口，注册进 Tauri 托管状态。
+impl ActivityOwner {
+    pub(crate) fn new(api_base: &str, profile_key: &str, user_id: i64) -> Self {
+        use sha2::{Digest, Sha256};
+        let encoded = serde_json::to_vec(&("activity-owner/v1", api_base, profile_key, user_id))
+            .expect("owner identity serializes");
+        Self {
+            user_id,
+            profile_key: profile_key.to_owned(),
+            namespace: format!("{:x}", Sha256::digest(encoded)),
+        }
+    }
+
+    fn current(auth: &DesktopAuthState) -> Option<Self> {
+        let (user_id, profile_key, _) = auth.current_identity().ok()?;
+        Some(Self::new(
+            auth.api_base_url().ok()?,
+            profile_key.as_deref()?,
+            user_id,
+        ))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReliableReport {
+    protocol_version: u32,
+    owner_user_id: i64,
+    batch_id: String,
+    #[serde(flatten)]
+    report: ActivityReport,
+}
+
+/// Durable staging is separate from upload: network timeouts cannot stop recording.
 #[derive(Clone, Default)]
 pub struct ActivityCollector {
-    /// 每个会话一个聚合任务。退出时靠它们知道「最后一批发完了没有」。
     sessions: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    outbox: Arc<std::sync::OnceLock<Arc<crate::activity_outbox::ActivityOutbox>>>,
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl ActivityCollector {
-    /// 给一个刚就绪的浏览器会话开一条采集通道。
-    ///
-    /// 立刻返回：连接、采集、上报全在后台任务里。这个函数跑在浏览器监视线程上
-    /// （`Browsers::launch` 的 `on_ready`），不能阻塞，也不能出错——采集不成功
-    /// 只是这次会话没有日志，浏览器照常使用。
-    pub fn start(&self, key: SessionKey, endpoint: DevToolsEndpoint, auth: DesktopAuthState) {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let runtime = rt::runtime();
-        // 采集任务先于聚合任务结束：浏览器退出 -> 调试通道断开 -> sender 析构 ->
-        // receiver 收到 None -> 聚合任务发最后一批。整条链是这个顺序。
-        runtime.spawn(async move {
-            let _ = cdp::collect(endpoint, sender).await;
-        });
-        let aggregation = runtime.spawn(async move { run_session(key, receiver, auth).await });
-        self.remember(aggregation);
-    }
-
-    fn remember(&self, handle: JoinHandle<()>) {
-        let mut sessions = self.sessions.lock().expect("活动采集锁已中毒");
-        // 已结束的会话在这里回收，于是这张表的长度跟着「在开的浏览器」而不是
-        // 「一共开过多少次」。
-        sessions.retain(|task| !task.is_finished());
-        sessions.push(handle);
-    }
-
-    /// 等各会话把最后一批发完，最多等 [`SHUTDOWN_FLUSH_TIMEOUT`]。
-    ///
-    /// 必须在 `BrowserSessionManager::shutdown()` **之后**调用：只有浏览器进程被
-    /// 收走，调试通道才会断，聚合任务才会走到最后一次上报。等不到就放弃——退出
-    /// 卡住比丢一批日志严重得多。
-    pub fn shutdown(&self) {
-        let handles = {
-            let mut sessions = self.sessions.lock().expect("活动采集锁已中毒");
-            std::mem::take(&mut *sessions)
+    pub fn initialize(&self, root: &std::path::Path, auth: DesktopAuthState) {
+        let outbox = match crate::activity_outbox::ActivityOutbox::open(root) {
+            Ok(outbox) => Arc::new(outbox),
+            Err(error) => {
+                eprintln!("activity queue unavailable, existing data retained: {error}");
+                return;
+            }
         };
+        if self.outbox.set(outbox.clone()).is_err() {
+            return;
+        }
+        let wake = self.wake.clone();
+        rt::runtime().spawn(async move {
+            let mut failures = 0u32;
+            loop {
+                if let Some(owner) = ActivityOwner::current(&auth) {
+                    match deliver_pending(outbox.clone(), &owner, &auth).await {
+                        Ok(()) => failures = 0,
+                        Err(error) => {
+                            failures = failures.saturating_add(1);
+                            eprintln!("activity delivery deferred; queued data retained: {error}");
+                        }
+                    }
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(next_delay(failures)) => {},
+                    _ = wake.notified() => {},
+                }
+            }
+        });
+    }
+
+    pub(crate) fn start(&self, key: SessionKey, endpoint: DevToolsEndpoint, owner: ActivityOwner) {
+        let Some(outbox) = self.outbox.get().cloned() else {
+            eprintln!("activity collection unavailable: durable queue was not initialized");
+            return;
+        };
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        rt::runtime().spawn(async move {
+            if let Err(error) = cdp::collect(endpoint, sender).await {
+                eprintln!("activity collection stopped: {error}");
+            }
+        });
+        let session_key = key.wire_key();
+        let wake = self.wake.clone();
+        let capture = rt::runtime().spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                let mut aggregate = Aggregate::default();
+                let time = now_ms();
+                aggregate.absorb(event, time);
+                if aggregate.is_empty() {
+                    continue;
+                }
+                let report = activity_report(
+                    &key,
+                    &session_key,
+                    time,
+                    aggregate.dropped,
+                    aggregate.take(),
+                );
+                let payload = serde_json::to_value(report).expect("activity report serializes");
+                let queue = outbox.clone();
+                let namespace = owner.namespace.clone();
+                let result = rt::runtime()
+                    .spawn_blocking(move || queue.stage(&namespace, &payload))
+                    .await;
+                if !matches!(result, Ok(Ok(()))) {
+                    // Disk/quota failures cannot be made durable; make the loss explicit and
+                    // try subsequent events again, without deleting any queued observations.
+                    eprintln!("activity observation could not be persisted: {result:?}");
+                }
+            }
+            wake.notify_one();
+        });
+        let mut sessions = self.sessions.lock().expect("活动采集锁已中毒");
+        sessions.retain(|task| !task.is_finished());
+        sessions.push(capture);
+    }
+
+    /// Browser shutdown ends CDP first; wait for remaining observations to reach disk.
+    /// Upload is independent and may continue after the next login/restart.
+    pub fn shutdown(&self) {
+        let handles = std::mem::take(&mut *self.sessions.lock().expect("活动采集锁已中毒"));
         if handles.is_empty() {
             return;
         }
-        // 这里跑在 Tauri 主线程（`app.run` 的退出回调）上，不在运行时线程里，
-        // 所以 block_on 是安全的。
-        let _ = rt::runtime().block_on(tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, async move {
-            for handle in handles {
-                let _ = handle.await;
-            }
-        }));
+        let completed =
+            rt::runtime().block_on(tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, async move {
+                for handle in handles {
+                    let _ = handle.await;
+                }
+            }));
+        if completed.is_err() {
+            eprintln!("activity shutdown deadline reached; committed queue is retained, unprocessed CDP events may be lost");
+        }
     }
 }
 
-/// 一个会话的聚合与上报循环，随采集通道结束而结束。
-async fn run_session(
-    key: SessionKey,
-    mut receiver: UnboundedReceiver<PageReport>,
-    auth: DesktopAuthState,
-) {
-    // 去重键只在这里算一次：同一次会话的每一批都必须带同一个值，服务端才能把它们
-    // 落到同一行。
-    let session_key = key.wire_key();
-    let mut aggregate = Aggregate::default();
-    let mut failures: u32 = 0;
-    let mut next_flush = tokio::time::Instant::now() + FLUSH_INTERVAL;
-
-    loop {
-        tokio::select! {
-            report = receiver.recv() => match report {
-                Some(report) => aggregate.absorb(report, now_ms()),
-                // 采集通道结束 = 浏览器已经退出。
-                None => break,
-            },
-            _ = tokio::time::sleep_until(next_flush) => {
-                flush(&key, &session_key, &mut aggregate, &auth, &mut failures).await;
-                next_flush = tokio::time::Instant::now() + next_delay(failures);
+/// The database transaction commits staged -> immutable batches together. IDs and
+/// payloads are never regenerated after an uncertain HTTP result.
+fn build_ready_reports(
+    values: Vec<serde_json::Value>,
+    owner_id: i64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut groups: BTreeMap<String, (ActivityReport, Aggregate)> = BTreeMap::new();
+    for value in values {
+        let report: ActivityReport =
+            serde_json::from_value(value).map_err(|error| error.to_string())?;
+        let entry = groups
+            .entry(report.session_key.clone())
+            .or_insert_with(|| (report.clone(), Aggregate::default()));
+        entry.0.reported_at_ms = entry.0.reported_at_ms.max(report.reported_at_ms);
+        entry.1.dropped = entry.1.dropped.max(report.dropped_pages);
+        entry.1.merge_back(report.pages);
+    }
+    let mut ready = Vec::new();
+    for (_, (original, mut aggregate)) in groups {
+        let mut template = original;
+        template.dropped_pages = aggregate.dropped;
+        template.pages.clear();
+        // Measure the actual persisted metadata, including versions from an older
+        // client, and reserve the exact v2 envelope size before packing pages.
+        let empty_wire = serde_json::to_vec(&ReliableReport {
+            protocol_version: 2,
+            owner_user_id: owner_id,
+            batch_id: "0".repeat(64),
+            report: template.clone(),
+        })
+        .map_err(|error| error.to_string())?
+        .len();
+        let empty_report = serde_json::to_vec(&template)
+            .map_err(|error| error.to_string())?
+            .len();
+        let overhead = empty_wire - empty_report;
+        let rows = aggregate
+            .take()
+            .into_iter()
+            .flat_map(split_page_counters)
+            .collect();
+        let chunks = split_report_rows(&template, rows, MAX_ACTIVITY_REPORT_BYTES - overhead)
+            .map_err(|_| "an activity page exceeds the upload size limit".to_string())?;
+        for report in chunks {
+            let mut random = [0u8; 32];
+            getrandom::getrandom(&mut random).map_err(|error| error.to_string())?;
+            let batch_id: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+            let value = serde_json::to_value(ReliableReport {
+                protocol_version: 2,
+                owner_user_id: owner_id,
+                batch_id,
+                report,
+            })
+            .map_err(|error| error.to_string())?;
+            if serde_json::to_vec(&value)
+                .map_err(|error| error.to_string())?
+                .len()
+                > MAX_ACTIVITY_REPORT_BYTES
+            {
+                return Err("activity batch exceeds the upload size limit".into());
             }
+            ready.push(value);
         }
     }
+    Ok(ready)
+}
 
-    for attempt in 0..FINAL_FLUSH_ATTEMPTS {
-        if aggregate.is_empty() {
+async fn deliver_pending(
+    outbox: Arc<crate::activity_outbox::ActivityOutbox>,
+    owner: &ActivityOwner,
+    auth: &DesktopAuthState,
+) -> Result<(), String> {
+    deliver_with_sender(outbox, owner, |payload| async move {
+        let batch_id = payload["batchId"].as_str().ok_or("missing batchId")?;
+        auth.report_browser_activity(owner.user_id, &owner.profile_key, batch_id, &payload)
+            .await
+            .map_err(|error| format!("{}: {}", error.code, error.message))
+    })
+    .await
+}
+
+async fn deliver_with_sender<F, Fut>(
+    outbox: Arc<crate::activity_outbox::ActivityOutbox>,
+    owner: &ActivityOwner,
+    mut send: F,
+) -> Result<(), String>
+where
+    F: FnMut(serde_json::Value) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    // Bound each pass so a huge recovered backlog does not monopolize the worker.
+    for _ in 0..64 {
+        let queue = outbox.clone();
+        let namespace = owner.namespace.clone();
+        let user_id = owner.user_id;
+        let payload = rt::runtime()
+            .spawn_blocking(move || {
+                if let Some(ready) = queue.next(&namespace)? {
+                    return Ok::<_, crate::activity_outbox::OutboxError>(Some(ready));
+                }
+                queue.prepare(&namespace, |values| build_ready_reports(values, user_id))?;
+                queue.next(&namespace)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        let Some(payload) = payload else {
+            return Ok(());
+        };
+        let report: ReliableReport =
+            serde_json::from_value(payload.clone()).map_err(|error| error.to_string())?;
+        if report.protocol_version != 2 || report.owner_user_id != owner.user_id {
+            return Err("unsupported queue payload or owner mismatch".into());
+        }
+        send(payload).await?;
+        let queue = outbox.clone();
+        let namespace = owner.namespace.clone();
+        rt::runtime()
+            .spawn_blocking(move || queue.acknowledge(&namespace, &report.batch_id))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Partition increments without clamping their total. Snapshots belong only to
+/// the final part, with their original timestamps, so older parts cannot replace
+/// the latest captured form when the server receives batches in another order.
+fn split_page_counters(mut row: PageRow) -> Vec<PageRow> {
+    const MAX_COUNT: u32 = 1_000_000;
+    const MAX_DWELL: u64 = 24 * 60 * 60 * 1000;
+    let mut parts = Vec::new();
+    loop {
+        let mut part = row.clone();
+        part.visits = row.visits.min(MAX_COUNT);
+        part.clicks = row.clicks.min(MAX_COUNT);
+        part.inputs = row.inputs.min(MAX_COUNT);
+        part.submits = row.submits.min(MAX_COUNT);
+        part.scrolls = row.scrolls.min(MAX_COUNT);
+        part.dwell_ms = row.dwell_ms.min(MAX_DWELL);
+        row.visits -= part.visits;
+        row.clicks -= part.clicks;
+        row.inputs -= part.inputs;
+        row.submits -= part.submits;
+        row.scrolls -= part.scrolls;
+        row.dwell_ms -= part.dwell_ms;
+        let remaining = row.visits > 0
+            || row.clicks > 0
+            || row.inputs > 0
+            || row.submits > 0
+            || row.scrolls > 0
+            || row.dwell_ms > 0;
+        if remaining {
+            part.input_snapshot = None;
+            part.input_snapshot_at_ms = 0;
+            part.submit_snapshot = None;
+            part.submit_snapshot_at_ms = 0;
+        }
+        parts.push(part);
+        if !remaining {
             break;
         }
-        if attempt > 0 {
-            tokio::time::sleep(next_delay(failures)).await;
-        }
-        flush(&key, &session_key, &mut aggregate, &auth, &mut failures).await;
     }
+    parts
 }
 
-/// 发一批。失败就把它合回聚合表，等下一次连着新增量一起发。
-async fn flush(
-    key: &SessionKey,
-    session_key: &str,
-    aggregate: &mut Aggregate,
-    auth: &DesktopAuthState,
-    failures: &mut u32,
-) {
-    if aggregate.is_empty() {
-        return;
-    }
-    let reports = match split_activity_reports(
-        key,
-        session_key,
-        now_ms(),
-        aggregate.dropped,
-        aggregate.take(),
-    ) {
-        Ok(reports) => reports,
-        Err(rows) => {
-            *failures = failures.saturating_add(1);
-            aggregate.merge_back(rows);
-            return;
-        }
-    };
-    // 采集失败不进用户界面：这个 crate 没有日志设施，而把后台上报的网络错误弹给
-    // 正在浏览的用户只会造成困扰。数据不会丢——失败的那一批合回聚合表继续重试。
-    let mut reports = reports.into_iter();
-    while let Some(report) = reports.next() {
-        if auth.report_browser_activity(&report).await.is_err() {
-            *failures = failures.saturating_add(1);
-            merge_unsent_reports(aggregate, report, reports);
-            return;
-        }
-    }
-    *failures = 0;
-}
-
+#[cfg(test)]
 fn split_activity_reports(
     key: &SessionKey,
     session_key: &str,
@@ -394,17 +568,20 @@ fn split_activity_reports(
     dropped_pages: u64,
     rows: Vec<PageRow>,
 ) -> Result<Vec<ActivityReport>, Vec<PageRow>> {
-    let base_len = serde_json::to_vec(&activity_report(
-        key,
-        session_key,
-        reported_at_ms,
-        dropped_pages,
-        Vec::new(),
-    ))
-    .expect("ActivityReport 必须可序列化")
-    .len();
+    let template = activity_report(key, session_key, reported_at_ms, dropped_pages, Vec::new());
+    split_report_rows(&template, rows, MAX_ACTIVITY_REPORT_BYTES)
+}
+
+fn split_report_rows(
+    template: &ActivityReport,
+    rows: Vec<PageRow>,
+    byte_limit: usize,
+) -> Result<Vec<ActivityReport>, Vec<PageRow>> {
+    let base_len = serde_json::to_vec(template)
+        .expect("ActivityReport 必须可序列化")
+        .len();
     let mut reports = Vec::new();
-    let mut pages = Vec::new();
+    let mut pages: Vec<PageRow> = Vec::new();
     let mut page_bytes = 0;
     let mut rows = rows.into_iter();
     while let Some(row) = rows.next() {
@@ -412,7 +589,12 @@ fn split_activity_reports(
             .expect("PageRow 必须可序列化")
             .len();
         let candidate_len = wire_len(base_len, page_bytes, pages.len(), row_len);
-        if candidate_len <= MAX_ACTIVITY_REPORT_BYTES {
+        // Keep each URL increment in a separate batch when a counter was split.
+        // The server can therefore apply every bounded increment independently.
+        let duplicate = pages
+            .iter()
+            .any(|page| page.url == row.url && page.url_params == row.url_params);
+        if candidate_len <= byte_limit && pages.len() < MAX_TRACKED_PAGES && !duplicate {
             page_bytes = if pages.is_empty() {
                 row_len
             } else {
@@ -424,27 +606,19 @@ fn split_activity_reports(
         if pages.is_empty() {
             return Err(restore_rows(reports, pages, row, rows));
         }
-        reports.push(activity_report(
-            key,
-            session_key,
-            reported_at_ms,
-            dropped_pages,
-            std::mem::take(&mut pages),
-        ));
-        if wire_len(base_len, 0, 0, row_len) > MAX_ACTIVITY_REPORT_BYTES {
+        let mut report = template.clone();
+        report.pages = std::mem::take(&mut pages);
+        reports.push(report);
+        if wire_len(base_len, 0, 0, row_len) > byte_limit {
             return Err(restore_rows(reports, pages, row, rows));
         }
         page_bytes = row_len;
         pages.push(row);
     }
     if !pages.is_empty() {
-        reports.push(activity_report(
-            key,
-            session_key,
-            reported_at_ms,
-            dropped_pages,
-            pages,
-        ));
+        let mut report = template.clone();
+        report.pages = pages;
+        reports.push(report);
     }
     Ok(reports)
 }
@@ -489,6 +663,7 @@ fn activity_report(
     }
 }
 
+#[cfg(test)]
 fn merge_unsent_reports(
     aggregate: &mut Aggregate,
     failed: ActivityReport,
@@ -511,6 +686,285 @@ fn next_delay(failures: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DurableFixture {
+        root: std::path::PathBuf,
+        queue: Arc<crate::activity_outbox::ActivityOutbox>,
+    }
+    impl DurableFixture {
+        fn new() -> Self {
+            static NEXT_FIXTURE: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "vestus-delivery-{}-{}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let queue = Arc::new(crate::activity_outbox::ActivityOutbox::open(&root).unwrap());
+            Self { root, queue }
+        }
+        fn stage(&self, owner: &ActivityOwner, clicks: u32) {
+            let mut row = large_row(1);
+            row.clicks = clicks;
+            row.input_snapshot = None;
+            let mut report = activity_report(
+                &SessionKey {
+                    browser_id: 1,
+                    platform_id: 2,
+                    direct_mode: false,
+                },
+                "stable-session",
+                now_ms(),
+                0,
+                vec![row],
+            );
+            report.client_version = "0.1.7".into();
+            self.queue
+                .stage(&owner.namespace, &serde_json::to_value(report).unwrap())
+                .unwrap();
+        }
+    }
+    impl Drop for DurableFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn response_loss_and_restart_replay_the_exact_batch_before_new_observations() {
+        rt::runtime().block_on(async {
+            let fixture = DurableFixture::new();
+            let owner = ActivityOwner::new("https://server.test", "user-7", 7);
+            fixture.stage(&owner, 2);
+            let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+            let attempts = received.clone();
+            let failed = deliver_with_sender(fixture.queue.clone(), &owner, move |payload| {
+                attempts.lock().unwrap().push(payload);
+                async { Err("server committed, response was lost".into()) }
+            })
+            .await;
+            assert!(failed.is_err());
+            let original = fixture.queue.next(&owner.namespace).unwrap().unwrap();
+            fixture.stage(&owner, 3);
+            let reopened =
+                Arc::new(crate::activity_outbox::ActivityOutbox::open(&fixture.root).unwrap());
+            let attempts = received.clone();
+            deliver_with_sender(reopened.clone(), &owner, move |payload| {
+                attempts.lock().unwrap().push(payload);
+                async { Ok(()) }
+            })
+            .await
+            .unwrap();
+            let received = received.lock().unwrap();
+            assert_eq!(received.len(), 3);
+            assert_eq!(received[0], original);
+            assert_eq!(
+                received[1], original,
+                "retry payload/ID cannot merge new events"
+            );
+            assert_ne!(received[1]["batchId"], received[2]["batchId"]);
+            assert_eq!(received[0]["pages"][0]["clicks"], 2);
+            assert_eq!(received[2]["pages"][0]["clicks"], 3);
+            assert_eq!(
+                received[2]["clientVersion"], "0.1.7",
+                "upgrading must not relabel captured data"
+            );
+            assert!(reopened.next(&owner.namespace).unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn other_account_cannot_drain_pending_activity() {
+        rt::runtime().block_on(async {
+            let fixture = DurableFixture::new();
+            let owner = ActivityOwner::new("https://server.test", "user-7", 7);
+            let other = ActivityOwner::new("https://server.test", "user-8", 8);
+            let other_server = ActivityOwner::new("https://another.test", "user-7", 7);
+            fixture.stage(&owner, 2);
+            for wrong in [other, other_server] {
+                deliver_with_sender(fixture.queue.clone(), &wrong, |_| async {
+                    panic!("another owner's record was sent")
+                })
+                .await
+                .unwrap();
+            }
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let sent = count.clone();
+            deliver_with_sender(fixture.queue.clone(), &owner, move |payload| {
+                assert_eq!(payload["ownerUserId"], 7);
+                sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async { Ok(()) }
+            })
+            .await
+            .unwrap();
+            assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+        });
+    }
+
+    #[test]
+    fn ready_batches_are_delivered_even_when_new_staging_is_unreadable() {
+        rt::runtime().block_on(async {
+            let fixture = DurableFixture::new();
+            let owner = ActivityOwner::new("https://server.test", "user-7", 7);
+            fixture.stage(&owner, 2);
+            fixture
+                .queue
+                .prepare(&owner.namespace, |values| build_ready_reports(values, 7))
+                .unwrap();
+            fixture
+                .queue
+                .stage(&owner.namespace, &serde_json::json!({"futureFormat": true}))
+                .unwrap();
+            let result =
+                deliver_with_sender(fixture.queue.clone(), &owner, |_| async { Ok(()) }).await;
+            assert!(result.is_err(), "unreadable staging must be retained");
+            assert!(
+                fixture.queue.next(&owner.namespace).unwrap().is_none(),
+                "valid ready batch must be acknowledged first"
+            );
+            assert!(fixture
+                .queue
+                .prepare(&owner.namespace, |values| build_ready_reports(values, 7))
+                .is_err());
+        });
+    }
+
+    #[test]
+    fn reliable_batches_include_metadata_without_exceeding_body_limit() {
+        let key = SessionKey {
+            browser_id: 1,
+            platform_id: 2,
+            direct_mode: false,
+        };
+        let events = (0..MAX_TRACKED_PAGES)
+            .map(|index| {
+                serde_json::to_value(activity_report(
+                    &key,
+                    "size-session",
+                    now_ms(),
+                    0,
+                    vec![large_row(index)],
+                ))
+                .unwrap()
+            })
+            .collect();
+        let ready = build_ready_reports(events, i64::MAX).unwrap();
+        assert!(ready.len() > 1);
+        assert_eq!(
+            ready
+                .iter()
+                .map(|p| p["pages"].as_array().unwrap().len())
+                .sum::<usize>(),
+            MAX_TRACKED_PAGES
+        );
+        for payload in ready {
+            assert!(serde_json::to_vec(&payload).unwrap().len() <= MAX_ACTIVITY_REPORT_BYTES);
+            assert_eq!(payload["batchId"].as_str().unwrap().len(), 64);
+            assert_eq!(payload["protocolVersion"], 2);
+        }
+    }
+
+    #[test]
+    fn oversized_counter_totals_are_partitioned_without_losing_increments() {
+        let key = SessionKey {
+            browser_id: 1,
+            platform_id: 2,
+            direct_mode: false,
+        };
+        let events = (0..500)
+            .map(|index| {
+                let mut row = large_row(0);
+                row.visits = 10_000;
+                row.clicks = 10_000;
+                row.inputs = 10_000;
+                row.submits = 10_000;
+                row.scrolls = 10_000;
+                row.dwell_ms = 7 * 24 * 60 * 60 * 1000;
+                row.first_seen_at_ms = index + 1;
+                row.last_seen_at_ms = index + 1;
+                row.input_snapshot_at_ms = index + 1;
+                serde_json::to_value(activity_report(&key, "oversized", index + 1, 0, vec![row]))
+                    .unwrap()
+            })
+            .collect();
+        let batches = build_ready_reports(events, 7).unwrap();
+        assert_eq!(batches.len(), 3500);
+        let mut ids = std::collections::HashSet::new();
+        let mut totals = [0u64; 6];
+        let mut snapshots = 0;
+        for payload in batches {
+            assert!(serde_json::to_vec(&payload).unwrap().len() <= MAX_ACTIVITY_REPORT_BYTES);
+            let batch: ReliableReport = serde_json::from_value(payload).unwrap();
+            assert!(ids.insert(batch.batch_id));
+            assert_eq!(batch.report.pages.len(), 1);
+            let row = &batch.report.pages[0];
+            for (index, count) in [row.visits, row.clicks, row.inputs, row.submits, row.scrolls]
+                .into_iter()
+                .enumerate()
+            {
+                assert!(count <= 1_000_000);
+                totals[index] += u64::from(count);
+            }
+            assert!(row.dwell_ms <= 24 * 60 * 60 * 1000);
+            totals[5] += row.dwell_ms;
+            assert_eq!((row.first_seen_at_ms, row.last_seen_at_ms), (1, 500));
+            if row.input_snapshot.is_some() {
+                snapshots += 1;
+                assert_eq!(row.input_snapshot_at_ms, 500);
+            } else {
+                assert_eq!(row.input_snapshot_at_ms, 0);
+            }
+        }
+        assert_eq!(&totals[..5], &[5_000_000; 5]);
+        assert_eq!(totals[5], 500 * 7 * 24 * 60 * 60 * 1000);
+        assert_eq!(snapshots, 1);
+    }
+
+    #[test]
+    fn page_partition_retains_zero_count_snapshots_and_both_snapshot_timestamps() {
+        let mut row = large_row(0);
+        row.visits = 0;
+        let unchanged = split_page_counters(row.clone());
+        assert_eq!(unchanged, vec![row.clone()]);
+        row.dwell_ms = 24 * 60 * 60 * 1000 + 1;
+        row.submit_snapshot = row.input_snapshot.clone();
+        row.submit_snapshot_at_ms = 99;
+        let parts = split_page_counters(row);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].submit_snapshot.is_none());
+        assert_eq!(parts[0].submit_snapshot_at_ms, 0);
+        assert!(parts[1].submit_snapshot.is_some());
+        assert_eq!(parts[1].submit_snapshot_at_ms, 99);
+        assert_eq!(parts[1].input_snapshot_at_ms, 1);
+    }
+
+    #[test]
+    fn report_partition_enforces_page_count_limit() {
+        let key = SessionKey {
+            browser_id: 1,
+            platform_id: 2,
+            direct_mode: false,
+        };
+        let rows = (0..501)
+            .map(|index| {
+                let mut row = large_row(index);
+                row.input_snapshot = None;
+                row
+            })
+            .collect();
+        let reports = split_activity_reports(&key, "many-pages", 1, 0, rows).unwrap();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report.pages.len())
+                .collect::<Vec<_>>(),
+            vec![500, 1]
+        );
+    }
 
     /// 上报的版本号必须是安装包自己的版本号。换回 `CARGO_PKG_VERSION` 会在这里
     /// 失败：那个值不随发布标签走，会让每个版本都报同一个数字。

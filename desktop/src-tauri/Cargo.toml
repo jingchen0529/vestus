@@ -45,6 +45,11 @@ futures-util = { version = "0.3", default-features = false, features = [
 # 持久浏览器环境的目录名取摘要，服务端下发的字符串不直接进路径。已经在依赖树里
 # （tauri-codegen 用它），不引入新的下载。
 sha2 = "0.10"
+# 系统文件锁：兼容 Rust 1.82，进程退出时自动释放跨实例环境租约。
+fs2 = "0.4"
+# Local durable activity queue; bundle SQLite on every client platform.
+rusqlite = { version = "0.32", features = ["bundled"] }
+getrandom = "0.2"
 
 # keyring 按平台启用原生后端，避免在 macOS 上牵入 Windows 依赖
 [target.'cfg(target_os = "macos")'.dependencies]
