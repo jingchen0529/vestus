@@ -40,7 +40,8 @@ import {
   ChevronsRight,
   RotateCcw,
 } from "lucide-react";
-import { exportToJsonFile, exportToCsvFile } from "@/lib/export-utils";
+import { exportToJsonFile, exportToCsvFile, withBeijingDateTimes } from "@/lib/export-utils";
+import { beijingDateStamp, formatBeijingDateTime } from "@/lib/utils";
 import { getPageItems } from "@/lib/pagination";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -171,8 +172,8 @@ export function ActivityView({
       }
 
       exportToJsonFile(
-        allSessions,
-        `vestus-browser-sessions-all-${new Date().toISOString().slice(0, 10)}.json`,
+        withBeijingDateTimes(allSessions, ["startedAt", "lastReportAt"]),
+        `vestus-browser-sessions-all-${beijingDateStamp()}.json`,
       );
       toast.success(`已导出全部 ${allSessions.length} 条会话追踪记录 (JSON)`);
     } catch (err: any) {
@@ -201,8 +202,8 @@ export function ActivityView({
 
       const headers = [
         { label: "会话编号", key: "id" },
-        { label: "开始时间", key: "startedAt" },
-        { label: "最近上报", key: "lastReportAt" },
+        { label: "开始时间", key: "startedAt", format: formatBeijingDateTime },
+        { label: "最近上报", key: "lastReportAt", format: formatBeijingDateTime },
         { label: "桌面用户", key: "username" },
         { label: "平台名称", key: "platformName" },
         { label: "连接方式", key: "connectionText" },
@@ -226,7 +227,7 @@ export function ActivityView({
       exportToCsvFile(
         headers,
         rows,
-        `vestus-browser-sessions-all-${new Date().toISOString().slice(0, 10)}.csv`,
+        `vestus-browser-sessions-all-${beijingDateStamp()}.csv`,
       );
       toast.success(`已导出全部 ${rows.length} 条会话追踪记录 (CSV)`);
     } catch (err: any) {
@@ -258,7 +259,7 @@ export function ActivityView({
         filters.startAt || filters.endAt
           ? `${filters.startAt || "start"}_${filters.endAt || "end"}`
           : "all";
-      const filename = `vestus-advid-unique-${datePart}-${new Date().toISOString().slice(0, 10)}.csv`;
+      const filename = `vestus-advid-unique-${datePart}-${beijingDateStamp()}.csv`;
 
       if (valuesOnly) {
         const headers = [{ label: res.param || "advid", key: "paramValue" }];
@@ -268,8 +269,8 @@ export function ActivityView({
           { label: "ID (" + (res.param || "advid") + ")", key: "paramValue" },
           { label: "出现次数", key: "occurrences" },
           { label: "累计访问量", key: "totalVisits" },
-          { label: "首次访问时间", key: "firstSeenAt" },
-          { label: "最后访问时间", key: "lastSeenAt" },
+          { label: "首次访问时间", key: "firstSeenAt", format: formatBeijingDateTime },
+          { label: "最后访问时间", key: "lastSeenAt", format: formatBeijingDateTime },
           { label: "关联桌面用户", key: "usernames" },
           { label: "关联平台", key: "platforms" },
         ];
@@ -316,13 +317,13 @@ export function ActivityView({
         { label: "提交次数", key: "submits" },
         { label: "滚动次数", key: "scrolls" },
         { label: "前台停留(毫秒)", key: "dwellMs" },
-        { label: "首次活动", key: "firstAt" },
-        { label: "最近上报", key: "lastAt" },
+        { label: "首次活动", key: "firstAt", format: formatBeijingDateTime },
+        { label: "最近上报", key: "lastAt", format: formatBeijingDateTime },
       ];
       exportToCsvFile(
         headers,
         allRows,
-        `vestus-browser-daily-${new Date().toISOString().slice(0, 10)}.csv`,
+        `vestus-browser-daily-${beijingDateStamp()}.csv`,
       );
       toast.success(`已导出全部 ${allRows.length} 条按天汇总记录 (CSV)`);
     } catch (err: any) {
@@ -348,8 +349,8 @@ export function ActivityView({
         return;
       }
       exportToJsonFile(
-        allRows,
-        `vestus-browser-daily-${new Date().toISOString().slice(0, 10)}.json`,
+        withBeijingDateTimes(allRows, ["firstAt", "lastAt"]),
+        `vestus-browser-daily-${beijingDateStamp()}.json`,
       );
       toast.success(`已导出全部 ${allRows.length} 条按天汇总记录 (JSON)`);
     } catch (err: any) {

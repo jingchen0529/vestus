@@ -14,7 +14,8 @@ import {
   ChevronsLeft,
   ChevronsRight,
 } from "lucide-react";
-import { exportToJsonFile, exportToCsvFile } from "@/lib/export-utils";
+import { exportToJsonFile, exportToCsvFile, withBeijingDateTimes } from "@/lib/export-utils";
+import { beijingDateStamp, formatBeijingDateTime } from "@/lib/utils";
 import { getPageItems } from "@/lib/pagination";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -70,7 +71,10 @@ export function LogsView({
         toast.warning("未检索到可导出的数据");
         return;
       }
-      exportToJsonFile(allLogs, `vestus-audit-logs-all-${new Date().toISOString().slice(0, 10)}.json`);
+      exportToJsonFile(
+        withBeijingDateTimes(allLogs, ["createdAt"]),
+        `vestus-audit-logs-all-${beijingDateStamp()}.json`,
+      );
       toast.success(`已导出全部 ${allLogs.length} 条审计日志 (JSON)`);
     } catch (err: any) {
       toast.error("导出 JSON 失败", { description: err.message });
@@ -97,7 +101,7 @@ export function LogsView({
       }
       const headers = [
         { label: "日志编号", key: "id" },
-        { label: "操作时间", key: "createdAt" },
+        { label: "操作时间", key: "createdAt", format: formatBeijingDateTime },
         { label: "主体类型", key: "actorType" },
         { label: "主体账号", key: "actorUsername" },
         { label: "主体角色", key: "actorRole" },
@@ -107,7 +111,7 @@ export function LogsView({
         { label: "结果状态", key: "status" },
         { label: "请求ID", key: "requestId" },
       ];
-      exportToCsvFile(headers, allLogs, `vestus-audit-logs-all-${new Date().toISOString().slice(0, 10)}.csv`);
+      exportToCsvFile(headers, allLogs, `vestus-audit-logs-all-${beijingDateStamp()}.csv`);
       toast.success(`已导出全部 ${allLogs.length} 条审计日志 (CSV)`);
     } catch (err: any) {
       toast.error("导出 CSV 失败", { description: err.message });
