@@ -6,7 +6,9 @@ import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user"
 import { ProxyItem } from "@/types/proxy";
 import { AdminUser } from "@/types/admin";
 import {
+  CreateUserManagedAccountPayload,
   ManagedPlatformAccount,
+  UpdateUserManagedAccountPayload,
   UserManagedAccountBinding,
   UserManagedPlatformAccount,
   UserManagedPlatformAccountPayload,
@@ -59,6 +61,19 @@ interface UsersViewProps {
   onGetManagedAccounts?: (userId: number) => Promise<UserManagedAccountBinding[]>;
   onBindManagedAccount?: (userId: number, managedAccountId: number) => Promise<void>;
   onUnbindManagedAccount?: (userId: number, managedAccountId: number) => Promise<void>;
+  onCreateManagedAccount?: (
+    userId: number,
+    payload: CreateUserManagedAccountPayload,
+  ) => Promise<void>;
+  onGetManagedAccountDetail?: (
+    userId: number,
+    managedAccountId: number,
+  ) => Promise<UserManagedPlatformAccount>;
+  onUpdateManagedAccount?: (
+    userId: number,
+    managedAccountId: number,
+    payload: UpdateUserManagedAccountPayload,
+  ) => Promise<void>;
 }
 
 export function UsersView({
@@ -86,6 +101,9 @@ export function UsersView({
   onGetManagedAccounts,
   onBindManagedAccount,
   onUnbindManagedAccount,
+  onCreateManagedAccount,
+  onGetManagedAccountDetail,
+  onUpdateManagedAccount,
 }: UsersViewProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<DesktopUser | null>(null);
@@ -136,24 +154,17 @@ export function UsersView({
   };
 
   const handleOpenManagedAccount = async (user: DesktopUser) => {
-    if (!canManageManagedAccount || !onGetManagedAccount) return;
+    if (!canManageManagedAccount || (!onGetManagedAccounts && !onGetManagedAccount)) return;
     setManagedUser(user);
     setManagedAccount(null);
     setManagedBindings([]);
     setManagedDialogOpen(true);
     setManagedAccountLoading(true);
     try {
-      const [legacyResult, bindingsResult] = await Promise.allSettled([
-        onGetManagedAccount ? onGetManagedAccount(user.id) : Promise.resolve(null),
-        onGetManagedAccounts ? onGetManagedAccounts(user.id) : Promise.resolve([]),
-      ]);
-      if (legacyResult.status === "fulfilled") {
-        setManagedAccount(legacyResult.value);
-      }
-      if (bindingsResult.status === "fulfilled") {
-        setManagedBindings(bindingsResult.value);
-      } else {
-        throw bindingsResult.reason;
+      if (onGetManagedAccounts) {
+        setManagedBindings(await onGetManagedAccounts(user.id));
+      } else if (onGetManagedAccount) {
+        setManagedAccount(await onGetManagedAccount(user.id));
       }
     } catch (error) {
       toast.error("读取托管账号失败", {
@@ -164,20 +175,41 @@ export function UsersView({
     }
   };
 
-  const handleBindManagedAccount = async (userId: number, managedAccountId: number) => {
-    if (!onBindManagedAccount) return;
-    await onBindManagedAccount(userId, managedAccountId);
+  const refreshManagedBindingsForUser = async (userId: number) => {
     if (onGetManagedAccounts && managedUser?.id === userId) {
       setManagedBindings(await onGetManagedAccounts(userId));
     }
   };
 
+  const handleBindManagedAccount = async (userId: number, managedAccountId: number) => {
+    if (!onBindManagedAccount) return;
+    await onBindManagedAccount(userId, managedAccountId);
+    await refreshManagedBindingsForUser(userId);
+  };
+
   const handleUnbindManagedAccount = async (userId: number, managedAccountId: number) => {
     if (!onUnbindManagedAccount) return;
     await onUnbindManagedAccount(userId, managedAccountId);
-    if (onGetManagedAccounts && managedUser?.id === userId) {
-      setManagedBindings(await onGetManagedAccounts(userId));
-    }
+    await refreshManagedBindingsForUser(userId);
+  };
+
+  const handleCreateUserManagedAccount = async (
+    userId: number,
+    payload: CreateUserManagedAccountPayload,
+  ) => {
+    if (!onCreateManagedAccount) return;
+    await onCreateManagedAccount(userId, payload);
+    await refreshManagedBindingsForUser(userId);
+  };
+
+  const handleUpdateUserManagedAccount = async (
+    userId: number,
+    managedAccountId: number,
+    payload: UpdateUserManagedAccountPayload,
+  ) => {
+    if (!onUpdateManagedAccount) return;
+    await onUpdateManagedAccount(userId, managedAccountId, payload);
+    await refreshManagedBindingsForUser(userId);
   };
 
   return (
@@ -257,7 +289,7 @@ export function UsersView({
         onSubmitReset={onResetPassword}
       />
 
-      {canManageManagedAccount && onSaveManagedAccount && onDeleteManagedAccount && (
+      {canManageManagedAccount && (onCreateManagedAccount || onSaveManagedAccount) && (
         <ManagedAccountDialog
           open={managedDialogOpen}
           onOpenChange={(open) => {
@@ -276,8 +308,11 @@ export function UsersView({
           cookieDefaultDomain={cookieDefaultDomain}
           onSave={onSaveManagedAccount}
           onDelete={onDeleteManagedAccount}
-          onBind={handleBindManagedAccount}
-          onUnbind={handleUnbindManagedAccount}
+          onBind={onBindManagedAccount ? handleBindManagedAccount : undefined}
+          onUnbind={onUnbindManagedAccount ? handleUnbindManagedAccount : undefined}
+          onCreateAccount={onCreateManagedAccount ? handleCreateUserManagedAccount : undefined}
+          onGetAccountDetail={onGetManagedAccountDetail}
+          onUpdateAccount={onUpdateManagedAccount ? handleUpdateUserManagedAccount : undefined}
         />
       )}
 

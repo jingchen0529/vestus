@@ -18,7 +18,9 @@ import { DesktopUser, UserStats, CreateUserPayload, UpdateUserPayload } from "@/
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
 import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
 import {
+  CreateUserManagedAccountPayload,
   ManagedPlatformAccount,
+  UpdateUserManagedAccountPayload,
   UserManagedPlatformAccount,
   UserManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
@@ -457,14 +459,37 @@ export function App() {
     [],
   );
 
+  const handleGetUserManagedAccountDetail = useCallback(
+    (userId: number, managedAccountId: number) =>
+      api.getUserManagedAccountDetail(userId, managedAccountId),
+    [],
+  );
+
+  const handleCreateUserManagedAccount = async (
+    userId: number,
+    payload: CreateUserManagedAccountPayload,
+  ) => {
+    await api.createUserManagedAccount(userId, payload);
+    await Promise.all([loadUsers(), loadManagedAccounts()]);
+  };
+
+  const handleUpdateUserManagedAccount = async (
+    userId: number,
+    managedAccountId: number,
+    payload: UpdateUserManagedAccountPayload,
+  ) => {
+    await api.updateUserManagedAccount(userId, managedAccountId, payload);
+    await Promise.all([loadUsers(), loadManagedAccounts()]);
+  };
+
   const handleBindUserManagedAccount = async (userId: number, managedAccountId: number) => {
     await api.bindUserManagedAccount(userId, managedAccountId);
-    await loadUsers();
+    await Promise.all([loadUsers(), loadManagedAccounts()]);
   };
 
   const handleUnbindUserManagedAccount = async (userId: number, managedAccountId: number) => {
     await api.unbindUserManagedAccount(userId, managedAccountId);
-    await loadUsers();
+    await Promise.all([loadUsers(), loadManagedAccounts()]);
   };
 
   // Admin Mutators
@@ -575,6 +600,9 @@ export function App() {
             availableManagedAccounts={managedAccounts}
             onGetManagedAccount={isSuperAdmin ? handleGetUserManagedAccount : undefined}
             onGetManagedAccounts={isSuperAdmin ? handleGetUserManagedAccounts : undefined}
+            onGetManagedAccountDetail={isSuperAdmin ? handleGetUserManagedAccountDetail : undefined}
+            onCreateManagedAccount={isSuperAdmin ? handleCreateUserManagedAccount : undefined}
+            onUpdateManagedAccount={isSuperAdmin ? handleUpdateUserManagedAccount : undefined}
             onSaveManagedAccount={isSuperAdmin ? handleSaveUserManagedAccount : undefined}
             onDeleteManagedAccount={isSuperAdmin ? handleDeleteUserManagedAccount : undefined}
             onBindManagedAccount={isSuperAdmin ? handleBindUserManagedAccount : undefined}

@@ -83,12 +83,15 @@ export interface UserManagedAccountBinding {
   managedAccountId: number;
   name: string;
   accountName?: string;
+  alias?: string | null;
+  authMode?: ManagedAuthMode | null;
   status: ManagedAccountStatus | "active";
   expiresAt?: string | null;
   credentialVersion?: number;
   remoteAccountId?: string | null;
   remoteDisplayName?: string | null;
   identityCheckedAt?: string | null;
+  lastVerifiedAt?: string | null;
 }
 
 export interface ManagedAccountVerification {
@@ -97,6 +100,8 @@ export interface ManagedAccountVerification {
 }
 
 export interface UserManagedPlatformAccount {
+  id?: number;
+  name?: string;
   platformId: number;
   platformName?: string | null;
   authMode: UserManagedAuthMode;
@@ -111,6 +116,18 @@ export interface UserManagedPlatformAccount {
 
 export interface UserManagedPlatformAccountPayload {
   authMode: UserManagedAuthMode;
+  username?: string;
+  password?: string;
+  cookieBundle?: ManagedCookieInput[];
+}
+
+export interface CreateUserManagedAccountPayload extends UserManagedPlatformAccountPayload {
+  name?: string;
+}
+
+export interface UpdateUserManagedAccountPayload {
+  name?: string;
+  authMode?: UserManagedAuthMode;
   username?: string;
   password?: string;
   cookieBundle?: ManagedCookieInput[];

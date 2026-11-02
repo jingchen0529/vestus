@@ -16,6 +16,8 @@ from app.schemas.managed_platforms import (
     ManagedBootstrapRequest,
     ManagedPlatformAccountCreate,
     ManagedPlatformAccountUpdate,
+    ManagedPlatformUserAccountCreate,
+    ManagedPlatformUserAccountUpdate,
     ManagedPlatformUserConfig,
 )
 from app.services import managed_platforms as managed_service
@@ -163,15 +165,59 @@ def list_user_managed_accounts(
 )
 def add_user_managed_account(
     user_id: int,
-    payload: ManagedAccountBindingCreate,
+    payload: ManagedAccountBindingCreate | ManagedPlatformUserAccountCreate,
     request: Request,
     auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return managed_service.bind_account(
+    if isinstance(payload, ManagedAccountBindingCreate):
+        return managed_service.bind_account(
+            db,
+            payload.managed_account_id,
+            user_id,
+            audit=audit_context(request, auth),
+        )
+    return managed_service.create_user_bound_account(
         db,
-        payload.managed_account_id,
         user_id,
+        payload.model_dump(by_alias=False),
+        audit=audit_context(request, auth),
+    )
+
+
+@router.get(
+    "/api/admin/users/{user_id}/managed-accounts/{managed_account_id}",
+    tags=["managed-platforms"],
+)
+def get_user_bound_managed_account(
+    user_id: int,
+    managed_account_id: int,
+    _auth: Dict[str, Any] = Depends(super_admin_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    return managed_service.get_user_bound_account(db, user_id, managed_account_id)
+
+
+@router.patch(
+    "/api/admin/users/{user_id}/managed-accounts/{managed_account_id}",
+    tags=["managed-platforms"],
+)
+def patch_user_bound_managed_account(
+    user_id: int,
+    managed_account_id: int,
+    payload: ManagedPlatformUserAccountUpdate,
+    request: Request,
+    auth: Dict[str, Any] = Depends(super_admin_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    values = payload.model_dump(exclude_unset=True, by_alias=False)
+    if not values:
+        raise HTTPException(status_code=400, detail=NO_FIELDS_DETAIL)
+    return managed_service.update_user_bound_account(
+        db,
+        user_id,
+        managed_account_id,
+        values,
         audit=audit_context(request, auth),
     )
 

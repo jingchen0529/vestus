@@ -748,3 +748,66 @@ def test_binding_repository_can_list_and_get_account_specific_rows(api: Any) -> 
         assert selected is not None
         assert selected.managed_account_id == 202
 
+
+def test_user_bound_managed_accounts_support_per_account_create_get_and_patch(api: Any) -> None:
+    client, _module = api
+    admin_token, _user_token, _platform = _setup(client)
+
+    first = client.post(
+        "/api/admin/users/1/managed-accounts",
+        headers=_bearer(admin_token),
+        json={
+            "name": "张三-方舟主号",
+            "authMode": "cookie",
+            "cookieBundle": [{"name": "sid", "value": "cookie-1", "domain": ".example.test"}],
+        },
+    )
+    assert first.status_code == 201, first.text
+    first_data = payload(first)
+    assert first_data["name"] == "张三-方舟主号"
+    assert first_data["authMode"] == "cookie"
+    assert "cookieBundle" not in first_data
+
+    second = client.post(
+        "/api/admin/users/1/managed-accounts",
+        headers=_bearer(admin_token),
+        json={
+            "authMode": "server_login",
+            "username": "ark-sub",
+            "password": "secret-password",
+        },
+    )
+    assert second.status_code == 201, second.text
+    second_data = payload(second)
+    assert second_data["name"] == "user-1-ark"
+    assert second_data["authMode"] == "server_login"
+
+    detail = client.get(
+        f"/api/admin/users/1/managed-accounts/{first_data['managedAccountId']}",
+        headers=_bearer(admin_token),
+    )
+    assert detail.status_code == 200, detail.text
+    detail_data = payload(detail)
+    assert detail_data["name"] == "张三-方舟主号"
+    assert detail_data["cookieBundle"][0]["value"] == "cookie-1"
+
+    updated = client.patch(
+        f"/api/admin/users/1/managed-accounts/{first_data['managedAccountId']}",
+        headers=_bearer(admin_token),
+        json={
+            "name": "张三-方舟一号",
+            "authMode": "cookie",
+            "cookieBundle": [{"name": "sid", "value": "cookie-2", "domain": ".example.test"}],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    updated_data = payload(updated)
+    assert updated_data["name"] == "张三-方舟一号"
+    assert updated_data["credentialVersion"] == 2
+    assert updated_data["cookieBundle"][0]["value"] == "cookie-2"
+
+    listed = client.get("/api/admin/users/1/managed-accounts", headers=_bearer(admin_token))
+    assert listed.status_code == 200, listed.text
+    assert [item["name"] for item in payload(listed)["items"]] == ["张三-方舟一号", "user-1-ark"]
+
+

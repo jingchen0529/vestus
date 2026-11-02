@@ -371,12 +371,15 @@ def _binding_dict(
         "managedAccountId": account.id,
         "name": _account_display_name(account),
         "accountName": _account_display_name(account),
+        "alias": account.name,
+        "authMode": account.auth_mode,
         "status": status,
         "expiresAt": iso_datetime(account.expires_at),
         "credentialVersion": account.credential_version,
         "remoteAccountId": account.remote_account_id,
         "remoteDisplayName": account.remote_display_name,
         "identityCheckedAt": iso_datetime(account.identity_checked_at),
+        "lastVerifiedAt": iso_datetime(account.last_verified_at),
     }
 
 
@@ -626,13 +629,15 @@ def bind_account(
             visible_admin_id is not None and user.bound_admin_id != int(visible_admin_id)
         ):
             raise NotFoundError(MANAGED_USER_NOT_FOUND)
+        platform = session.get(Platform, account.platform_id)
+        platform_name = platform.name if platform is not None else None
         existing = managed_repo.get_binding_for_account(
             session, user.id, account.platform_id, account.id
         )
         if existing is not None:
             existing.status = "active"
             existing.updated_at = utc_now()
-            result = _binding_dict(existing, account)
+            result = _binding_dict(existing, account, platform_name=platform_name)
         else:
             item = ManagedPlatformBinding(
                 user_id=user.id,
@@ -645,7 +650,7 @@ def bind_account(
                 session.flush()
             except IntegrityError as exc:
                 raise ConflictError("该用户已绑定此平台的托管账号") from exc
-            result = _binding_dict(item, account)
+            result = _binding_dict(item, account, platform_name=platform_name)
         record(
             session,
             audit,
@@ -736,6 +741,204 @@ def list_user_accounts(
                     platform_name=platform.name if platform is not None else None,
                 )
             )
+        return result
+
+
+def get_user_bound_account(
+    database: Database, user_id: int | str, managed_account_id: int | str
+) -> Dict[str, Any]:
+    with database.session() as session:
+        user = users_repo.get_active(session, user_id)
+        if user is None:
+            raise NotFoundError(MANAGED_USER_NOT_FOUND)
+        account = managed_repo.get_account(session, managed_account_id)
+        if account is None:
+            raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+        binding = managed_repo.get_binding_for_account(
+            session, user.id, account.platform_id, account.id
+        )
+        if binding is None:
+            raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
+        platform = session.get(Platform, account.platform_id)
+        return _account_detail_dict(
+            account, platform_name=platform.name if platform is not None else None
+        )
+
+
+def _next_user_account_name(session: Any, platform_id: int, user_id: int) -> str:
+    existing_names = {
+        item.name
+        for item in managed_repo.list_accounts(session)
+        if item.platform_id == platform_id
+    }
+    base = f"user-{user_id}-ark"
+    if base not in existing_names:
+        return base
+    index = 2
+    while f"{base}-{index}" in existing_names:
+        index += 1
+    return f"{base}-{index}"
+
+
+def create_user_bound_account(
+    database: Database,
+    user_id: int | str,
+    values: Dict[str, Any],
+    *,
+    audit: Optional[AuditContext] = None,
+) -> Dict[str, Any]:
+    auth_mode = values.get("auth_mode")
+    username = values.get("username")
+    password = values.get("password")
+    cookies = values.get("cookie_bundle")
+    if auth_mode == "server_login" and (not username or not password):
+        raise BadRequestError("server_login 必须提供账号和密码")
+    if auth_mode == "cookie" and not cookies:
+        raise BadRequestError("cookie 模式必须提供 Cookie 包")
+    if auth_mode not in {"cookie", "server_login"}:
+        raise BadRequestError("authMode must be cookie or server_login")
+
+    with database.session() as session:
+        user = users_repo.get_active(session, user_id)
+        if user is None:
+            raise NotFoundError(MANAGED_USER_NOT_FOUND)
+        platform = _require_ark_platform(session)
+        raw_name = (values.get("name") or "").strip()
+        name = raw_name or _next_user_account_name(session, platform.id, user.id)
+        try:
+            account = ManagedPlatformAccount(
+                platform_id=platform.id,
+                name=name,
+                auth_mode=auth_mode,
+                username=username if auth_mode == "server_login" else None,
+                password=password if auth_mode == "server_login" else None,
+                cookie_bundle=list(cookies or []) if auth_mode == "cookie" else None,
+                allowed_hosts=_platform_allowed_hosts(platform),
+                credential_version=1,
+                expires_at=None,
+                status="active",
+                created_by=audit.actor_id if audit else None,
+            )
+            session.add(account)
+            session.flush()
+        except IntegrityError as exc:
+            raise ConflictError("同一平台下的托管账号别名已存在") from exc
+
+        binding = ManagedPlatformBinding(
+            user_id=user.id,
+            platform_id=platform.id,
+            managed_account_id=account.id,
+            status="active",
+        )
+        session.add(binding)
+        session.flush()
+        result = _binding_dict(binding, account, platform_name=platform.name)
+        record(
+            session,
+            audit,
+            "MANAGED_ACCOUNT_USER_CREATED",
+            f"为用户 {user.username} 新增并绑定托管账号 {account.name}",
+            target_type="managed_platform_account",
+            target_id=account.id,
+            target_name=account.name,
+            details={"userId": user.id, "platformId": platform.id, "authMode": auth_mode},
+        )
+        return result
+
+
+def update_user_bound_account(
+    database: Database,
+    user_id: int | str,
+    managed_account_id: int | str,
+    values: Dict[str, Any],
+    *,
+    audit: Optional[AuditContext] = None,
+) -> Dict[str, Any]:
+    with database.session() as session:
+        user = users_repo.get_active(session, user_id)
+        if user is None:
+            raise NotFoundError(MANAGED_USER_NOT_FOUND)
+        account = managed_repo.get_account(session, managed_account_id)
+        if account is None:
+            raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+        binding = managed_repo.get_binding_for_account(
+            session, user.id, account.platform_id, account.id
+        )
+        if binding is None:
+            raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
+        platform = _require_platform(session, account.platform_id)
+
+        credential_changed = False
+        if values.get("name") is not None:
+            account.name = str(values["name"]).strip()
+        if values.get("auth_mode") is not None and values["auth_mode"] != account.auth_mode:
+            account.auth_mode = values["auth_mode"]
+            account.cookie_bundle = None
+            account.encrypted_cookie_bundle = None
+            credential_changed = True
+        if values.get("username") is not None:
+            account.username = values["username"]
+            account.encrypted_username = None
+            account.cookie_bundle = None
+            account.encrypted_cookie_bundle = None
+            credential_changed = True
+        if values.get("password") is not None:
+            account.password = values["password"]
+            account.encrypted_password = None
+            account.cookie_bundle = None
+            account.encrypted_cookie_bundle = None
+            credential_changed = True
+        if values.get("cookie_bundle") is not None:
+            account.cookie_bundle = list(values["cookie_bundle"])
+            account.encrypted_cookie_bundle = None
+            account.username = None
+            account.password = None
+            account.encrypted_username = None
+            account.encrypted_password = None
+            credential_changed = True
+
+        if account.auth_mode == "cookie":
+            account.username = None
+            account.password = None
+            account.encrypted_username = None
+            account.encrypted_password = None
+            if account.cookie_bundle is None and account.encrypted_cookie_bundle is None:
+                raise BadRequestError("cookie 模式必须提供 Cookie 包")
+        elif account.auth_mode == "server_login":
+            if (
+                (account.username is None and account.encrypted_username is None)
+                or (account.password is None and account.encrypted_password is None)
+            ):
+                raise BadRequestError("server_login 必须提供账号和密码")
+
+        account.allowed_hosts = _platform_allowed_hosts(platform)
+        account.status = "active"
+        binding.status = "active"
+        binding.updated_at = utc_now()
+        if credential_changed:
+            account.credential_version = int(account.credential_version) + 1
+            account.last_verified_at = None
+            account.last_error = None
+            account.remote_account_id = None
+            account.remote_display_name = None
+            account.identity_checked_at = None
+
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            raise ConflictError("同一平台下的托管账号别名已存在") from exc
+
+        result = _account_detail_dict(account, platform_name=platform.name)
+        record(
+            session,
+            audit,
+            "MANAGED_ACCOUNT_USER_UPDATED",
+            f"更新用户 {user.username} 的托管账号 {account.name}",
+            target_type="managed_platform_account",
+            target_id=account.id,
+            target_name=account.name,
+            details={"userId": user.id, "platformId": platform.id, "authMode": account.auth_mode},
+        )
         return result
 
 
@@ -1131,15 +1334,18 @@ __all__ = [
     "bind_account",
     "consume_bootstrap",
     "create_account",
+    "create_user_bound_account",
     "delete_account",
     "delete_user_account",
     "get_account",
     "get_user_account",
+    "get_user_bound_account",
     "get_managed_login_provider",
     "issue_bootstrap",
     "list_accounts",
     "unbind_account",
     "update_account",
+    "update_user_bound_account",
     "upsert_user_account",
     "verify_account",
 ]

@@ -161,22 +161,75 @@ test("用户托管账号支持按账号列出、绑定和解绑多个入口", as
   assert.match(requests[1].body, /"managedAccountId":8/);
 });
 
-test("用户托管账号弹窗展示多个绑定且不回显 Cookie", async () => {
+test("用户托管账号弹窗以 Table 表格展示多个绑定且不回显 Cookie", async () => {
   const { ManagedAccountBindingList } = await server.ssrLoadModule(
     "/src/components/users/managed-account-dialog.tsx",
   );
   const html = renderToStaticMarkup(
     createElement(ManagedAccountBindingList, {
       bindings: [
-        { id: 1, userId: 3, platformId: 1, platformName: "方舟", managedAccountId: 7, name: "账号 A", status: "active" },
-        { id: 2, userId: 3, platformId: 1, platformName: "方舟", managedAccountId: 8, name: "账号 B", status: "active" },
+        { id: 1, userId: 3, platformId: 1, platformName: "方舟", managedAccountId: 7, name: "账号 A", authMode: "cookie", status: "active" },
+        { id: 2, userId: 3, platformId: 1, platformName: "方舟", managedAccountId: 8, name: "账号 B", authMode: "server_login", status: "expired" },
       ],
+      onEdit() {},
+      onUnbind() {},
     }),
   );
 
+  assert.match(html, /<table/);
+  assert.match(html, /托管账号/);
+  assert.match(html, /所属平台/);
+  assert.match(html, /认证方式/);
   assert.match(html, /账号 A/);
   assert.match(html, /账号 B/);
+  assert.match(html, /Cookie/);
+  assert.match(html, /账号密码/);
+  assert.match(html, /正常启用/);
+  assert.match(html, /已过期/);
+  assert.match(html, /编辑/);
+  assert.match(html, /解除/);
   assert.doesNotMatch(html, /secret-cookie|cookie-secret/);
+});
+
+test("按用户创建、读取详情与更新单个绑定托管账号 API 路径正确", async () => {
+  const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url, method: init.method || "GET", body: init.body || null });
+    return new Response(
+      JSON.stringify({
+        code: 0,
+        msg: "ok",
+        data: { id: 7, managedAccountId: 7, platformId: 1, name: "张三-方舟1", authMode: "cookie", status: "active" },
+        requestId: "test",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  try {
+    await api.createUserManagedAccount(3, {
+      name: "张三-方舟1",
+      authMode: "cookie",
+      cookieBundle: [{ name: "sid", value: "tok", domain: ".oceanengine.com" }],
+    });
+    await api.getUserManagedAccountDetail(3, 7);
+    await api.updateUserManagedAccount(3, 7, { name: "张三-方舟主号" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(
+    requests.map(({ url, method }) => [url, method]),
+    [
+      ["/api/admin/users/3/managed-accounts", "POST"],
+      ["/api/admin/users/3/managed-accounts/7", "GET"],
+      ["/api/admin/users/3/managed-accounts/7", "PATCH"],
+    ],
+  );
+  assert.match(requests[0].body, /"name":"张三-方舟1"/);
+  assert.match(requests[2].body, /"name":"张三-方舟主号"/);
 });
 
 test("用户列表不再提供按用户配置代理和平台的入口", async () => {

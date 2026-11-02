@@ -185,6 +185,46 @@ class ManagedPlatformUserConfig(BaseModel):
         return self
 
 
+class ManagedPlatformUserAccountCreate(ManagedPlatformUserConfig):
+    """Create a new Ark managed account and bind it to the target user."""
+
+    name: Optional[str] = Field(default=None, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class ManagedPlatformUserAccountUpdate(BaseModel):
+    """Update a specific bound managed account's alias and/or credentials."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    auth_mode: Optional[str] = Field(default=None, alias="authMode")
+    username: Optional[str] = Field(default=None, max_length=256)
+    password: Optional[str] = Field(default=None, max_length=512)
+    cookie_bundle: Optional[List[ManagedCookie]] = Field(default=None, alias="cookieBundle", max_length=256)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @field_validator("name", "username")
+    @classmethod
+    def trim_optional_fields(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("auth_mode")
+    @classmethod
+    def valid_optional_user_auth_mode(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in {"cookie", "server_login"}:
+            raise ValueError("authMode must be cookie or server_login")
+        return value
+
+
 class ManagedBootstrapRequest(BaseModel):
     managed_account_id: Optional[int] = Field(default=None, alias="managedAccountId", ge=1)
     device_id: Optional[str] = Field(default=None, alias="deviceId", max_length=64)
@@ -205,5 +245,7 @@ __all__ = [
     "ManagedCookie",
     "ManagedPlatformAccountCreate",
     "ManagedPlatformAccountUpdate",
+    "ManagedPlatformUserAccountCreate",
+    "ManagedPlatformUserAccountUpdate",
     "ManagedPlatformUserConfig",
 ]

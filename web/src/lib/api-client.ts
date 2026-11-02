@@ -26,9 +26,11 @@ import {
 import { UserLogResponse, UserLogItem } from "@/types/log";
 import {
   CreateManagedPlatformAccountPayload,
+  CreateUserManagedAccountPayload,
   ManagedPlatformAccount,
   ManagedPlatformBinding,
   UpdateManagedPlatformAccountPayload,
+  UpdateUserManagedAccountPayload,
   UserManagedAccountBinding,
   UserManagedPlatformAccount,
   UserManagedPlatformAccountPayload,
@@ -248,6 +250,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ managedAccountId }),
     });
+  },
+
+  async createUserManagedAccount(
+    id: number,
+    payload: CreateUserManagedAccountPayload,
+  ): Promise<UserManagedAccountBinding> {
+    return request<UserManagedAccountBinding>(`/api/admin/users/${id}/managed-accounts`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getUserManagedAccountDetail(
+    id: number,
+    managedAccountId: number,
+  ): Promise<UserManagedPlatformAccount> {
+    return request<UserManagedPlatformAccount>(
+      `/api/admin/users/${id}/managed-accounts/${managedAccountId}`,
+    );
+  },
+
+  async updateUserManagedAccount(
+    id: number,
+    managedAccountId: number,
+    payload: UpdateUserManagedAccountPayload,
+  ): Promise<UserManagedPlatformAccount> {
+    return request<UserManagedPlatformAccount>(
+      `/api/admin/users/${id}/managed-accounts/${managedAccountId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      },
+    );
   },
 
   async unbindUserManagedAccount(id: number, managedAccountId: number): Promise<void> {
