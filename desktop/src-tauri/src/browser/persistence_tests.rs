@@ -202,10 +202,13 @@ impl Fixture {
             if ready["href"] == self.url && ready["ready"] == "complete" {
                 break;
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "entry document not ready: {ready}"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                // 失败现场必须包含完整的 target 列表：Windows CI 上曾出现
+                // target 元数据已是起始 URL、文档却停在初始 about:blank 的
+                // 情况，没有这份快照就无法区分"导航未开始"和"渲染器崩溃"。
+                let targets = cdp.call("Target.getTargets", json!({})).await;
+                panic!("entry document not ready: {ready}; targets: {targets}");
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         cdp
