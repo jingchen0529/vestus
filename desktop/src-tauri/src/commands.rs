@@ -20,6 +20,8 @@ use crate::browser::{BrowserError, BrowserSessionManager};
 use crate::bypass::DirectHosts;
 use crate::cdp;
 use crate::config::{self, DesktopPlatform, ProxyForm, ValidatedConfig};
+use crate::device;
+use crate::managed_cdp;
 use crate::probe;
 use crate::profile::{self, ProfileSpec};
 use crate::rt;
@@ -125,10 +127,13 @@ pub struct BrowserHandleView {
     pub browser_id: u64,
     /// 这个平台的浏览器本来就开着，这次没有启动新的浏览器进程。
     pub reused: bool,
-    /// `reused` 为真时说明这次是怎么进入平台的：`activated` 是把已有的同域标签
-    /// 切到了最前（页面原样保留），`created` 是在已开的浏览器里新开一个标签，
-    /// 为空表示走的是命令行转交（新开了一个窗口）——调试端点不可用时的兜底。
+    /// `reused` 为真时说明这次是把已有的同域标签切到了最前；重复点击不会创建
+    /// 新标签或新窗口。
     pub tab_action: Option<String>,
+    /// 实际使用的网络模式。托管平台可能把用户选择的直连请求强制改为代理。
+    pub direct_mode: bool,
+    /// 是否由后台托管会话启动；仅作为界面提示，不包含凭据。
+    pub managed: bool,
 }
 
 /// 重置本机浏览器环境的结果。
@@ -175,6 +180,12 @@ fn validate_desktop_config(
     api_base: &str,
 ) -> CmdResult<ValidatedDesktopConfig> {
     let profile_key = validate_label(&wire.profile_key, "浏览器环境标识", 512)?;
+    if profile::contains_managed_profile_marker(&profile_key) {
+        return Err(CommandError::new(
+            "管理员下发的浏览器环境标识使用了保留格式",
+            "invalid_desktop_config",
+        ));
+    }
     let lease = wire.lease.trim().to_ascii_lowercase();
     if lease.len() != 64 || !lease.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(CommandError::new(
@@ -601,9 +612,9 @@ async fn start_adapter(
 /// 打开一个平台：它在本机的持久环境没在运行就启动一个 Chromium，已经在运行就让那个
 /// 浏览器新开一个窗口。
 ///
-/// 同一个环境同时只能有一个 Chromium 进程（见 [`crate::browser`] 模块文档），所以
-/// 「重复打开同一平台」是在同一个浏览器里再开一个窗口；不同平台、同一平台的代理与直连，
-/// 仍然是各自独立的浏览器。
+/// 同一个环境同时只能有一个 Chromium 进程（见 [`crate::browser`] 模块文档）。重复点击
+/// 同一平台只激活已经存在的页面；找不到页面时失败，不创建第二个标签或窗口。不同平台、
+/// 同一平台的代理与直连，仍然是各自独立的浏览器。
 // Tauri 注入的 State 参数就占了 5 个，再加平台 ID 与两个本机开关（直连、关沙箱）
 // 必然超过 clippy 的 7 个阈值；这是 IPC 命令的固有形态，不是设计问题。
 #[allow(clippy::too_many_arguments)]
@@ -618,15 +629,15 @@ pub async fn open_browser<R: Runtime>(
     direct_mode: Option<bool>,
     disable_sandbox: Option<bool>,
 ) -> CmdResult<BrowserHandleView> {
-    let direct_mode = direct_mode.unwrap_or(false);
+    let mut direct_mode = direct_mode.unwrap_or(false);
     // 本机偏好：沙箱拉不起来的机器由用户在「系统配置」里关闭。默认保留沙箱。
     // 只影响 --no-sandbox，与代理链路正交。
     let disable_sandbox = disable_sandbox.unwrap_or(false);
-    let lifecycle_guard = state.lock_desktop_sync().await;
+    let _lifecycle_guard = state.lock_desktop_sync().await;
     require_desktop_auth(&auth)?;
     let (user_id, profile_key, auth_generation) =
         auth.current_identity().map_err(auth_command_error)?;
-    let launch = state
+    let mut launch = state
         .resolve_browser_launch(
             user_id,
             auth_generation,
@@ -647,61 +658,134 @@ pub async fn open_browser<R: Runtime>(
     let profile_key = profile_key
         .ok_or_else(|| CommandError::new("请先同步桌面配置，再打开浏览器", "not_ready"))?;
     let api_base = auth.api_base_url().map_err(auth_command_error)?.to_string();
+
+    // A managed platform gets a profile namespace that includes the server
+    // controlled account and credential version.  This prevents a rotated
+    // account from inheriting the previous account's cookies/local storage.
+    // The bootstrap payload is consumed only after the normal desktop auth
+    // and platform allowlist checks above have succeeded.
+    let managed_session = auth
+        .fetch_managed_session::<managed_cdp::ManagedBootstrapWire>(
+            platform_id,
+            device::wire_device_id(),
+        )
+        .await
+        .map_err(auth_command_error)?
+        .map(|wire| {
+            let profile_key = format!(
+                "{profile_key}::managed-account-{}::credential-version-{}",
+                wire.managed_account_id, wire.credential_version
+            );
+            let managed_account_id = wire.managed_account_id;
+            let session = managed_cdp::managed_session_from_bootstrap(target.as_str().into(), wire)
+                .map_err(|error| {
+                    CommandError::new(
+                        format!("托管登录会话无效：{error}"),
+                        "managed_session_invalid",
+                    )
+                })?;
+            Ok::<_, CommandError>((profile_key, managed_account_id, session))
+        })
+        .transpose()?;
+    let (browser_profile_key, managed_account_id, managed_session) = managed_session.map_or_else(
+        || (profile_key.clone(), None, None),
+        |(key, managed_account_id, session)| (key, Some(managed_account_id), Some(session)),
+    );
+
+    // Managed sessions use the administrator-selected proxy route. A client
+    // cannot create a second direct-mode profile containing the same account.
+    if managed_session.is_some() && direct_mode {
+        direct_mode = false;
+        launch = state
+            .resolve_browser_launch(
+                user_id,
+                auth_generation,
+                Some(&profile_key),
+                platform_id,
+                false,
+            )
+            .ok_or_else(|| {
+                CommandError::new(
+                    "托管平台必须使用管理员配置的代理线路",
+                    "managed_proxy_required",
+                )
+            })?;
+    }
+
     let profile = browsers
         .prepare_profile(
             &app,
             &ProfileSpec {
                 api_base: &api_base,
-                profile_key: &profile_key,
+                profile_key: &browser_profile_key,
                 platform_id,
                 direct_mode,
             },
         )
         .map_err(browser_command_error)?;
 
+    // A credential rotation gets a new profile environment. Retire an older
+    // managed version for this exact account/platform/mode before deciding
+    // whether to reuse the current environment. Ordinary manual profiles in
+    // the same account directory are deliberately left running.
+    if let Some(managed_account_id) = managed_account_id {
+        let account_dir = profile
+            .dir()
+            .parent()
+            .expect("持久浏览器环境必须位于账号目录下")
+            .to_path_buf();
+        let _ = browsers
+            .close_managed_profile_versions(
+                &account_dir,
+                platform_id,
+                direct_mode,
+                managed_account_id,
+                profile.dir(),
+            )
+            .await;
+    }
+
     let local_proxy = launch.port.map(|p| format!("http://127.0.0.1:{p}"));
 
     if let Some(browser_id) = browsers.running_browser(profile.dir()) {
-        // 调试端点可用时优先在已有浏览器里解决：有同域名的标签就切到最前（用户离开
-        // 时的页面原样保留），一个都没有才开新标签——不再每次点击都 --new-window
-        // 堆一层重复的起始页。端点还没读到或命令失败时，退回命令行转交（行为与
-        // 旧版一致）。
-        let tab_action = match browsers.session_endpoint(browser_id) {
-            Some(endpoint) => match cdp::open_or_activate_page(&endpoint, target.as_str()).await {
-                Ok(cdp::PageOutcome::Activated) => Some("activated"),
-                Ok(cdp::PageOutcome::Created) => Some("created"),
-                Err(_) => None,
-            },
-            None => None,
-        };
-        if let Some(action) = tab_action {
+        // 已有浏览器只能激活已存在的平台标签。端点不可用、标签不存在或激活失败时
+        // 直接失败；不创建第二个标签，也不转交到另一个窗口。
+        let endpoint = browsers.session_endpoint(browser_id).ok_or_else(|| {
+            CommandError::new("平台页面尚未就绪，请稍后重试", "browser_page_unavailable")
+        })?;
+        if let Some(session) = managed_session.as_ref() {
+            if let Err(error) = managed_cdp::inject_session(&endpoint, session).await {
+                browsers.close_browser(browser_id).await;
+                state.mark_browser_closed_for(browser_id);
+                emit_status(&app, &state);
+                return Err(CommandError::new(
+                    format!("托管登录会话已失效：{error}"),
+                    "managed_session_invalid",
+                ));
+            }
             return Ok(BrowserHandleView {
                 browser_id,
                 reused: true,
-                tab_action: Some(action.to_string()),
+                tab_action: Some("activated".into()),
+                direct_mode,
+                managed: managed_session.is_some(),
             });
         }
-        let hand_off = browsers
-            .hand_off(
-                &app,
-                &profile,
-                local_proxy.as_deref(),
-                target.as_str(),
-                disable_sandbox,
-            )
-            .map_err(browser_command_error)?;
-        // 等转交进程退出最多要几秒，先放开生命周期锁：这段时间里登出或重新同步照常
-        // 进行，最坏不过是新窗口开在一个正被关掉的浏览器里，随它一起关掉。
-        drop(lifecycle_guard);
-        rt::runtime()
-            .spawn(crate::browser::wait_for_hand_off(hand_off))
+        cdp::open_or_activate_page(&endpoint, target.as_str())
             .await
-            .map_err(|error| CommandError::new(format!("内部任务失败：{error}"), "internal"))?
-            .map_err(browser_command_error)?;
+            .map_err(|error| {
+                let message = match error {
+                    cdp::CdpError::NoMatchingPage => "平台页面已关闭，请重新初始化浏览器",
+                    _ => "平台页面不可用，请关闭并重新打开浏览器",
+                };
+                CommandError::new(message, "browser_page_unavailable")
+            })?;
         return Ok(BrowserHandleView {
             browser_id,
             reused: true,
-            tab_action: None,
+            tab_action: Some("activated".into()),
+            direct_mode,
+            managed: false,
         });
     }
 
@@ -713,20 +797,49 @@ pub async fn open_browser<R: Runtime>(
     let app_for_exit = app.clone();
     // 采集通道：调试端点可读时才开，开不起来也只是这次会话没有日志。
     let activity_collector = activity.inner().clone();
+    // Activity uploads are authorized against the server-issued base profile
+    // key.  The managed account/version suffix is only the local Chromium
+    // namespace and must never be sent as the owner's profile identity.
     let activity_owner = ActivityOwner::new(&api_base, &profile_key, user_id);
     let activity_key = ActivitySessionKey {
         browser_id,
         platform_id,
         direct_mode,
     };
+    let initial_url = if managed_session.is_some() {
+        "about:blank"
+    } else {
+        target.as_str()
+    };
+    let managed_session_for_ready = managed_session.clone();
+    let managed_launch = managed_session.is_some();
+    let (ready_tx, mut ready_rx) = if managed_launch {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     if let Err(error) = browsers.launch(
         &app,
         browser_id,
         profile,
         local_proxy.as_deref(),
-        target.as_str(),
+        initial_url,
         disable_sandbox,
         move |endpoint| {
+            let injection = if let Some(session) = managed_session_for_ready {
+                rt::runtime()
+                    .block_on(managed_cdp::inject_session(&endpoint, &session))
+                    .map_err(|error| error.to_string())
+            } else {
+                Ok(())
+            };
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(injection.clone());
+            }
+            if injection.is_err() {
+                return;
+            }
             activity_collector.start(activity_key, endpoint, activity_owner);
         },
         move || {
@@ -739,11 +852,38 @@ pub async fn open_browser<R: Runtime>(
         return Err(browser_command_error(error));
     }
 
+    if let Some(rx) = ready_rx.take() {
+        let ready = tokio::time::timeout(Duration::from_secs(35), rx).await;
+        match ready {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(message))) => {
+                browsers.close_browser(browser_id).await;
+                state.mark_browser_closed_for(browser_id);
+                emit_status(&app, &state);
+                return Err(CommandError::new(
+                    format!("托管登录会话注入失败：{message}"),
+                    "managed_session_invalid",
+                ));
+            }
+            Ok(Err(_)) | Err(_) => {
+                browsers.close_browser(browser_id).await;
+                state.mark_browser_closed_for(browser_id);
+                emit_status(&app, &state);
+                return Err(CommandError::new(
+                    "托管浏览器初始化超时，请联系管理员重新验证账号",
+                    "managed_session_timeout",
+                ));
+            }
+        }
+    }
+
     emit_status(&app, &state);
     Ok(BrowserHandleView {
         browser_id,
         reused: false,
         tab_action: None,
+        direct_mode,
+        managed: managed_session.is_some(),
     })
 }
 
@@ -1119,6 +1259,17 @@ mod tests {
                 "*.byteadverts.com".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn rejects_profile_keys_reserved_for_managed_namespaces() {
+        let mut wire = desktop_wire();
+        wire.profile_key = "profile-user-7::managed-account-9::credential-version-1".into();
+        let error = match validate_desktop_config(wire, TEST_API_BASE) {
+            Ok(_) => panic!("reserved managed profile marker should be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "invalid_desktop_config");
     }
 
     #[test]

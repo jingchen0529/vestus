@@ -264,6 +264,8 @@ pub enum CdpError {
     Transport(String),
     #[error("浏览器拒绝了调试命令：{0}")]
     Command(String),
+    #[error("浏览器中没有已打开的平台页面")]
+    NoMatchingPage,
     #[error("等待浏览器回执超时")]
     Timeout,
 }
@@ -407,15 +409,14 @@ fn control_command_outcome(text: &str) -> Option<Result<Value, CdpError>> {
 pub enum PageOutcome {
     /// 已有该平台的标签页，把它切到了最前（页面内容原样保留）。
     Activated,
-    /// 没有找到该平台的标签页，在现有浏览器里新开了一个。
-    Created,
 }
 
-/// 在已运行的浏览器里打开 `platform_url`：有同域名的标签页就切回，没有就新开。
+/// 在已运行的浏览器里激活 `platform_url` 对应的已存在页面。
 ///
 /// 「同域名」看的是 host 相等——平台入口页和它域名下的业务页都算同一平台的标签；
 /// `chrome://`、`about:blank` 这类没有 host 的页面永远不匹配。切回用的是
-/// `Target.activateTarget`，与用户手动点那个标签等效，不读也不改页面内容。
+/// `Target.activateTarget`，与用户手动点那个标签等效，不读也不改页面内容。没有匹配
+/// 页面时返回错误，绝不创建新标签。
 pub async fn open_or_activate_page(
     endpoint: &DevToolsEndpoint,
     platform_url: &str,
@@ -423,10 +424,7 @@ pub async fn open_or_activate_page(
     let platform = url::Url::parse(platform_url)
         .map_err(|error| CdpError::Command(format!("平台地址无法解析：{error}")))?;
     let targets = page_targets(endpoint).await?;
-    let matched = targets
-        .iter()
-        .find(|(_, page_url)| page_url_matches(page_url, &platform));
-    if let Some((target_id, _)) = matched {
+    if let Some(target_id) = matching_page_target(&targets, &platform) {
         let activate = control_command(
             endpoint,
             "Target.activateTarget",
@@ -436,15 +434,9 @@ pub async fn open_or_activate_page(
         if activate.is_ok() {
             return Ok(PageOutcome::Activated);
         }
-        // 标签在列举和切换之间被用户关掉了：当作没有，走新开。
+        // 标签在列举和切换之间被用户关掉了：当作没有，返回失败。
     }
-    control_command(
-        endpoint,
-        "Target.createTarget",
-        json!({ "url": platform_url }),
-    )
-    .await
-    .map(|_| PageOutcome::Created)
+    Err(CdpError::NoMatchingPage)
 }
 
 /// 当前浏览器里全部页面级标签页的 `(targetId, url)`。
@@ -480,6 +472,13 @@ fn page_url_matches(page_url: &str, platform: &url::Url) -> bool {
         .ok()
         .zip(platform.host_str())
         .is_some_and(|(page, platform_host)| page.host_str() == Some(platform_host))
+}
+
+fn matching_page_target(targets: &[(String, String)], platform: &url::Url) -> Option<String> {
+    targets
+        .iter()
+        .find(|(_, page_url)| page_url_matches(page_url, platform))
+        .map(|(target_id, _)| target_id.clone())
 }
 
 /// 注入脚本一次批量上报能有的最大计数。脚本按 1 秒批量，真人操作差着几个数量级；
@@ -958,6 +957,16 @@ mod tests {
         assert!(!page_url_matches("https://other.example.cn/", &platform));
         assert!(!page_url_matches("chrome://newtab/", &platform));
         assert!(!page_url_matches("not a url", &platform));
+    }
+
+    #[test]
+    fn matching_page_target_returns_none_instead_of_creating_a_target() {
+        let platform = url::Url::parse("https://agent.example.test/").unwrap();
+        let targets = vec![(
+            "T1".to_string(),
+            "https://other.example.test/workbench".to_string(),
+        )];
+        assert_eq!(matching_page_target(&targets, &platform), None);
     }
 
     fn method_of(command: &str) -> String {
@@ -1686,7 +1695,8 @@ mod tests {
         assert!(started.elapsed() < CONTROL_COMMAND_TIMEOUT);
     }
 
-    /// 用本机真浏览器把 Target 命令整条链路过一遍：新开标签 → 再来一次必须切回。
+    /// 用本机真浏览器把 Target 命令整条链路过一遍：已有页面 → 再来一次必须切回，
+    /// 不匹配的平台必须失败而不是新开标签。
     /// 没装 Chrome 的环境（CI、Linux）直接通过，不阻塞其他测试。
     #[test]
     fn target_commands_work_against_a_real_browser() {
@@ -1714,7 +1724,7 @@ mod tests {
                 "--no-first-run",
                 "--no-default-browser-check",
             ])
-            .arg("about:blank")
+            .arg("https://example.org/")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -1736,15 +1746,21 @@ mod tests {
 
         let outcome = crate::rt::runtime().block_on(async {
             let first = open_or_activate_page(&endpoint, "https://example.org/").await;
+            let missing = open_or_activate_page(&endpoint, "https://other.example/").await;
             let second = open_or_activate_page(&endpoint, "https://example.org/other/path").await;
-            (first, second)
+            (first, missing, second)
         });
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
 
-        let (first, second) = outcome;
-        assert_eq!(first, Ok(PageOutcome::Created), "首次打开应新开标签");
+        let (first, missing, second) = outcome;
+        assert_eq!(first, Ok(PageOutcome::Activated), "已有页面应被激活");
+        assert_eq!(
+            missing,
+            Err(CdpError::NoMatchingPage),
+            "不匹配的平台必须失败"
+        );
         assert_eq!(
             second,
             Ok(PageOutcome::Activated),

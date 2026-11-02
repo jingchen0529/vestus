@@ -224,11 +224,10 @@ export function SessionDetailModal({
               <DialogTitle className="text-base font-semibold">浏览器会话详情 #{session.id}</DialogTitle>
             </div>
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="xs"
               onClick={() => void fetchDetail(session.id, true)}
               disabled={isLoading || isRefreshing}
-              className="h-7 text-xs gap-1.5 px-2.5 text-muted-foreground hover:text-foreground border border-border/60 hover:bg-muted/60 rounded-md shadow-none font-normal"
               title="点击刷新会话明细并同步刷新外部列表"
             >
               <RefreshCw className={cn("h-3.5 w-3.5", (isLoading || isRefreshing) && "animate-spin text-primary")} />
@@ -415,20 +414,18 @@ export function SessionDetailModal({
                     </span>
                     <Button
                       variant="outline"
-                      size="sm"
+                      size="xs"
                       disabled={page <= 1}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      className="h-7 px-2 text-xs rounded-md border-border/60 bg-background hover:bg-muted text-foreground gap-1 font-normal shadow-none disabled:opacity-40"
                     >
                       <ChevronLeft className="h-3.5 w-3.5" />
                       <span>上一页</span>
                     </Button>
                     <Button
                       variant="outline"
-                      size="sm"
+                      size="xs"
                       disabled={page >= totalPages}
                       onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                      className="h-7 px-2 text-xs rounded-md border-border/60 bg-background hover:bg-muted text-foreground gap-1 font-normal shadow-none disabled:opacity-40"
                     >
                       <span>下一页</span>
                       <ChevronRight className="h-3.5 w-3.5" />

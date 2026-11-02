@@ -34,6 +34,7 @@ const ACTIVITY_REPORT_PATH: &str = "/api/user/browser-activity/v2";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const MANAGED_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// The success code of the shared response envelope.
 ///
@@ -279,6 +280,13 @@ struct ChangePasswordRequest<'a> {
 #[derive(Deserialize)]
 struct DesktopLeaseResponse {
     lease: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedBootstrapGrant {
+    #[serde(alias = "bootstrap_token")]
+    bootstrap_token: String,
 }
 
 #[derive(Default)]
@@ -564,6 +572,84 @@ impl DesktopAuthState {
         decode_success_json(response, "桌面配置响应格式错误").await
     }
 
+    /// Obtain and consume a one-time managed platform bootstrap grant.
+    ///
+    /// A missing binding returns ``Ok(None)`` so legacy manually-logged-in
+    /// platforms keep working. Once a binding exists, all provider failures
+    /// remain errors and never fall back to a platform login page.
+    pub(crate) async fn fetch_managed_session<T: DeserializeOwned>(
+        &self,
+        platform_id: i64,
+        device_id: Option<String>,
+    ) -> AuthResult<Option<T>> {
+        let _operation = self.operation.lock().await;
+        let token = self
+            .in_memory_token()?
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| {
+                DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录")
+            })?;
+
+        let bootstrap_response = self
+            .client()?
+            .post(self.managed_endpoint(platform_id, "bootstrap")?)
+            .bearer_auth(&token)
+            .timeout(MANAGED_REQUEST_TIMEOUT)
+            .json(&serde_json::json!({ "deviceId": device_id }))
+            .send()
+            .await
+            .map_err(network_error)?;
+
+        if bootstrap_response.status() == StatusCode::NOT_FOUND {
+            let _ = bootstrap_response.bytes().await;
+            return Ok(None);
+        }
+        if matches!(
+            bootstrap_response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            self.clear_local_session()?;
+            return Err(DesktopAuthError::new(
+                "unauthenticated",
+                "桌面登录已失效，请重新登录",
+            ));
+        }
+
+        let grant: ManagedBootstrapGrant =
+            decode_success_json(bootstrap_response, "托管登录票据响应格式错误").await?;
+        if grant.bootstrap_token.trim().is_empty() {
+            return Err(DesktopAuthError::invalid_response("托管登录票据为空"));
+        }
+
+        let consume_response = self
+            .client()?
+            .post(self.managed_endpoint(platform_id, "bootstrap/consume")?)
+            .bearer_auth(token)
+            .timeout(MANAGED_REQUEST_TIMEOUT)
+            .json(&serde_json::json!({
+                "bootstrapToken": grant.bootstrap_token,
+                "deviceId": device_id,
+            }))
+            .send()
+            .await
+            .map_err(network_error)?;
+
+        if matches!(
+            consume_response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            self.clear_local_session()?;
+            return Err(DesktopAuthError::new(
+                "unauthenticated",
+                "桌面登录已失效，请重新登录",
+            ));
+        }
+
+        decode_success_json(consume_response, "托管登录会话响应格式错误")
+            .await
+            .map(Some)
+    }
+
     /// Bind a validated profile key to the same user that initiated the sync.
     /// The identity check prevents a late response from an old login from
     /// contaminating a newly logged-in user's browser profile.
@@ -823,6 +909,19 @@ impl DesktopAuthState {
                 | ACTIVITY_REPORT_PATH
         ));
         Ok(format!("{base}{path}"))
+    }
+
+    fn managed_endpoint(&self, platform_id: i64, suffix: &str) -> AuthResult<String> {
+        if platform_id <= 0 || !matches!(suffix, "bootstrap" | "bootstrap/consume") {
+            return Err(DesktopAuthError::new(
+                "invalid_request",
+                "托管平台请求参数无效",
+            ));
+        }
+        let base = self.api_base_url.as_ref().map_err(Clone::clone)?;
+        Ok(format!(
+            "{base}/api/user/managed-platforms/{platform_id}/{suffix}"
+        ))
     }
 
     fn session_guard(&self) -> AuthResult<MutexGuard<'_, SessionState>> {
@@ -1171,6 +1270,26 @@ fn api_error_message(body: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_bootstrap_grant_in_server_camel_case() {
+        // 服务端信封实际字段名是 camelCase；此前缺少 rename_all 时这条
+        // 响应永远解析不出 bootstrapToken，报“托管登录票据响应格式错误”。
+        let grant: ManagedBootstrapGrant = serde_json::from_value(serde_json::json!({
+            "bootstrapToken": "Zm9vLWJhci1iYXo",
+            "credentialVersion": 3,
+            "allowedHosts": [],
+            "expiresAt": "2026-11-02T09:36:00"
+        }))
+        .expect("server-shaped grant must deserialize");
+        assert_eq!(grant.bootstrap_token, "Zm9vLWJhci1iYXo");
+
+        let legacy: ManagedBootstrapGrant = serde_json::from_value(serde_json::json!({
+            "bootstrap_token": "legacy-snake"
+        }))
+        .expect("snake_case alias stays accepted");
+        assert_eq!(legacy.bootstrap_token, "legacy-snake");
+    }
 
     #[derive(Default)]
     struct MemoryCredentialStore {
@@ -1629,6 +1748,14 @@ mod tests {
         assert_eq!(
             state.endpoint(PRODUCT_NAME_PATH).unwrap(),
             "https://api.example.test/api/product"
+        );
+        assert_eq!(
+            state.managed_endpoint(7, "bootstrap").unwrap(),
+            "https://api.example.test/api/user/managed-platforms/7/bootstrap"
+        );
+        assert_eq!(
+            state.managed_endpoint(7, "bootstrap/consume").unwrap(),
+            "https://api.example.test/api/user/managed-platforms/7/bootstrap/consume"
         );
     }
 

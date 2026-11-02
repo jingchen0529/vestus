@@ -26,6 +26,7 @@ import {
   FileCode,
   Layers,
   Github,
+  Save,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -76,10 +77,10 @@ function LogoUploader({ label, value, onChange, disabled }: LogoUploaderProps) {
         {/* Dashed upload square with preview & hover overlay */}
         <label
           className={cn(
-            "relative group flex flex-col items-center justify-center w-28 h-28 rounded-2xl border-2 border-dashed transition-all overflow-hidden shrink-0 shadow-2xs select-none",
+            "relative group flex flex-col items-center justify-center w-28 h-28 rounded-2xl border-2 border-dashed transition-all overflow-hidden shrink-0 shadow-sm select-none",
             disabled || isUploading
               ? "opacity-60 cursor-not-allowed border-muted-foreground/30 bg-muted/20"
-              : "cursor-pointer border-primary/40 hover:border-primary bg-slate-50/80 dark:bg-slate-900/40 hover:bg-primary/5 hover:shadow-xs"
+              : "cursor-pointer border-primary/40 hover:border-primary bg-slate-50/80 dark:bg-slate-900/40 hover:bg-primary/5"
           )}
         >
           <input
@@ -108,7 +109,7 @@ function LogoUploader({ label, value, onChange, disabled }: LogoUploaderProps) {
             </div>
           )}
           {isUploading && (
-            <div className="absolute inset-0 bg-background/80 backdrop-blur-xs flex items-center justify-center">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center">
               <RefreshCw className="w-5 h-5 animate-spin text-primary" />
             </div>
           )}
@@ -248,7 +249,7 @@ export function SettingsView() {
   return (
     <div className="space-y-6 w-full max-w-5xl pb-10 animate-in fade-in-50 duration-300">
       {/* Top Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl border border-primary/20 bg-gradient-to-r from-primary/5 via-card to-background shadow-xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl border border-primary/20 bg-gradient-to-r from-primary/5 via-card to-background shadow-sm">
         <div className="flex items-center gap-3.5">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/25">
             <Sliders className="h-5 w-5" />
@@ -260,23 +261,26 @@ export function SettingsView() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={fetchSettings}
             disabled={loading || saving}
-            className="h-9 text-xs gap-1.5"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${loading ? "animate-spin" : ""}`} />
             <span>重新加载</span>
           </Button>
           <Button
+            type="button"
+            size="sm"
             onClick={handleSave}
-            disabled={saving || loading}
-            className="h-9 text-xs px-5 shadow-sm shadow-primary/20"
+            loading={saving}
+            disabled={loading}
           >
-            {saving ? "正在保存…" : "保存全部配置"}
+            {!saving && <Save className="h-3.5 w-3.5" />}
+            <span>{saving ? "正在保存…" : "保存全部配置"}</span>
           </Button>
         </div>
       </div>

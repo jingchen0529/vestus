@@ -48,6 +48,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 export VESTUS_DATABASE_URL='mysql+pymysql://vestus:password@127.0.0.1:3306/vestus?charset=utf8mb4'
 export VESTUS_SECRET_KEY='至少 32 字节的随机密钥'
 export VESTUS_PROXY_SECRET_KEY='用于 Fernet 加密代理密码的稳定随机密钥'
+export VESTUS_PLATFORM_SECRET_KEY='仅用于读取旧版本加密托管凭据的兼容密钥（新配置不加密）'
 export VESTUS_PRODUCT_NAME='桌面客户端显示的产品名称'
 export VESTUS_BOOTSTRAP_ADMIN_USERNAME='admin'
 export VESTUS_BOOTSTRAP_ADMIN_PASSWORD='首次部署时设置的强密码'
@@ -68,6 +69,15 @@ VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app.main:app
 - 桌面端用户认证：`POST/GET /api/user/auth/login|me`，`POST /api/user/auth/logout|change-password`
 - 桌面端用户管理：`/api/admin/users`
 - 代理和平台管理：`/api/admin/proxies`、`/api/admin/platforms`
+- 方舟托管账号：超级管理员在桌面用户行内使用
+  `GET/PUT/DELETE /api/admin/users/{user_id}/managed-account` 配置，每个用户一个账号；
+  认证方式只有 `server_login`（账号/密码）和 `cookie`（Cookie JSON），业务平台固定为“方舟”，
+  没有托管授权到期日。账号、密码和 Cookie 按产品要求明文保存，仅超级管理员接口可读取；旧的
+  `/api/admin/managed-platform-accounts*` 兼容接口也只允许超级管理员调用。桌面端仍按需兑换
+  `/api/user/managed-platforms/{platform_id}/bootstrap` 的一次性 Cookie 会话。旧数据若仍是密文，
+  读取时兼容使用 `VESTUS_PLATFORM_SECRET_KEY`。服务端登录模式还需要配置
+  `VESTUS_MANAGED_CHROMIUM_PATH` 并安装 Python Playwright；验证码、MFA 或无法识别的
+  方舟登录页会返回 `needs_manual_verification`，不会绕过风控。
 - 全局桌面配置：桌面端 `/api/user/desktop-config`；已废弃的管理员 `/api/admin/users/{id}/desktop-config` 按用户接口统一返回 HTTP 410
 - 配置存续校验：桌面端 `GET /api/user/desktop-config/lease`
 - 产品名称：登录前公开读取 `GET /api/product`

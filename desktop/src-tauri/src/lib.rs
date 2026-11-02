@@ -27,6 +27,7 @@ mod commands;
 mod config;
 mod device;
 mod httpio;
+mod managed_cdp;
 mod probe;
 mod profile;
 mod rt;

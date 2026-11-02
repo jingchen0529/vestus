@@ -121,7 +121,7 @@ export function DatePicker({
           className={cn(
             "flex w-full items-center justify-between rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
             size === "sm"
-              ? "h-8 px-2 py-1 text-xs border-border/60 bg-background/80 shadow-none hover:bg-accent/50"
+              ? "h-8 px-2.5 py-1 text-xs border-border/70 bg-background/90 shadow-none hover:bg-muted/70 hover:border-border"
               : "h-9 px-3 py-1 text-sm border-input bg-transparent shadow-sm hover:bg-accent/30",
             !value && "text-muted-foreground",
             className

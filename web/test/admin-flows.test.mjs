@@ -51,6 +51,83 @@ test("代理管理展示多节点与默认节点规则，指向用户管理配�
   assert.match(html, /默认/);
 });
 
+test("托管平台账号列表只展示状态，不回显密码或 Cookie", async () => {
+  const { ManagedPlatformsView } = await server.ssrLoadModule(
+    "/src/components/managed-platforms/managed-platforms-view.tsx",
+  );
+  const html = renderToStaticMarkup(
+    createElement(ManagedPlatformsView, {
+      accounts: [
+        {
+          id: 7,
+          platformId: 2,
+          name: "方舟主账号",
+          authMode: "cookie",
+          allowedHosts: ["ark.example.test"],
+          credentialVersion: 3,
+          status: "active",
+          lastVerifiedAt: "2026-11-02T01:00:00Z",
+        },
+      ],
+      platforms: [{ id: 2, name: "方舟", url: "https://ark.example.test", sortOrder: 0, status: "active" }],
+      users: [],
+      onRefresh() {},
+      onCreateAccount: async () => {},
+      onUpdateAccount: async () => {},
+      onVerifyAccount: async () => {},
+      onBindAccount: async () => {},
+    }),
+  );
+
+  assert.match(html, /方舟主账号/);
+  assert.match(html, /已配置/);
+  assert.match(html, /密码和 Cookie 不会回显/);
+  assert.doesNotMatch(html, /secret-cookie|ark-password/);
+});
+
+test("托管平台账号 API 使用专用管理路径", async () => {
+  const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input, options = {}) => {
+    requests.push({ url: String(input), method: options.method || "GET", body: options.body });
+    const data = String(input).endsWith("/managed-platform-accounts")
+      ? { items: [], total: 0 }
+      : {};
+    return new Response(JSON.stringify({ code: 0, msg: "ok", data, requestId: "test" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    await api.listManagedPlatformAccounts();
+    await api.createManagedPlatformAccount({
+      platformId: 2,
+      name: "方舟主账号",
+      authMode: "cookie",
+      cookieBundle: [{ name: "sessionid", value: "secret", domain: ".example.test" }],
+    });
+    await api.verifyManagedPlatformAccount(7);
+    await api.bindManagedPlatformAccount(7, 9);
+    await api.unbindManagedPlatformAccount(7, 9);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(
+    requests.map(({ url, method }) => [url, method]),
+    [
+      ["/api/admin/managed-platform-accounts", "GET"],
+      ["/api/admin/managed-platform-accounts", "POST"],
+      ["/api/admin/managed-platform-accounts/7/verify", "POST"],
+      ["/api/admin/managed-platform-accounts/7/bindings", "POST"],
+      ["/api/admin/managed-platform-accounts/7/bindings/9", "DELETE"],
+    ],
+  );
+  assert.match(requests[1].body, /"cookieBundle"/);
+});
+
 test("用户列表不再提供按用户配置代理和平台的入口", async () => {
   const { UserTable } = await server.ssrLoadModule(
     "/src/components/users/user-table.tsx",
@@ -717,4 +794,151 @@ test("审计日志页码条提供 10/30/50/100 每页数量选择", async () => 
 
   assert.match(html, /每页/);
   assert.match(html, /10 条/);
+});
+
+test("按用户配置托管账号 API 使用用户专属路径并只提交认证凭据", async () => {
+  const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input, options = {}) => {
+    requests.push({ url: String(input), method: options.method || "GET", body: options.body });
+    return new Response(JSON.stringify({
+      code: 0,
+      msg: "ok",
+      data: { platformId: 1, platformName: "方舟", authMode: "cookie", status: "active" },
+      requestId: "test",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  try {
+    await api.getUserManagedAccount(42);
+    await api.upsertUserManagedAccount(42, {
+      authMode: "server_login",
+      username: "ark-user",
+      password: "ark-password",
+    });
+    await api.deleteUserManagedAccount(42);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(
+    requests.map(({ url, method }) => [url, method]),
+    [
+      ["/api/admin/users/42/managed-account", "GET"],
+      ["/api/admin/users/42/managed-account", "PUT"],
+      ["/api/admin/users/42/managed-account", "DELETE"],
+    ],
+  );
+  assert.equal(requests[1].body, JSON.stringify({
+    authMode: "server_login",
+    username: "ark-user",
+    password: "ark-password",
+  }));
+  assert.doesNotMatch(requests[1].body, /"(?:expiresAt|allowedHosts|platformId|name)"/);
+});
+
+test("未绑定托管账号的 404 视为空配置而非错误", async () => {
+  const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    code: 40400,
+    msg: "该用户未绑定托管平台账号",
+    data: null,
+    requestId: "test",
+  }), { status: 404, headers: { "content-type": "application/json" } });
+
+  try {
+    const result = await api.getUserManagedAccount(42);
+    assert.equal(result, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("用户行仅向超级管理员展示绑定托管账号按钮", async () => {
+  const { UserTable } = await server.ssrLoadModule("/src/components/users/user-table.tsx");
+  const props = {
+    users: [{ id: 42, username: "managed-user", name: "Managed User", status: "active", maxSessions: 1 }],
+    onEditUser() {},
+    onToggleStatus() {},
+    onResetPassword() {},
+    onDeleteUser() {},
+    onManageManagedAccount() {},
+  };
+
+  const superAdminHtml = renderToStaticMarkup(createElement(UserTable, {
+    ...props,
+    canManageManagedAccount: true,
+  }));
+  assert.match(superAdminHtml, /绑定托管账号/);
+
+  const plainAdminHtml = renderToStaticMarkup(createElement(UserTable, {
+    ...props,
+    canManageManagedAccount: false,
+  }));
+  assert.doesNotMatch(plainAdminHtml, /绑定托管账号/);
+});
+
+test("托管账号表单只保留认证方式和对应凭据", async () => {
+  const dialogModule = await server.ssrLoadModule("/src/components/users/managed-account-dialog.tsx");
+  assert.equal(typeof dialogModule.buildManagedAccountPayload, "function");
+  assert.deepEqual(
+    dialogModule.buildManagedAccountPayload({
+      authMode: "server_login",
+      username: " ark-user ",
+      password: "ark-password",
+      cookieJson: "",
+    }),
+    { authMode: "server_login", username: "ark-user", password: "ark-password" },
+  );
+  assert.deepEqual(
+    dialogModule.buildManagedAccountPayload({
+      authMode: "cookie",
+      username: "",
+      password: "",
+      cookieJson: '[{"name":"sessionid","value":"secret","domain":".ark.test"}]',
+    }),
+    {
+      authMode: "cookie",
+      cookieBundle: [{ name: "sessionid", value: "secret", domain: ".ark.test" }],
+    },
+  );
+});
+
+test("托管账号 Cookie 支持直接粘贴浏览器原始字符串", async () => {
+  const { parseCookieInput, defaultCookieDomain } = await server.ssrLoadModule(
+    "/src/lib/cookie-parser.ts",
+  );
+  const dialogModule = await server.ssrLoadModule("/src/components/users/managed-account-dialog.tsx");
+
+  assert.equal(defaultCookieDomain("https://agent.oceanengine.com/"), ".oceanengine.com");
+  assert.equal(defaultCookieDomain("https://ark.example.test/admin"), ".example.test");
+  assert.equal(defaultCookieDomain("http://localhost:8000"), "localhost");
+  assert.equal(defaultCookieDomain("not-a-url"), undefined);
+
+  const raw = "sessionid_ss=abc123; bd_guard=eyJ0%3D%3D; sessionid_ss=def456; flagged";
+  assert.deepEqual(parseCookieInput(raw, ".oceanengine.com"), [
+    { name: "sessionid_ss", value: "def456", domain: ".oceanengine.com", path: "/" },
+    { name: "bd_guard", value: "eyJ0%3D%3D", domain: ".oceanengine.com", path: "/" },
+  ]);
+
+  assert.throws(() => parseCookieInput("a=1; b=2", undefined), /domain/);
+  assert.throws(() => parseCookieInput(";;=", ".oceanengine.com"), /未解析到任何 Cookie/);
+
+  assert.deepEqual(
+    dialogModule.buildManagedAccountPayload(
+      {
+        authMode: "cookie",
+        username: "",
+        password: "",
+        cookieJson: "sid=tok; other=v",
+      },
+      ".oceanengine.com",
+    ).cookieBundle,
+    [
+      { name: "sid", value: "tok", domain: ".oceanengine.com", path: "/" },
+      { name: "other", value: "v", domain: ".oceanengine.com", path: "/" },
+    ],
+  );
 });

@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.api.deps import admin_auth, audit_context, get_db
+from app.api.deps import admin_auth, audit_context, get_db, super_admin_auth
 from app.api.envelope import EnvelopeRoute
 from app.api.responses import collection
 from app.db.session import Database
@@ -29,7 +29,7 @@ def list_platforms(
 def create_platform(
     payload: PlatformCreate,
     request: Request,
-    auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     return platforms_service.create_platform(
@@ -42,7 +42,7 @@ def update_platform(
     platform_id: int,
     payload: PlatformUpdate,
     request: Request,
-    auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     changes = payload.model_dump(exclude_unset=True, by_alias=False)
@@ -57,7 +57,7 @@ def update_platform(
 def delete_platform(
     platform_id: int,
     request: Request,
-    auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> None:
     platforms_service.delete_platform(db, platform_id, audit=audit_context(request, auth))

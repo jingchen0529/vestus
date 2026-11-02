@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     secret_key: str = ""
     jwt_secret: str = ""
     proxy_secret_key: str = ""
+    #: Independent key for administrator-managed platform credentials.
+    platform_secret_key: str = ""
 
     access_token_ttl_seconds: int = DEFAULT_TOKEN_TTL_SECONDS
     login_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
@@ -154,6 +156,11 @@ class Settings(BaseSettings):
     @property
     def proxy_encryption_secret(self) -> str:
         return self.proxy_secret_key or self.secret_key or self.jwt_secret
+
+    @property
+    def platform_encryption_secret(self) -> str:
+        """Secret used for managed platform credentials; never falls back."""
+        return self.platform_secret_key
 
     @property
     def bootstrap_username(self) -> str:
@@ -220,6 +227,11 @@ def validate_startup_settings(settings: Settings | None = None) -> Settings:
         problem = _secret_problem(settings.proxy_secret_key)
         if problem is not None:
             problems.append(f"VESTUS_PROXY_SECRET_KEY {problem}")
+
+    if settings.platform_secret_key:
+        problem = _secret_problem(settings.platform_secret_key)
+        if problem is not None:
+            problems.append(f"VESTUS_PLATFORM_SECRET_KEY {problem}")
 
     password = settings.bootstrap_password
     if password:

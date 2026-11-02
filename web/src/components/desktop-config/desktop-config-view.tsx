@@ -4,7 +4,6 @@ import {
   Plus,
   Edit2,
   Trash2,
-  Search,
   RefreshCw,
   CheckCircle2,
   XCircle,
@@ -15,11 +14,16 @@ import {
   Star,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  DataCard,
+  PageToolbar,
+  PageToolbarActions,
+  PageToolbarFilters,
+  ToolbarSearch,
+} from "@/components/ui/page-toolbar";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -130,7 +134,7 @@ export function DesktopConfigView({
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-300">
       {/* Notice Banner */}
-      <div className="flex items-center gap-2.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs text-emerald-700 dark:text-emerald-300">
+      <div className="flex items-center gap-2.5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-700 dark:text-emerald-300">
         <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
         <span>
           多条代理可同时启用。在【用户管理】中可为每个用户单独指定 VPN 节点；未单独配置的用户走【默认】节点，全局同时只有一条默认。
@@ -183,237 +187,222 @@ export function DesktopConfigView({
       </div>
 
       {/* 2. Main Proxy Table Card */}
-      <Card className="border-border/80 shadow-sm">
-        <CardContent className="p-0">
-          {/* Action, Search & Filter Bar */}
-          <div className="p-3 border-b bg-muted/10 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
-            {/* Left Action Buttons */}
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onRefresh}
-                disabled={isRefreshing}
-                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
-                <span>刷新</span>
-              </Button>
-              <Button
-                onClick={handleOpenCreate}
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <Plus className="h-4 w-4 text-muted-foreground" />
-                <span>新增代理</span>
-              </Button>
-            </div>
+      <DataCard>
+        <PageToolbar>
+          <PageToolbarActions>
+            <Button size="sm" onClick={handleOpenCreate}>
+              <Plus className="h-3.5 w-3.5" />
+              <span>新增代理</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`}
+              />
+              <span>刷新</span>
+            </Button>
+          </PageToolbarActions>
 
-            {/* Right Search and Status Filter */}
-            <div className="flex flex-1 items-center justify-end gap-2">
-              <div className="relative w-full max-w-xs">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  placeholder="搜索代理名称、主机或端口..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9 h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none"
-                />
-              </div>
+          <PageToolbarFilters>
+            <ToolbarSearch
+              value={search}
+              onChange={setSearch}
+              placeholder="搜索代理名称、主机或端口..."
+            />
 
-              <div className="w-36 shrink-0">
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none">
-                    <SelectValue placeholder="全部状态" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL" className="text-xs">全部状态</SelectItem>
-                    <SelectItem value="active" className="text-xs">仅正常启用</SelectItem>
-                    <SelectItem value="disabled" className="text-xs">仅已停用</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="w-36 shrink-0">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="全部状态" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="text-xs">全部状态</SelectItem>
+                  <SelectItem value="active" className="text-xs">仅正常启用</SelectItem>
+                  <SelectItem value="disabled" className="text-xs">仅已停用</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+          </PageToolbarFilters>
+        </PageToolbar>
+
+        {/* Table */}
+        {filteredProxies.length === 0 ? (
+          <div className="py-16 px-6 text-center text-muted-foreground">
+            <Server className="mx-auto h-10 w-10 text-muted-foreground/40 mb-3" />
+            <p className="text-sm font-medium text-foreground">暂无符合条件的网络代理节点</p>
+            <p className="text-xs mt-1 text-muted-foreground">
+              {search.trim() || statusFilter !== "ALL"
+                ? "请尝试调整搜索关键词或状态筛选条件"
+                : "点击上方【新增代理】录入首个代理配置"}
+            </p>
           </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[60px] text-center">ID</TableHead>
+                  <TableHead className="min-w-[160px]">代理节点名称</TableHead>
+                  <TableHead className="min-w-[200px]">主机与端口 (Host:Port)</TableHead>
+                  <TableHead className="min-w-[120px]">认证账号</TableHead>
+                  <TableHead className="min-w-[160px]">直连白名单</TableHead>
+                  <TableHead className="w-[120px] text-center">状态</TableHead>
+                  <TableHead className="w-[220px] text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredProxies.map((proxy) => (
+                  <TableRow key={proxy.id} className="hover:bg-muted/40 transition-colors text-xs">
+                    {/* ID */}
+                    <TableCell className="text-center font-mono text-muted-foreground font-medium">
+                      #{proxy.id}
+                    </TableCell>
 
-          {/* Table */}
-          {filteredProxies.length === 0 ? (
-            <div className="py-16 text-center text-muted-foreground">
-              <Server className="mx-auto h-10 w-10 text-muted-foreground/40 mb-3" />
-              <p className="text-sm font-medium text-foreground">暂无符合条件的网络代理节点</p>
-              <p className="text-xs mt-1 text-muted-foreground">
-                {search.trim() || statusFilter !== "ALL"
-                  ? "请尝试调整搜索关键词或状态筛选条件"
-                  : "点击左侧【新增代理】录入首个代理配置"}
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[60px] text-center">ID</TableHead>
-                    <TableHead className="min-w-[160px]">代理节点名称</TableHead>
-                    <TableHead className="min-w-[200px]">主机与端口 (Host:Port)</TableHead>
-                    <TableHead className="min-w-[120px]">认证账号</TableHead>
-                    <TableHead className="min-w-[160px]">直连白名单</TableHead>
-                    <TableHead className="w-[120px] text-center">状态</TableHead>
-                    <TableHead className="w-[220px] text-right">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredProxies.map((proxy) => (
-                    <TableRow key={proxy.id} className="hover:bg-muted/40 transition-colors text-xs">
-                      {/* ID */}
-                      <TableCell className="text-center font-mono text-muted-foreground font-medium">
-                        #{proxy.id}
-                      </TableCell>
-
-                      {/* Name */}
-                      <TableCell>
-                        <div className="flex items-center gap-2.5">
-                          <div className="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-600 flex items-center justify-center shadow-xs shrink-0">
-                            <Server className="h-4 w-4" />
-                          </div>
-                          <div className="flex flex-col min-w-0">
-                            <span className="font-semibold text-foreground text-xs truncate inline-flex items-center gap-1.5">
-                              {proxy.name}
-                              {proxy.isDefault && (
-                                <Badge variant="success" className="text-[10px] px-1.5 py-0 shrink-0">
-                                  默认
-                                </Badge>
-                              )}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground font-mono">
-                              节点 #{proxy.id}
-                            </span>
-                          </div>
+                    {/* Name */}
+                    <TableCell>
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-600 flex items-center justify-center shadow-sm shrink-0">
+                          <Server className="h-4 w-4" />
                         </div>
-                      </TableCell>
-
-                      {/* Host:Port */}
-                      <TableCell className="font-mono text-xs">
-                        <span className="text-foreground font-medium">{proxy.host}</span>
-                        <span className="text-muted-foreground">:{proxy.port}</span>
-                      </TableCell>
-
-                      {/* Username */}
-                      <TableCell className="font-mono text-muted-foreground">
-                        {proxy.username || "—"}
-                      </TableCell>
-
-                      {/* Bypass Hosts */}
-                      <TableCell>
-                        {(proxy.bypassHosts?.length ?? 0) > 0 ? (
-                          <span
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-300 font-medium"
-                            title={proxy.bypassHosts!.join("\n")}
-                          >
-                            <Globe className="w-3 h-3" />
-                            <span>直连 {proxy.bypassHosts!.length} 个域名</span>
+                        <div className="flex flex-col min-w-0">
+                          <span className="font-semibold text-foreground text-xs truncate inline-flex items-center gap-1.5">
+                            {proxy.name}
+                            {proxy.isDefault && (
+                              <Badge variant="success" className="text-[10px] px-1.5 py-0 shrink-0">
+                                默认
+                              </Badge>
+                            )}
                           </span>
-                        ) : (
-                          <span className="text-muted-foreground text-[11px]">全部走代理</span>
-                        )}
-                      </TableCell>
-
-                      {/* Status */}
-                      <TableCell className="text-center">
-                        {proxy.status === "active" ? (
-                          <Badge variant="success" className="gap-1 text-[10px]">
-                            <CheckCircle2 className="h-3 w-3" />
-                            <span>已启用</span>
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary" className="gap-1 text-[10px]">
-                            <XCircle className="h-3 w-3" />
-                            <span>已停用</span>
-                          </Badge>
-                        )}
-                      </TableCell>
-
-                      {/* Actions */}
-                      <TableCell className="text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleOpenEdit(proxy)}
-                            className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
-                          >
-                            <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span>编辑</span>
-                          </Button>
-
-                          {!proxy.isDefault && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              disabled={proxy.status !== "active"}
-                              title={
-                                proxy.status !== "active"
-                                  ? "停用节点不能作为默认，请先启用"
-                                  : "设为默认节点，未单独配置 VPN 的用户将走这条"
-                              }
-                              onClick={async () => {
-                                try {
-                                  await onUpdateProxy(proxy.id, { isDefault: true });
-                                  toast.success(`已将 ${proxy.name} 设为默认节点`);
-                                } catch (err: any) {
-                                  toast.error("设置默认失败", { description: err.message });
-                                }
-                              }}
-                              className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 border border-border/40 hover:border-emerald-500/30 shadow-none font-normal transition-colors"
-                            >
-                              <Star className="h-3.5 w-3.5 text-emerald-500" />
-                              <span>设为默认</span>
-                            </Button>
-                          )}
-
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onToggleProxyStatus(proxy)}
-                            className={cn(
-                              "h-7 px-2 text-xs gap-1 rounded-md border border-border/40 shadow-none font-normal transition-colors",
-                              proxy.status === "active"
-                                ? "text-muted-foreground hover:text-amber-600 hover:bg-amber-500/10 hover:border-amber-500/30"
-                                : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 hover:border-emerald-500/30"
-                            )}
-                          >
-                            {proxy.status === "active" ? (
-                              <>
-                                <PowerOff className="h-3.5 w-3.5 text-amber-600" />
-                                <span>停用</span>
-                              </>
-                            ) : (
-                              <>
-                                <Power className="h-3.5 w-3.5 text-emerald-600" />
-                                <span>启用</span>
-                              </>
-                            )}
-                          </Button>
-
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handlePromptDelete(proxy)}
-                            className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border/40 hover:border-destructive/30 shadow-none font-normal transition-colors"
-                          >
-                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                            <span>删除</span>
-                          </Button>
+                          <span className="text-[10px] text-muted-foreground font-mono">
+                            节点 #{proxy.id}
+                          </span>
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                      </div>
+                    </TableCell>
+
+                    {/* Host:Port */}
+                    <TableCell className="font-mono text-xs">
+                      <span className="text-foreground font-medium">{proxy.host}</span>
+                      <span className="text-muted-foreground">:{proxy.port}</span>
+                    </TableCell>
+
+                    {/* Username */}
+                    <TableCell className="font-mono text-muted-foreground">
+                      {proxy.username || "—"}
+                    </TableCell>
+
+                    {/* Bypass Hosts */}
+                    <TableCell>
+                      {(proxy.bypassHosts?.length ?? 0) > 0 ? (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-300 font-medium"
+                          title={proxy.bypassHosts!.join("\n")}
+                        >
+                          <Globe className="w-3 h-3" />
+                          <span>直连 {proxy.bypassHosts!.length} 个域名</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground text-[11px]">全部走代理</span>
+                      )}
+                    </TableCell>
+
+                    {/* Status */}
+                    <TableCell className="text-center">
+                      {proxy.status === "active" ? (
+                        <Badge variant="success" className="gap-1 text-[10px]">
+                          <CheckCircle2 className="h-3 w-3" />
+                          <span>已启用</span>
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="gap-1 text-[10px]">
+                          <XCircle className="h-3 w-3" />
+                          <span>已停用</span>
+                        </Badge>
+                      )}
+                    </TableCell>
+
+                    {/* Actions */}
+                    <TableCell className="text-right whitespace-nowrap">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          variant="table-action"
+                          size="xs"
+                          onClick={() => handleOpenEdit(proxy)}
+                        >
+                          <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span>编辑</span>
+                        </Button>
+
+                        {!proxy.isDefault && (
+                          <Button
+                            variant="table-action"
+                            size="xs"
+                            disabled={proxy.status !== "active"}
+                            title={
+                              proxy.status !== "active"
+                                ? "停用节点不能作为默认，请先启用"
+                                : "设为默认节点，未单独配置 VPN 的用户将走这条"
+                            }
+                            onClick={async () => {
+                              try {
+                                await onUpdateProxy(proxy.id, { isDefault: true });
+                                toast.success(`已将 ${proxy.name} 设为默认节点`);
+                              } catch (err: any) {
+                                toast.error("设置默认失败", { description: err.message });
+                              }
+                            }}
+                            className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                          >
+                            <Star className="h-3.5 w-3.5 text-emerald-500" />
+                            <span>设为默认</span>
+                          </Button>
+                        )}
+
+                        <Button
+                          variant="table-action"
+                          size="xs"
+                          onClick={() => onToggleProxyStatus(proxy)}
+                          className={
+                            proxy.status === "active"
+                              ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
+                              : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                          }
+                        >
+                          {proxy.status === "active" ? (
+                            <>
+                              <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                              <span>停用</span>
+                            </>
+                          ) : (
+                            <>
+                              <Power className="h-3.5 w-3.5 text-emerald-600" />
+                              <span>启用</span>
+                            </>
+                          )}
+                        </Button>
+
+                        <Button
+                          variant="table-action"
+                          size="xs"
+                          onClick={() => handlePromptDelete(proxy)}
+                          className="hover:text-destructive hover:bg-destructive/10 hover:border-destructive/30"
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          <span>删除</span>
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </DataCard>
 
       {/* Create / Edit Dialog */}
       <ProxyDialog

@@ -5,7 +5,6 @@ import {
   Edit2,
   Trash2,
   ExternalLink,
-  Search,
   RefreshCw,
   CheckCircle2,
   XCircle,
@@ -14,11 +13,16 @@ import {
   PowerOff,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  DataCard,
+  PageToolbar,
+  PageToolbarActions,
+  PageToolbarFilters,
+  ToolbarSearch,
+} from "@/components/ui/page-toolbar";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -131,7 +135,7 @@ export function PlatformsView({
       {/* 1. Header Overview Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {/* Total Platforms */}
-        <Card className="border-border/80 bg-gradient-to-br from-card to-card/60 shadow-xs">
+        <Card className="border-border/80 shadow-sm">
           <CardContent className="p-4 flex items-center justify-between">
             <div className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">平台总数</span>
@@ -147,7 +151,7 @@ export function PlatformsView({
         </Card>
 
         {/* Active Platforms */}
-        <Card className="border-border/80 bg-gradient-to-br from-card to-card/60 shadow-xs">
+        <Card className="border-border/80 shadow-sm">
           <CardContent className="p-4 flex items-center justify-between">
             <div className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">正常启用（已分发）</span>
@@ -163,7 +167,7 @@ export function PlatformsView({
         </Card>
 
         {/* Disabled Platforms */}
-        <Card className="border-border/80 bg-gradient-to-br from-card to-card/60 shadow-xs">
+        <Card className="border-border/80 shadow-sm">
           <CardContent className="p-4 flex items-center justify-between">
             <div className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">已停用 / 下架</span>
@@ -180,221 +184,206 @@ export function PlatformsView({
       </div>
 
       {/* 2. Main Platform Management Card */}
-      <Card className="border-border/80 shadow-sm">
-        <CardContent className="p-0">
-          {/* Action, Search & Filter Bar */}
-          <div className="p-3 border-b bg-muted/10 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
-            {/* Action Buttons on Left */}
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onRefresh}
-                disabled={isRefreshing}
-                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
-                <span>刷新</span>
-              </Button>
-              <Button
-                onClick={handleOpenCreate}
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <Plus className="h-4 w-4 text-muted-foreground" />
-                <span>新增平台</span>
-              </Button>
-            </div>
+      <DataCard>
+        <PageToolbar>
+          <PageToolbarActions>
+            <Button size="sm" onClick={handleOpenCreate}>
+              <Plus className="h-3.5 w-3.5" />
+              <span>新增平台</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`}
+              />
+              <span>刷新</span>
+            </Button>
+          </PageToolbarActions>
 
-            {/* Search and Status Filter on Right */}
-            <div className="flex flex-1 items-center justify-end gap-2">
-              <div className="relative w-full max-w-xs">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  placeholder="搜索平台名称、网址或编号..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9 h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none"
-                />
-              </div>
+          <PageToolbarFilters>
+            <ToolbarSearch
+              value={search}
+              onChange={setSearch}
+              placeholder="搜索平台名称、网址或编号..."
+            />
 
-              <div className="w-36 shrink-0">
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none">
-                    <SelectValue placeholder="全部状态" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL" className="text-xs">全部状态</SelectItem>
-                    <SelectItem value="active" className="text-xs">仅正常启用</SelectItem>
-                    <SelectItem value="disabled" className="text-xs">仅已停用</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="w-36 shrink-0">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="全部状态" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="text-xs">全部状态</SelectItem>
+                  <SelectItem value="active" className="text-xs">仅正常启用</SelectItem>
+                  <SelectItem value="disabled" className="text-xs">仅已停用</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+          </PageToolbarFilters>
+        </PageToolbar>
+
+        {/* Table */}
+        {filteredPlatforms.length === 0 ? (
+          <div className="py-16 px-6 text-center text-muted-foreground">
+            <Globe className="mx-auto h-10 w-10 text-muted-foreground/40 mb-3" />
+            <p className="text-sm font-medium text-foreground">暂无符合条件的业务平台</p>
+            <p className="text-xs mt-1 text-muted-foreground">
+              {search.trim() || statusFilter !== "ALL"
+                ? "请尝试调整搜索关键词或状态筛选条件"
+                : "点击上方【新增平台】录入首个业务平台入口"}
+            </p>
           </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[60px] text-center">ID</TableHead>
+                  <TableHead className="min-w-[180px]">平台名称</TableHead>
+                  <TableHead className="min-w-[280px]">访问入口网址 (URL)</TableHead>
+                  <TableHead className="w-[100px] text-center">排序权重</TableHead>
+                  <TableHead className="w-[120px] text-center">分发状态</TableHead>
+                  <TableHead className="w-[220px] text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredPlatforms.map((platform) => (
+                  <TableRow key={platform.id} className="hover:bg-muted/40 transition-colors text-xs">
+                    {/* ID */}
+                    <TableCell className="text-center font-mono text-muted-foreground font-medium">
+                      {platform.id}
+                    </TableCell>
 
-          {/* Table */}
-          {filteredPlatforms.length === 0 ? (
-            <div className="py-16 text-center text-muted-foreground">
-              <Globe className="mx-auto h-10 w-10 text-muted-foreground/40 mb-3" />
-              <p className="text-sm font-medium text-foreground">暂无符合条件的业务平台</p>
-              <p className="text-xs mt-1 text-muted-foreground">
-                {search.trim() || statusFilter !== "ALL"
-                  ? "请尝试调整搜索关键词或状态筛选条件"
-                  : "点击右上角【新增平台】录入首个业务平台入口"}
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[60px] text-center">ID</TableHead>
-                    <TableHead className="min-w-[180px]">平台名称</TableHead>
-                    <TableHead className="min-w-[280px]">访问入口网址 (URL)</TableHead>
-                    <TableHead className="w-[100px] text-center">排序权重</TableHead>
-                    <TableHead className="w-[120px] text-center">分发状态</TableHead>
-                    <TableHead className="w-[220px] text-right">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredPlatforms.map((platform) => (
-                    <TableRow key={platform.id} className="hover:bg-muted/40 transition-colors text-xs">
-                      {/* ID */}
-                      <TableCell className="text-center font-mono text-muted-foreground font-medium">
-                        {platform.id}
-                      </TableCell>
-
-                      {/* Name */}
-                      <TableCell>
-                        <div className="flex items-center gap-2.5">
-                          {platform.iconUrl ? (
-                            <div className="h-8 w-8 rounded-lg bg-white dark:bg-slate-900 border border-border/80 p-1 flex items-center justify-center shadow-xs shrink-0 overflow-hidden">
-                              <img
-                                src={platform.iconUrl}
-                                alt={platform.name}
-                                className="w-full h-full object-contain"
-                              />
-                            </div>
-                          ) : (
-                            <div className="h-8 w-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shadow-xs shrink-0">
-                              <Globe className="h-4 w-4" />
-                            </div>
-                          )}
-                          <div className="flex flex-col min-w-0">
-                            <span className="font-semibold text-foreground text-xs truncate">
-                              {platform.name}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground font-mono">
-                              ID: #{platform.id}
-                            </span>
+                    {/* Name */}
+                    <TableCell>
+                      <div className="flex items-center gap-2.5">
+                        {platform.iconUrl ? (
+                          <div className="h-8 w-8 rounded-lg bg-white dark:bg-slate-900 border border-border/80 p-1 flex items-center justify-center shadow-sm shrink-0 overflow-hidden">
+                            <img
+                              src={platform.iconUrl}
+                              alt={platform.name}
+                              className="w-full h-full object-contain"
+                            />
                           </div>
-                        </div>
-                      </TableCell>
-
-                      {/* URL */}
-                      <TableCell>
-                        <div className="flex items-center gap-1.5 max-w-md">
-                          <a
-                            href={platform.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="flex items-center gap-1 font-mono text-[11px] text-primary hover:underline truncate"
-                            title={platform.url}
-                          >
-                            <span className="truncate">{platform.url}</span>
-                            <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
-                          </a>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyUrl(platform.url)}
-                            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-muted transition-colors shrink-0"
-                            title="复制网址"
-                          >
-                            <Copy className="h-3 w-3" />
-                          </button>
-                        </div>
-                      </TableCell>
-
-                      {/* Sort Order */}
-                      <TableCell className="text-center font-mono font-medium">
-                        <span className="inline-block px-2 py-0.5 rounded bg-muted/60 text-[11px]">
-                          {platform.sortOrder}
-                        </span>
-                      </TableCell>
-
-                      {/* Status */}
-                      <TableCell className="text-center">
-                        {platform.status === "active" ? (
-                          <Badge variant="success" className="gap-1 text-[10px] px-2 py-0.5">
-                            <CheckCircle2 className="h-3 w-3" />
-                            <span>启用中</span>
-                          </Badge>
                         ) : (
-                          <Badge variant="secondary" className="gap-1 text-[10px] px-2 py-0.5 text-muted-foreground">
-                            <XCircle className="h-3 w-3" />
-                            <span>已停用</span>
-                          </Badge>
+                          <div className="h-8 w-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shadow-sm shrink-0">
+                            <Globe className="h-4 w-4" />
+                          </div>
                         )}
-                      </TableCell>
-
-                      {/* Actions */}
-                      <TableCell className="text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleOpenEdit(platform)}
-                            className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
-                          >
-                            <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span>编辑</span>
-                          </Button>
-
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onTogglePlatformStatus(platform)}
-                            className={cn(
-                              "h-7 px-2 text-xs gap-1 rounded-md border border-border/40 shadow-none font-normal transition-colors",
-                              platform.status === "active"
-                                ? "text-muted-foreground hover:text-amber-600 hover:bg-amber-500/10 hover:border-amber-500/30"
-                                : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 hover:border-emerald-500/30"
-                            )}
-                          >
-                            {platform.status === "active" ? (
-                              <>
-                                <PowerOff className="h-3.5 w-3.5 text-amber-600" />
-                                <span>停用</span>
-                              </>
-                            ) : (
-                              <>
-                                <Power className="h-3.5 w-3.5 text-emerald-600" />
-                                <span>启用</span>
-                              </>
-                            )}
-                          </Button>
-
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleOpenDelete(platform)}
-                            className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border/40 hover:border-destructive/30 shadow-none font-normal transition-colors"
-                          >
-                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                            <span>删除</span>
-                          </Button>
+                        <div className="flex flex-col min-w-0">
+                          <span className="font-semibold text-foreground text-xs truncate">
+                            {platform.name}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground font-mono">
+                            ID: #{platform.id}
+                          </span>
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                      </div>
+                    </TableCell>
+
+                    {/* URL */}
+                    <TableCell>
+                      <div className="flex items-center gap-1.5 max-w-md">
+                        <a
+                          href={platform.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-1 font-mono text-[11px] text-primary hover:underline truncate"
+                          title={platform.url}
+                        >
+                          <span className="truncate">{platform.url}</span>
+                          <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyUrl(platform.url)}
+                          className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-muted transition-colors shrink-0"
+                          title="复制网址"
+                        >
+                          <Copy className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </TableCell>
+
+                    {/* Sort Order */}
+                    <TableCell className="text-center font-mono font-medium">
+                      <span className="inline-block px-2 py-0.5 rounded bg-muted/60 text-[11px]">
+                        {platform.sortOrder}
+                      </span>
+                    </TableCell>
+
+                    {/* Status */}
+                    <TableCell className="text-center">
+                      {platform.status === "active" ? (
+                        <Badge variant="success" className="gap-1 text-[10px] px-2 py-0.5">
+                          <CheckCircle2 className="h-3 w-3" />
+                          <span>启用中</span>
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="gap-1 text-[10px] px-2 py-0.5 text-muted-foreground">
+                          <XCircle className="h-3 w-3" />
+                          <span>已停用</span>
+                        </Badge>
+                      )}
+                    </TableCell>
+
+                    {/* Actions */}
+                    <TableCell className="text-right whitespace-nowrap">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          variant="table-action"
+                          size="xs"
+                          onClick={() => handleOpenEdit(platform)}
+                        >
+                          <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span>编辑</span>
+                        </Button>
+
+                        <Button
+                          variant="table-action"
+                          size="xs"
+                          onClick={() => onTogglePlatformStatus(platform)}
+                          className={
+                            platform.status === "active"
+                              ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
+                              : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                          }
+                        >
+                          {platform.status === "active" ? (
+                            <>
+                              <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                              <span>停用</span>
+                            </>
+                          ) : (
+                            <>
+                              <Power className="h-3.5 w-3.5 text-emerald-600" />
+                              <span>启用</span>
+                            </>
+                          )}
+                        </Button>
+
+                        <Button
+                          variant="table-action"
+                          size="xs"
+                          onClick={() => handleOpenDelete(platform)}
+                          className="hover:text-destructive hover:bg-destructive/10 hover:border-destructive/30"
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          <span>删除</span>
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </DataCard>
 
       {/* Platform Create / Edit Dialog */}
       <PlatformDialog

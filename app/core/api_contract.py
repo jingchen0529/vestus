@@ -55,6 +55,7 @@ class ApiCode(IntEnum):
     INTERNAL = 50000
     DATABASE_UNAVAILABLE = 50300
     STORAGE_UNAVAILABLE = 50700
+    MANAGED_PROVIDER_UNAVAILABLE = 50301
 
     @classmethod
     def for_status(cls, status_code: int) -> int:

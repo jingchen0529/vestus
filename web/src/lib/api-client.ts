@@ -25,6 +25,14 @@ import {
 } from "@/types/admin";
 import { UserLogResponse, UserLogItem } from "@/types/log";
 import {
+  CreateManagedPlatformAccountPayload,
+  ManagedPlatformAccount,
+  ManagedPlatformBinding,
+  UpdateManagedPlatformAccountPayload,
+  UserManagedPlatformAccount,
+  UserManagedPlatformAccountPayload,
+} from "@/types/managed-platform";
+import {
   AdvidExportResponse,
   BrowserSessionDetail,
   BrowserSessionFilters,
@@ -215,6 +223,34 @@ export const api = {
     return request<UserStats>("/api/admin/stats");
   },
 
+  async getUserManagedAccount(id: number): Promise<UserManagedPlatformAccount | null> {
+    try {
+      return await request<UserManagedPlatformAccount>(`/api/admin/users/${id}/managed-account`);
+    } catch (error) {
+      // 首次绑定前服务端按“未绑定托管平台账号”返回 404，视为空配置而非错误。
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  },
+
+  async upsertUserManagedAccount(
+    id: number,
+    payload: UserManagedPlatformAccountPayload,
+  ): Promise<UserManagedPlatformAccount> {
+    return request<UserManagedPlatformAccount>(`/api/admin/users/${id}/managed-account`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteUserManagedAccount(id: number): Promise<void> {
+    await request<null>(`/api/admin/users/${id}/managed-account`, {
+      method: "DELETE",
+    });
+  },
+
   // Proxies
   async listProxies(): Promise<ProxyItem[]> {
     const { items } = await request<ApiCollection<ProxyItem>>("/api/admin/proxies");
@@ -265,6 +301,73 @@ export const api = {
     await request<null>(`/api/admin/platforms/${id}`, {
       method: "DELETE",
     });
+  },
+
+  // Administrator-managed platform accounts. Secret fields are write-only:
+  // list/get/update responses intentionally contain only metadata.
+  async listManagedPlatformAccounts(): Promise<ManagedPlatformAccount[]> {
+    const data = await request<ManagedPlatformAccount[] | ApiCollection<ManagedPlatformAccount>>(
+      "/api/admin/managed-platform-accounts",
+    );
+    return Array.isArray(data) ? data : data.items;
+  },
+
+  async getManagedPlatformAccount(id: number): Promise<ManagedPlatformAccount> {
+    return request<ManagedPlatformAccount>(`/api/admin/managed-platform-accounts/${id}`);
+  },
+
+  async createManagedPlatformAccount(
+    payload: CreateManagedPlatformAccountPayload,
+  ): Promise<ManagedPlatformAccount> {
+    return request<ManagedPlatformAccount>("/api/admin/managed-platform-accounts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateManagedPlatformAccount(
+    id: number,
+    payload: UpdateManagedPlatformAccountPayload,
+  ): Promise<ManagedPlatformAccount> {
+    return request<ManagedPlatformAccount>(`/api/admin/managed-platform-accounts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteManagedPlatformAccount(id: number): Promise<void> {
+    await request<null>(`/api/admin/managed-platform-accounts/${id}`, {
+      method: "DELETE",
+    });
+  },
+
+  async verifyManagedPlatformAccount(
+    id: number,
+  ): Promise<ManagedPlatformAccount & { verification?: "verified" }> {
+    return request<ManagedPlatformAccount & { verification?: "verified" }>(
+      `/api/admin/managed-platform-accounts/${id}/verify`,
+      { method: "POST" },
+    );
+  },
+
+  async bindManagedPlatformAccount(
+    id: number,
+    userId: number,
+  ): Promise<ManagedPlatformBinding> {
+    return request<ManagedPlatformBinding>(
+      `/api/admin/managed-platform-accounts/${id}/bindings`,
+      {
+        method: "POST",
+        body: JSON.stringify({ userId }),
+      },
+    );
+  },
+
+  async unbindManagedPlatformAccount(id: number, userId: number): Promise<void> {
+    await request<null>(
+      `/api/admin/managed-platform-accounts/${id}/bindings/${userId}`,
+      { method: "DELETE" },
+    );
   },
 
   // Admins

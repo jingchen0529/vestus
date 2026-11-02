@@ -551,6 +551,48 @@ impl BrowserSessionManager {
         count
     }
 
+    /// Close one owned browser session without affecting other platform
+    /// profiles. Managed-session bootstrap failures use this narrow path so a
+    /// bad credential on one platform cannot close unrelated browsers.
+    pub async fn close_browser(&self, session_id: u64) -> bool {
+        let session = self.take_session(session_id);
+        let Some(session) = session else {
+            return false;
+        };
+        close_gracefully(vec![session]).await;
+        true
+    }
+
+    /// Close older managed credential-version browsers for one exact
+    /// Vestus account/platform/managed-account namespace.
+    ///
+    /// Managed profiles share the account directory with ordinary manual
+    /// profiles.  Matching the complete environment name is therefore
+    /// required: closing every session below `account_dir` would also log the
+    /// user out of an unrelated direct or manually managed profile.
+    pub async fn close_managed_profile_versions(
+        &self,
+        account_dir: &Path,
+        platform_id: i64,
+        direct_mode: bool,
+        managed_account_id: u64,
+        keep_profile: &Path,
+    ) -> usize {
+        let sessions = self.take_sessions_matching(|session| {
+            session.profile_dir != keep_profile
+                && profile::is_managed_profile_for(
+                    account_dir,
+                    &session.profile_dir,
+                    platform_id,
+                    direct_mode,
+                    managed_account_id,
+                )
+        });
+        let count = sessions.len();
+        close_gracefully(sessions).await;
+        count
+    }
+
     /// Permanently reject new launches and close every owned process. Used by
     /// the Tauri exit path to close the small launch-vs-exit race window.
     ///
@@ -587,6 +629,32 @@ impl BrowserSessionManager {
                 (session.process, endpoint, session.lease)
             })
             .collect()
+    }
+
+    fn take_sessions_matching(
+        &self,
+        mut matches: impl FnMut(&ManagedBrowser) -> bool,
+    ) -> Vec<BrowserCloseEntry> {
+        let mut sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+        let ids = sessions
+            .iter()
+            .filter(|(_, session)| matches(session))
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter_map(|id| {
+                let session = sessions.remove(&id)?;
+                let endpoint = session.endpoint.lock().expect("调试端点锁已中毒").clone();
+                Some((session.process, endpoint, session.lease))
+            })
+            .collect()
+    }
+
+    fn take_session(&self, session_id: u64) -> Option<BrowserCloseEntry> {
+        let mut sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+        let session = sessions.remove(&session_id)?;
+        let endpoint = session.endpoint.lock().expect("调试端点锁已中毒").clone();
+        Some((session.process, endpoint, session.lease))
     }
 
     #[cfg(test)]
@@ -1738,6 +1806,39 @@ mod tests {
 
         assert_eq!(rt::runtime().block_on(manager.close_all()), 2);
         assert_eq!(manager.running_browser(&profile), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Credential rotation must retire only the matching managed version. A
+    /// normal profile and another platform's managed profile keep running.
+    #[cfg(unix)]
+    #[test]
+    fn managed_version_cleanup_is_scoped_to_account_platform_and_mode() {
+        let root = scratch_dir("managed-version-cleanup");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
+        let account = root.join("account");
+        let old = account.join("p3-proxy-managed-a9-v3");
+        let manual = account.join("p3-proxy");
+        let other_platform = account.join("p4-proxy-managed-a9-v3");
+        let current = account.join("p3-proxy-managed-a9-v4");
+        let manager = BrowserSessionManager::default();
+
+        launch_fake(&manager, 1, &executable, &old).unwrap();
+        launch_fake(&manager, 2, &executable, &manual).unwrap();
+        launch_fake(&manager, 3, &executable, &other_platform).unwrap();
+        assert_eq!(manager.active_count(), 3);
+
+        assert_eq!(
+            rt::runtime()
+                .block_on(manager.close_managed_profile_versions(&account, 3, false, 9, &current,)),
+            1
+        );
+        assert_eq!(manager.running_browser(&old), None);
+        assert_eq!(manager.running_browser(&manual), Some(2));
+        assert_eq!(manager.running_browser(&other_platform), Some(3));
+        assert_eq!(manager.active_count(), 2);
+
+        rt::runtime().block_on(manager.close_all());
         let _ = std::fs::remove_dir_all(root);
     }
 

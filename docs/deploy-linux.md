@@ -93,12 +93,15 @@ sudo -H -u vestus npm --prefix web run build
 VESTUS_DATABASE_URL=mysql+pymysql://vestus:URL_ENCODED_PASSWORD@127.0.0.1:3306/vestus?charset=utf8mb4
 VESTUS_SECRET_KEY=replace-with-a-stable-random-secret
 VESTUS_PROXY_SECRET_KEY=replace-with-another-stable-random-secret
+VESTUS_PLATFORM_SECRET_KEY=replace-with-a-third-stable-random-secret
 VESTUS_ACCESS_TOKEN_TTL_SECONDS=900
 VESTUS_COOKIE_SECURE=1
 VESTUS_CORS_ORIGINS=https://admin.example.com
 VESTUS_PRODUCT_NAME=Vestus
 VESTUS_UPLOAD_DIR=/var/lib/vestus/uploads
 VESTUS_UPLOAD_MAX_BYTES=10485760
+# 启用服务端登录托管账号时配置；Cookie 导入模式可不配置。
+# VESTUS_MANAGED_CHROMIUM_PATH=/usr/bin/google-chrome
 
 # 仅首次初始化保留下面两项；创建管理员后立即删除密码并重启服务。
 VESTUS_BOOTSTRAP_ADMIN_USERNAME=admin

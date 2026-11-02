@@ -150,10 +150,75 @@ pub(crate) fn account_dir(root: &Path, api_base: &str, profile_key: &str) -> Pat
     root.join(account_dir_name(api_base, profile_key))
 }
 
+/// Markers used to encode managed account/version data in the environment
+/// component.  They are reserved from server-issued base profile keys so an
+/// ordinary profile cannot collide with a managed namespace.
+pub(crate) fn contains_managed_profile_marker(profile_key: &str) -> bool {
+    profile_key.contains("::managed-account-") || profile_key.contains("::credential-version-")
+}
+
 /// 一个环境的 user-data-dir。
 pub(crate) fn profile_dir(root: &Path, spec: &ProfileSpec<'_>) -> PathBuf {
-    account_dir(root, spec.api_base, spec.profile_key)
-        .join(environment_dir_name(spec.platform_id, spec.direct_mode))
+    let (account_key, managed_suffix) = managed_profile_key_parts(spec.profile_key);
+    let mut environment = environment_dir_name(spec.platform_id, spec.direct_mode);
+    if let Some(suffix) = managed_suffix {
+        environment.push_str(&suffix);
+    }
+    account_dir(root, spec.api_base, account_key).join(environment)
+}
+
+/// Whether `profile_dir` is one of the managed credential-version profiles
+/// for the requested account, platform, proxy mode and managed account.
+///
+/// Managed profiles intentionally share the normal Vestus account directory,
+/// but their environment names carry a managed-account/version suffix.  Keep
+/// this check component based and require a decimal version so a caller cannot
+/// accidentally match the ordinary `pN-proxy`/`pN-direct` environments (or a
+/// similarly prefixed platform name).
+pub(crate) fn is_managed_profile_for(
+    account_dir: &Path,
+    profile_dir: &Path,
+    platform_id: i64,
+    direct_mode: bool,
+    managed_account_id: u64,
+) -> bool {
+    if profile_dir.parent() != Some(account_dir) {
+        return false;
+    }
+    let mode = if direct_mode { "direct" } else { "proxy" };
+    let prefix = format!("p{platform_id}-{mode}-managed-a{managed_account_id}-v");
+    let Some(name) = profile_dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(version) = name.strip_prefix(&prefix) else {
+        return false;
+    };
+    !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Managed launches pass a server-derived account/version suffix in the local
+/// profile key. Keep that suffix in the environment directory instead of the
+/// account hash so reset and rotation operations can address every managed
+/// version under the user's normal account directory.
+fn managed_profile_key_parts(profile_key: &str) -> (&str, Option<String>) {
+    let Some((account_key, suffix)) = profile_key.split_once("::managed-account-") else {
+        return (profile_key, None);
+    };
+    let Some((account_id, version_suffix)) = suffix.split_once("::credential-version-") else {
+        return (profile_key, None);
+    };
+    if account_key.is_empty()
+        || account_id.is_empty()
+        || !account_id.bytes().all(|byte| byte.is_ascii_digit())
+        || version_suffix.is_empty()
+        || !version_suffix.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return (profile_key, None);
+    }
+    (
+        account_key,
+        Some(format!("-managed-a{account_id}-v{version_suffix}")),
+    )
 }
 
 fn account_dir_name(api_base: &str, profile_key: &str) -> String {
@@ -834,6 +899,72 @@ mod tests {
             profile_dir(root, &spec("user-7", 3, false)),
             profile_dir(root, &spec("user-7", 3, false))
         );
+    }
+
+    #[test]
+    fn managed_account_versions_share_the_resettable_account_directory() {
+        let root = Path::new("/data/browser-profiles");
+        let base = account_dir(root, API, "user-7");
+        let versioned = profile_dir(
+            root,
+            &spec("user-7::managed-account-9::credential-version-3", 3, false),
+        );
+        assert!(versioned.starts_with(&base));
+        assert!(versioned
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("-managed-a9-v3")));
+        assert_ne!(versioned, profile_dir(root, &spec("user-7", 3, false)));
+    }
+
+    #[test]
+    fn managed_profile_matching_is_exact_and_does_not_match_manual_profiles() {
+        let root = Path::new("/data/browser-profiles");
+        let account = account_dir(root, API, "user-7");
+        let current = profile_dir(
+            root,
+            &spec("user-7::managed-account-9::credential-version-4", 3, false),
+        );
+        let old = profile_dir(
+            root,
+            &spec("user-7::managed-account-9::credential-version-3", 3, false),
+        );
+        let other_platform = profile_dir(
+            root,
+            &spec("user-7::managed-account-9::credential-version-3", 4, false),
+        );
+        let other_account = profile_dir(
+            root,
+            &spec("user-7::managed-account-10::credential-version-3", 3, false),
+        );
+        let manual = profile_dir(root, &spec("user-7", 3, false));
+
+        assert!(is_managed_profile_for(&account, &current, 3, false, 9));
+        assert!(is_managed_profile_for(&account, &old, 3, false, 9));
+        assert!(!is_managed_profile_for(
+            &account,
+            &other_platform,
+            3,
+            false,
+            9
+        ));
+        assert!(!is_managed_profile_for(
+            &account,
+            &other_account,
+            3,
+            false,
+            9
+        ));
+        assert!(!is_managed_profile_for(&account, &manual, 3, false, 9));
+        assert!(!is_managed_profile_for(&account, &current, 3, true, 9));
+        assert!(!is_managed_profile_for(&account, &current, 3, false, 10));
+        assert!(!is_managed_profile_for(
+            &account,
+            &account.join("p3-proxy-managed-a9-vx"),
+            3,
+            false,
+            9
+        ));
     }
 
     /// 单电脑多账号、多套服务器、多个平台、代理与直连：任何一维不同都必须是不同的环境。

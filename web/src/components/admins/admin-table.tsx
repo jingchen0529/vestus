@@ -29,6 +29,7 @@ interface AdminTableProps {
   onResetPassword: (admin: AdminUser) => void;
   onDeleteAdmin: (admin: AdminUser) => void;
   isLoading?: boolean;
+  embedded?: boolean;
 }
 
 export function AdminTable({
@@ -37,11 +38,35 @@ export function AdminTable({
   onToggleStatus,
   onResetPassword,
   onDeleteAdmin,
+  isLoading,
+  embedded = false,
 }: AdminTableProps) {
   const { user: currentLoggedAdmin } = useAuth();
 
+  if (admins.length === 0 && !isLoading) {
+    return (
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center py-16 px-6 text-center",
+          !embedded && "border rounded-xl bg-card shadow-sm"
+        )}
+      >
+        <ShieldCheck className="h-10 w-10 text-muted-foreground/40 mb-3" />
+        <h3 className="text-sm font-medium text-foreground">暂无符合条件的管理员</h3>
+        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+          请尝试调整搜索关键词或点击上方【新增管理员】开通管理账号
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+    <div
+      className={cn(
+        "overflow-x-auto",
+        !embedded && "rounded-xl border bg-card shadow-sm overflow-hidden"
+      )}
+    >
       <Table>
         <TableHeader>
           <TableRow>
@@ -119,10 +144,9 @@ export function AdminTable({
                 <TableCell className="text-right whitespace-nowrap">
                   <div className="flex items-center justify-end gap-1.5">
                     <Button
-                      variant="ghost"
-                      size="sm"
+                      variant="table-action"
+                      size="xs"
                       onClick={() => onEditAdmin(admin)}
-                      className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                     >
                       <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                       <span>编辑</span>
@@ -131,25 +155,24 @@ export function AdminTable({
                     {!isSelf && (
                       <>
                         <Button
-                          variant="ghost"
-                          size="sm"
+                          variant="table-action"
+                          size="xs"
                           onClick={() => onResetPassword(admin)}
-                          className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 border border-border/40 hover:border-amber-500/30 shadow-none font-normal transition-colors"
+                          className="hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
                         >
                           <KeyRound className="h-3.5 w-3.5 text-amber-500" />
                           <span>重置密码</span>
                         </Button>
 
                         <Button
-                          variant="ghost"
-                          size="sm"
+                          variant="table-action"
+                          size="xs"
                           onClick={() => onToggleStatus(admin)}
-                          className={cn(
-                            "h-7 px-2 text-xs gap-1 rounded-md border border-border/40 shadow-none font-normal transition-colors",
+                          className={
                             admin.status === "active"
-                              ? "text-muted-foreground hover:text-amber-600 hover:bg-amber-500/10 hover:border-amber-500/30"
-                              : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 hover:border-emerald-500/30"
-                          )}
+                              ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
+                              : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                          }
                         >
                           {admin.status === "active" ? (
                             <>
@@ -165,10 +188,10 @@ export function AdminTable({
                         </Button>
 
                         <Button
-                          variant="ghost"
-                          size="sm"
+                          variant="table-action"
+                          size="xs"
                           onClick={() => onDeleteAdmin(admin)}
-                          className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border/40 hover:border-destructive/30 shadow-none font-normal transition-colors"
+                          className="hover:text-destructive hover:bg-destructive/10 hover:border-destructive/30"
                         >
                           <Trash2 className="h-3.5 w-3.5 text-destructive" />
                           <span>删除</span>

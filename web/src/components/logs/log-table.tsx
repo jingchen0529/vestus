@@ -9,20 +9,27 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { UserLogItem } from "@/types/log";
-import { formatDate } from "@/lib/utils";
-import { Eye, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { cn, formatDate } from "@/lib/utils";
+import { Eye, CheckCircle2, XCircle, Clock, FileText } from "lucide-react";
 
 interface LogTableProps {
   logs: UserLogItem[];
   onViewDetail: (log: UserLogItem) => void;
   isLoading?: boolean;
+  embedded?: boolean;
 }
 
-export function LogTable({ logs, onViewDetail, isLoading }: LogTableProps) {
+export function LogTable({ logs, onViewDetail, isLoading, embedded = false }: LogTableProps) {
   if (logs.length === 0 && !isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center p-12 text-center border rounded-xl bg-card">
-        <h3 className="text-sm font-semibold text-foreground">暂无符合条件的审计日志</h3>
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center py-16 px-6 text-center",
+          !embedded && "border rounded-xl bg-card shadow-sm"
+        )}
+      >
+        <FileText className="h-10 w-10 text-muted-foreground/40 mb-3" />
+        <h3 className="text-sm font-medium text-foreground">暂无符合条件的审计日志</h3>
         <p className="text-xs text-muted-foreground mt-1 max-w-sm">
           系统尚无相关安全操作事件或当前过滤条件下无记录
         </p>
@@ -31,7 +38,12 @@ export function LogTable({ logs, onViewDetail, isLoading }: LogTableProps) {
   }
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+    <div
+      className={cn(
+        "overflow-x-auto",
+        !embedded && "rounded-xl border bg-card shadow-sm overflow-hidden"
+      )}
+    >
       <Table>
         <TableHeader>
           <TableRow>
@@ -102,10 +114,9 @@ export function LogTable({ logs, onViewDetail, isLoading }: LogTableProps) {
               {/* Detail Button */}
               <TableCell className="text-right">
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  variant="table-action"
+                  size="xs"
                   onClick={() => onViewDetail(log)}
-                  className="h-7 px-2.5 text-xs gap-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                 >
                   <Eye className="h-3.5 w-3.5 text-muted-foreground" />
                   <span>详情</span>

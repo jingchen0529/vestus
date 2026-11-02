@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.deps import admin_auth, audit_context, get_db
+from app.api.deps import admin_auth, audit_context, get_db, super_admin_auth
 from app.api.envelope import EnvelopeRoute
 from app.db.session import Database
 from app.schemas.settings import MAX_REPO_LENGTH, REPO_PATTERN, SettingsUpdate
@@ -71,7 +71,7 @@ def get_admin_settings(
 def update_admin_settings(
     payload: SettingsUpdate,
     request: Request,
-    auth: Dict[str, Any] = Depends(admin_auth),
+    auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     name = _validated_title(payload.product_name, "桌面端产品名称格式无效")

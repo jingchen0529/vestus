@@ -41,16 +41,15 @@ export function Header({
       </div>
 
       {/* Right Controls */}
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-center gap-2">
         {/* Refresh Button */}
         <Button
           variant="outline"
           size="sm"
           onClick={onRefreshCurrent}
           disabled={isRefreshing}
-          className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
           <span className="hidden md:inline">刷新数据</span>
         </Button>
       </div>

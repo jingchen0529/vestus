@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { DailyActivityItem } from "@/types/browser-activity";
-import { formatDuration } from "@/lib/utils";
+import { cn, formatDuration } from "@/lib/utils";
 import { CalendarDays } from "lucide-react";
 
 /**
@@ -18,14 +18,22 @@ import { CalendarDays } from "lucide-react";
 export function DailyTable({
   rows,
   isLoading,
+  embedded = false,
 }: {
   rows: DailyActivityItem[];
   isLoading?: boolean;
+  embedded?: boolean;
 }) {
   if (rows.length === 0 && !isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center p-12 text-center border rounded-xl bg-card">
-        <h3 className="text-sm font-semibold text-foreground">暂无符合条件的汇总记录</h3>
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center py-16 px-6 text-center",
+          !embedded && "border rounded-xl bg-card shadow-sm"
+        )}
+      >
+        <CalendarDays className="h-10 w-10 text-muted-foreground/40 mb-3" />
+        <h3 className="text-sm font-medium text-foreground">暂无符合条件的汇总记录</h3>
         <p className="text-xs text-muted-foreground mt-1 max-w-sm">
           桌面端打开内置浏览器并产生交互后，按天聚合的活动汇总在此呈现
         </p>
@@ -34,7 +42,12 @@ export function DailyTable({
   }
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+    <div
+      className={cn(
+        "overflow-x-auto",
+        !embedded && "rounded-xl border bg-card shadow-sm overflow-hidden"
+      )}
+    >
       <Table className="w-full min-w-[1020px]">
         <TableHeader>
           <TableRow className="hover:bg-muted/40">

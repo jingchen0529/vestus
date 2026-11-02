@@ -86,6 +86,20 @@ class CredentialUnreadableError(ServiceError):
     code = ApiCode.INTERNAL
 
 
+class ManagedProviderUnavailableError(ServiceError):
+    """The managed-login browser/provider is not configured or cannot start."""
+
+    status_code = 503
+    code = ApiCode.MANAGED_PROVIDER_UNAVAILABLE
+
+
+class ManagedVerificationRequiredError(ServiceError):
+    """The upstream login requires a human verification step."""
+
+    status_code = 422
+    code = ApiCode.UNPROCESSABLE
+
+
 class ConflictError(ServiceError):
     """A uniqueness constraint rejected the write."""
 
@@ -101,6 +115,8 @@ __all__ = [
     "CredentialUnreadableError",
     "ForbiddenFieldError",
     "LastSuperAdminError",
+    "ManagedProviderUnavailableError",
+    "ManagedVerificationRequiredError",
     "NotFoundError",
     "ServiceError",
 ]

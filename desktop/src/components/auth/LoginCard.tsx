@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { authService, UserAccount } from "@/services/authService";
 import { useToast } from "@/components/ui/toast";
+import { sanitizeNoWhitespace, preventSpaceKeyDown } from "./authInputHelpers";
 
 import defaultLogo from "@/assets/logo.png";
 
@@ -13,7 +14,7 @@ const REMEMBER_PASSWORD_KEY = "vestus_desktop_remembered_password_v1";
 
 function readRememberedUsername(): string {
   try {
-    return window.localStorage.getItem(REMEMBER_USERNAME_KEY) || "";
+    return sanitizeNoWhitespace(window.localStorage.getItem(REMEMBER_USERNAME_KEY) || "");
   } catch {
     return "";
   }
@@ -23,7 +24,7 @@ function readRememberedPassword(): string {
   try {
     const raw = window.localStorage.getItem(REMEMBER_PASSWORD_KEY);
     if (!raw) return "";
-    return decodeURIComponent(escape(window.atob(raw)));
+    return sanitizeNoWhitespace(decodeURIComponent(escape(window.atob(raw))));
   } catch {
     return "";
   }
@@ -31,9 +32,11 @@ function readRememberedPassword(): string {
 
 function writeRememberedCredentials(username: string, password: string): void {
   try {
-    if (username) {
-      window.localStorage.setItem(REMEMBER_USERNAME_KEY, username);
-      window.localStorage.setItem(REMEMBER_PASSWORD_KEY, window.btoa(unescape(encodeURIComponent(password))));
+    const cleanUser = sanitizeNoWhitespace(username);
+    const cleanPass = sanitizeNoWhitespace(password);
+    if (cleanUser) {
+      window.localStorage.setItem(REMEMBER_USERNAME_KEY, cleanUser);
+      window.localStorage.setItem(REMEMBER_PASSWORD_KEY, window.btoa(unescape(encodeURIComponent(cleanPass))));
     } else {
       window.localStorage.removeItem(REMEMBER_USERNAME_KEY);
       window.localStorage.removeItem(REMEMBER_PASSWORD_KEY);
@@ -70,11 +73,14 @@ export const LoginCard: React.FC<LoginCardProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim()) {
+    const cleanUsername = sanitizeNoWhitespace(username);
+    const cleanPassword = sanitizeNoWhitespace(password);
+
+    if (!cleanUsername) {
       setErrMsg("请输入账号");
       return;
     }
-    if (!password) {
+    if (!cleanPassword) {
       setErrMsg("请输入密码");
       return;
     }
@@ -83,9 +89,9 @@ export const LoginCard: React.FC<LoginCardProps> = ({
     setErrMsg(null);
 
     try {
-      const user = await authService.login(username, password);
+      const user = await authService.login(cleanUsername, cleanPassword);
       if (rememberUsername) {
-        writeRememberedCredentials(username.trim(), password);
+        writeRememberedCredentials(cleanUsername, cleanPassword);
       } else {
         writeRememberedCredentials("", "");
       }
@@ -146,7 +152,8 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                   type="text"
                   placeholder="请输入登录账号"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) => setUsername(sanitizeNoWhitespace(e.target.value))}
+                  onKeyDown={preventSpaceKeyDown}
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
@@ -166,7 +173,8 @@ export const LoginCard: React.FC<LoginCardProps> = ({
                   type={showPassword ? "text" : "password"}
                   placeholder="请输入登录密码"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => setPassword(sanitizeNoWhitespace(e.target.value))}
+                  onKeyDown={preventSpaceKeyDown}
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}

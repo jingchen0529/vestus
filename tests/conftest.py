@@ -89,6 +89,7 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestC
     monkeypatch.setenv("VESTUS_BOOTSTRAP_ADMIN_USERNAME", "test-admin")
     monkeypatch.setenv("VESTUS_BOOTSTRAP_ADMIN_PASSWORD", "test-admin-password")
     monkeypatch.setenv("VESTUS_SECRET_KEY", "test-secret-key-that-is-long-enough")
+    monkeypatch.setenv("VESTUS_PLATFORM_SECRET_KEY", "test-platform-secret-key-that-is-long-enough")
     monkeypatch.setenv("VESTUS_ACCESS_TOKEN_TTL_SECONDS", "900")
     monkeypatch.setenv("VESTUS_LOGIN_MAX_ATTEMPTS", "20")
     monkeypatch.setenv("VESTUS_UPLOAD_DIR", str(tmp_path / "uploads"))
@@ -132,6 +133,9 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestC
         UserLog=models.UserLog,
         UserPlatformAssignment=models.UserPlatformAssignment,
         UserProxyAssignment=models.UserProxyAssignment,
+        ManagedPlatformAccount=models.ManagedPlatformAccount,
+        ManagedPlatformBinding=models.ManagedPlatformBinding,
+        ManagedBrowserSession=models.ManagedBrowserSession,
     )
     try:
         with TestClient(application, client=("198.51.100.27", 50000)) as client:

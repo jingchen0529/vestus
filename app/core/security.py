@@ -1,4 +1,4 @@
-"""Password hashing, signed access tokens and proxy-credential encryption.
+"""Password hashing, signed access tokens and reversible credential encryption.
 
 The signing key and the proxy encryption key both come from
 :mod:`app.core.config`.  There is no in-process random fallback: a deployment
@@ -121,6 +121,31 @@ def decrypt_proxy_password(ciphertext: bytes | str) -> str:
         return _proxy_fernet().decrypt(raw).decode("utf-8")
     except (InvalidToken, UnicodeDecodeError, ValueError, TypeError) as exc:
         raise ValueError("proxy password cannot be decrypted") from exc
+
+
+def _platform_fernet() -> Fernet:
+    """Build the independent key used for managed platform credentials."""
+    value = get_settings().platform_encryption_secret
+    if not value:
+        raise ConfigurationError(
+            "VESTUS_PLATFORM_SECRET_KEY 未配置，无法加解密托管平台凭据"
+        )
+    key = base64.urlsafe_b64encode(hashlib.sha256(value.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def encrypt_platform_value(value: str) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError("platform credential must be a string")
+    return _platform_fernet().encrypt(value.encode("utf-8"))
+
+
+def decrypt_platform_value(ciphertext: bytes | str) -> str:
+    raw = ciphertext.encode("ascii") if isinstance(ciphertext, str) else ciphertext
+    try:
+        return _platform_fernet().decrypt(raw).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise ValueError("platform credential cannot be decrypted") from exc
 
 def create_access_token(
     account_type: str,

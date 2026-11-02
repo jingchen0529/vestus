@@ -10,6 +10,11 @@ from app.db.models.admin import Admin
 from app.db.models.assignment import UserPlatformAssignment, UserProxyAssignment
 from app.db.models.browser_activity import BrowserActivityReceipt, BrowserPageVisit, BrowserSession
 from app.db.models.log import UserLog
+from app.db.models.managed_platform import (
+    ManagedBrowserSession,
+    ManagedPlatformAccount,
+    ManagedPlatformBinding,
+)
 from app.db.models.platform import Platform
 from app.db.models.proxy import Proxy
 from app.db.models.setting import SystemSetting
@@ -21,6 +26,9 @@ __all__ = [
     "BrowserActivityReceipt",
     "BrowserPageVisit",
     "BrowserSession",
+    "ManagedBrowserSession",
+    "ManagedPlatformAccount",
+    "ManagedPlatformBinding",
     "Platform",
     "Proxy",
     "SystemSetting",

@@ -254,6 +254,49 @@ def test_plain_admin_cannot_write_the_global_proxy_pool(api: Any) -> None:
     }
 
 
+def test_plain_admin_cannot_write_global_platform_or_branding_config(api: Any) -> None:
+    client, _module = api
+    super_token = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    platform = payload(
+        client.post(
+            "/api/admin/platforms",
+            headers=_bearer(super_token),
+            json={"name": "global-platform", "url": "https://global.example.test"},
+        )
+    )
+    _create_admin(client, super_token, "global-config-admin")
+    plain_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "global-config-admin",
+        "global-config-admin-password",
+    )
+    headers = _bearer(plain_token)
+
+    # Reads remain available for rendering the console, but all global writes
+    # must be protected by the super-admin dependency.
+    assert client.get("/api/admin/platforms", headers=headers).status_code == 200
+    assert client.get("/api/admin/settings", headers=headers).status_code == 200
+    assert client.post(
+        "/api/admin/platforms",
+        headers=headers,
+        json={"name": "rogue-platform", "url": "https://rogue.example.test"},
+    ).status_code == 403
+    assert client.patch(
+        f"/api/admin/platforms/{platform['id']}",
+        headers=headers,
+        json={"name": "rogue-renamed"},
+    ).status_code == 403
+    assert client.delete(
+        f"/api/admin/platforms/{platform['id']}", headers=headers
+    ).status_code == 403
+    assert client.put(
+        "/api/admin/settings",
+        headers=headers,
+        json={"desktopVersion": "9.9.9"},
+    ).status_code == 403
+
+
 # --------------------------------------------------------------------------
 # The default mark may only sit on an enabled node
 # --------------------------------------------------------------------------
@@ -389,6 +432,62 @@ def test_plain_admin_cannot_rebind_or_unbind_users(api: Any) -> None:
     assert moved.status_code == 200, moved.text
     assert payload(moved)["boundAdminId"] == other["id"]
     assert payload(moved)["proxyId"] == node["id"]
+
+
+def test_plain_admin_cannot_bind_managed_account_to_another_tenant(api: Any) -> None:
+    client, _module = api
+    super_token = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    mine_admin = _create_admin(client, super_token, "managed-tenant-one")
+    other_admin = _create_admin(client, super_token, "managed-tenant-two")
+    mine = _create_user(client, super_token, "managed-tenant-one-user", boundAdminId=mine_admin["id"])
+    theirs = _create_user(client, super_token, "managed-tenant-two-user", boundAdminId=other_admin["id"])
+    platform = payload(
+        client.post(
+            "/api/admin/platforms",
+            headers=_bearer(super_token),
+            json={"name": "managed-scope-platform", "url": "https://ark.example.test"},
+        )
+    )
+    account = payload(
+        client.post(
+            "/api/admin/managed-platform-accounts",
+            headers=_bearer(super_token),
+            json={
+                "platformId": platform["id"],
+                "name": "managed-scope-account",
+                "authMode": "cookie",
+                "cookieBundle": [
+                    {
+                        "name": "sessionid",
+                        "value": "scope-cookie",
+                        "domain": ".example.test",
+                    }
+                ],
+            },
+        )
+    )
+    plain_token = _login(
+        client,
+        "/api/admin/auth/login",
+        "managed-tenant-one",
+        "managed-tenant-one-password",
+    )
+    headers = _bearer(plain_token)
+
+    assert client.post(
+        f"/api/admin/managed-platform-accounts/{account['id']}/bindings",
+        headers=headers,
+        json={"userId": theirs["id"]},
+    ).status_code == 403
+    assert client.delete(
+        f"/api/admin/managed-platform-accounts/{account['id']}/bindings/{theirs['id']}",
+        headers=headers,
+    ).status_code == 403
+    assert client.post(
+        f"/api/admin/managed-platform-accounts/{account['id']}/bindings",
+        headers=headers,
+        json={"userId": mine["id"]},
+    ).status_code == 403
 
 
 def test_deleting_an_admin_releases_its_users(api: Any) -> None:

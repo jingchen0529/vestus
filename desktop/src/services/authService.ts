@@ -167,13 +167,14 @@ class AuthService {
   }
 
   public async login(username: string, password: string): Promise<UserAccount> {
-    const cleanUser = username.trim();
+    const cleanUser = username.replace(/\s+/g, "");
+    const cleanPassword = password.replace(/\s+/g, "");
     if (!cleanUser) throw new Error("请输入账号");
-    if (!password) throw new Error("请输入密码");
+    if (!cleanPassword) throw new Error("请输入密码");
     try {
       const raw = await invokeDesktop<any>("desktop_login", {
         username: cleanUser,
-        password,
+        password: cleanPassword,
       });
       const user = normaliseDesktopUser(raw);
       this.currentUser = user;

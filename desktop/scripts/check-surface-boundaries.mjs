@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -40,6 +40,22 @@ for (const forbidden of [
 const rustCommands = read("src-tauri/src/lib.rs");
 assert(!rustCommands.includes("commands::close_browser"), "Rust 仍注册多余的关闭浏览器 IPC");
 assert(!rustCommands.includes("commands::stop_proxy"), "Rust 仍注册多余的停止代理 IPC");
+
+// Repeated platform-button clicks may only activate the existing page.  The
+// command layer must not regain either of the old new-target/new-window
+// fallbacks; the browser manager helpers remain available only for legacy
+// lower-level tests and are not reachable from the IPC command.
+const rustCommandSource = existsSync(new URL("src-tauri/src/commands.rs", root))
+  ? read("src-tauri/src/commands.rs")
+  : "";
+assert(
+  !rustCommandSource.includes("Target.createTarget"),
+  "平台按钮仍可创建第二个页面目标",
+);
+assert(
+  !rustCommandSource.includes(".hand_off("),
+  "平台按钮仍可转交到新窗口",
+);
 
 // 页面自动化已移除：不得替用户操作浏览器。
 assert(!rustCommands.includes("mod page;"), "页面自动化模块又参与编译了：mod page;");

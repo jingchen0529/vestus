@@ -126,7 +126,8 @@ def test_receipt_migration_preserves_existing_data_and_matches_metadata(tmp_path
 
     from app.db.base import Base
     config = Config("alembic.ini")
-    assert ScriptDirectory.from_config(config).get_current_head() == "0007"
+    # The plaintext managed credential migration follows the managed account migration.
+    assert ScriptDirectory.from_config(config).get_current_head() == "0009"
     engine = create_engine(f"sqlite:///{tmp_path / 'migration.sqlite'}")
     try:
         with engine.begin() as connection:

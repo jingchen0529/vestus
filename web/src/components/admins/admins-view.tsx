@@ -4,10 +4,16 @@ import { AdminDialog } from "./admin-dialog";
 import { AdminResetPasswordDialog } from "./admin-reset-password-dialog";
 import { AdminUser, CreateAdminPayload, UpdateAdminPayload } from "@/types/admin";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Card, CardContent } from "@/components/ui/card";
-import { ShieldCheck, Plus, Search, RefreshCw, AlertTriangle, Loader2 } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import {
+  DataCard,
+  PageToolbar,
+  PageToolbarActions,
+  PageToolbarFilters,
+  ToolbarSearch,
+} from "@/components/ui/page-toolbar";
+import { ShieldCheck, Plus, RefreshCw, AlertTriangle } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import {
   Dialog,
@@ -108,81 +114,65 @@ export function AdminsView({
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in-50 duration-300">
+    <div className="space-y-6 animate-in fade-in-50 duration-300">
       {/* Super Admin Notice */}
-      <div className="flex items-center gap-2.5 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-primary">
+      <div className="flex items-center gap-2.5 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-xs text-primary">
         <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
         <span>超级管理员控制台：您拥有全部管理成员账号开通、角色委派及密码重置权限。</span>
       </div>
 
-      {/* Toolbar */}
-      <Card className="border-border/80 shadow-none">
-        <CardContent className="p-3">
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
-            {/* Action Buttons on Left */}
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                onClick={handleOpenCreate}
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <Plus className="h-4 w-4 text-muted-foreground" />
-                <span>新增管理员</span>
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onRefresh}
-                disabled={isRefreshing}
-                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`} />
-                <span>刷新</span>
-              </Button>
+      <DataCard>
+        <PageToolbar>
+          <PageToolbarActions>
+            <Button size="sm" onClick={handleOpenCreate}>
+              <Plus className="h-3.5 w-3.5" />
+              <span>新增管理员</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-muted-foreground ${isRefreshing ? "animate-spin" : ""}`}
+              />
+              <span>刷新</span>
+            </Button>
+          </PageToolbarActions>
+
+          <PageToolbarFilters>
+            <ToolbarSearch
+              value={search}
+              onChange={onSearchChange}
+              placeholder="搜索管理员账号或姓名..."
+            />
+
+            <div className="w-36 shrink-0">
+              <Select value={statusFilter} onValueChange={onStatusFilterChange}>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="全部状态" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="text-xs">全部状态</SelectItem>
+                  <SelectItem value="active" className="text-xs">正常启用</SelectItem>
+                  <SelectItem value="disabled" className="text-xs">已禁用</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+          </PageToolbarFilters>
+        </PageToolbar>
 
-            {/* Search and Filters on Right */}
-            <div className="flex flex-1 items-center justify-end gap-2">
-              <div className="relative w-full max-w-xs">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  placeholder="搜索管理员账号或姓名..."
-                  value={search}
-                  onChange={(e) => onSearchChange(e.target.value)}
-                  className="pl-9 h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none"
-                />
-              </div>
-
-              <div className="w-36 shrink-0">
-                <Select
-                  value={statusFilter}
-                  onValueChange={onStatusFilterChange}
-                >
-                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 bg-background/80 shadow-none">
-                    <SelectValue placeholder="全部状态" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL">全部状态</SelectItem>
-                    <SelectItem value="active">正常启用</SelectItem>
-                    <SelectItem value="disabled">已禁用</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Admin Table */}
-      <AdminTable
-        admins={admins}
-        onEditAdmin={handleOpenEdit}
-        onToggleStatus={onToggleAdminStatus}
-        onResetPassword={handleOpenReset}
-        onDeleteAdmin={handleOpenDelete}
-        isLoading={isRefreshing}
-      />
+        <AdminTable
+          admins={admins}
+          onEditAdmin={handleOpenEdit}
+          onToggleStatus={onToggleAdminStatus}
+          onResetPassword={handleOpenReset}
+          onDeleteAdmin={handleOpenDelete}
+          isLoading={isRefreshing}
+          embedded
+        />
+      </DataCard>
 
       {/* Admin Dialog */}
       <AdminDialog
@@ -229,7 +219,6 @@ export function AdminsView({
               size="sm"
               onClick={() => setDeleteDialogOpen(false)}
               disabled={isDeleting}
-              className="text-xs"
             >
               取消
             </Button>
@@ -238,17 +227,10 @@ export function AdminsView({
               variant="destructive"
               size="sm"
               onClick={handleConfirmDelete}
-              disabled={isDeleting}
-              className="text-xs gap-1.5 font-semibold"
+              loading={isDeleting}
+              className="font-semibold"
             >
-              {isDeleting ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>正在删除...</span>
-                </>
-              ) : (
-                <span>确认删除</span>
-              )}
+              确认删除
             </Button>
           </DialogFooter>
         </DialogContent>

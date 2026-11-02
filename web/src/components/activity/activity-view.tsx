@@ -26,7 +26,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  DataCard,
+  PageToolbar,
+  PageToolbarActions,
+} from "@/components/ui/page-toolbar";
+import { TablePagination } from "@/components/ui/table-pagination";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   RefreshCw,
@@ -34,15 +39,10 @@ import {
   FileSpreadsheet,
   Download,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
   RotateCcw,
 } from "lucide-react";
 import { exportToJsonFile, exportToCsvFile, withBeijingDateTimes } from "@/lib/export-utils";
 import { beijingDateStamp, formatBeijingDateTime } from "@/lib/utils";
-import { getPageItems } from "@/lib/pagination";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
 
@@ -361,70 +361,85 @@ export function ActivityView({
   };
 
   return (
-    <div className="space-y-4 animate-in fade-in-50 duration-300">
-      {/* 视图切换：明细是每次浏览器一行；按天汇总是用户×设备×平台×天一条 */}
-      <Tabs value={viewMode} onValueChange={handleViewModeChange}>
-        <TabsList className="h-8">
-          <TabsTrigger value="sessions" className="text-xs px-3 h-7">会话明细</TabsTrigger>
-          <TabsTrigger value="daily" className="text-xs px-3 h-7">按天汇总</TabsTrigger>
-        </TabsList>
-      </Tabs>
+    <div className="space-y-6 animate-in fade-in-50 duration-300">
+      <DataCard>
+        {/* 顶栏：左侧切换「会话明细 / 按天汇总」视图，右侧统一放置刷新与导出动作 */}
+        <PageToolbar>
+          <Tabs value={viewMode} onValueChange={handleViewModeChange}>
+            <TabsList className="h-8">
+              <TabsTrigger value="sessions" className="text-xs px-3 h-7">
+                会话明细
+              </TabsTrigger>
+              <TabsTrigger value="daily" className="text-xs px-3 h-7">
+                按天汇总
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
 
-      {/* 工具条 */}
-      <Card className="border-border/80 shadow-xs">
-        <CardContent className="p-3">
-          <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-2.5">
-            {/* 左侧操作按钮 */}
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => (viewMode === "daily" ? loadDaily(dailyPage) : onRefresh())}
-                disabled={isRefreshing || isDailyLoading}
-                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${(viewMode === "daily" ? isDailyLoading : isRefreshing) ? "animate-spin" : ""}`} />
-                <span>刷新</span>
-              </Button>
+          <PageToolbarActions>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => (viewMode === "daily" ? loadDaily(dailyPage) : onRefresh())}
+              disabled={isRefreshing || isDailyLoading}
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-muted-foreground ${
+                  (viewMode === "daily" ? isDailyLoading : isRefreshing) ? "animate-spin" : ""
+                }`}
+              />
+              <span>刷新</span>
+            </Button>
 
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={viewMode === "daily" ? handleExportDailyCsv : handleExportCsv}
-                disabled={isExportingCsv || isRefreshing || isDailyLoading}
-                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <FileSpreadsheet className={`h-3.5 w-3.5 text-emerald-600 ${isExportingCsv ? "animate-spin" : ""}`} />
-                <span>{isExportingCsv ? "正在导出..." : "导出 CSV"}</span>
-              </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={viewMode === "daily" ? handleExportDailyCsv : handleExportCsv}
+              disabled={isExportingCsv || isRefreshing || isDailyLoading}
+            >
+              <FileSpreadsheet
+                className={`h-3.5 w-3.5 text-emerald-600 ${isExportingCsv ? "animate-spin" : ""}`}
+              />
+              <span>{isExportingCsv ? "正在导出..." : "导出 CSV"}</span>
+            </Button>
 
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={viewMode === "daily" ? handleExportDailyJson : handleExportJson}
-                disabled={isExportingJson || isRefreshing || isDailyLoading}
-                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors"
-              >
-                <FileJson className={`h-3.5 w-3.5 text-blue-600 ${isExportingJson ? "animate-spin" : ""}`} />
-                <span>{isExportingJson ? "正在导出..." : "导出 JSON"}</span>
-              </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={viewMode === "daily" ? handleExportDailyJson : handleExportJson}
+              disabled={isExportingJson || isRefreshing || isDailyLoading}
+            >
+              <FileJson
+                className={`h-3.5 w-3.5 text-blue-600 ${isExportingJson ? "animate-spin" : ""}`}
+              />
+              <span>{isExportingJson ? "正在导出..." : "导出 JSON"}</span>
+            </Button>
 
-              {/* 去重 ID 导出只对明细有意义：按天行里没有地址参数 */}
-              {viewMode === "sessions" && (
+            {/* 去重 ID 导出只对明细有意义：按天行里没有地址参数 */}
+            {viewMode === "sessions" && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="outline"
                     size="sm"
                     disabled={isExportingAdvids || isRefreshing}
-                    className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-foreground shadow-none font-normal transition-colors whitespace-nowrap shrink-0"
+                    className="whitespace-nowrap shrink-0"
                   >
-                    <Download className={`h-3.5 w-3.5 text-indigo-600 shrink-0 ${isExportingAdvids ? "animate-spin" : ""}`} />
-                    <span className="whitespace-nowrap">{isExportingAdvids ? "正在导出 ID..." : "导出 ID (去重)"}</span>
+                    <Download
+                      className={`h-3.5 w-3.5 text-indigo-600 shrink-0 ${
+                        isExportingAdvids ? "animate-spin" : ""
+                      }`}
+                    />
+                    <span className="whitespace-nowrap">
+                      {isExportingAdvids ? "正在导出 ID..." : "导出 ID (去重)"}
+                    </span>
                     <ChevronDown className="h-3 w-3 text-muted-foreground ml-0.5 shrink-0" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-auto min-w-[220px] text-xs whitespace-nowrap p-1">
+                <DropdownMenuContent
+                  align="end"
+                  className="w-auto min-w-[220px] text-xs whitespace-nowrap p-1"
+                >
                   <DropdownMenuItem
                     onClick={() => handleExportAdvids(false)}
                     className="cursor-pointer whitespace-nowrap flex items-center py-2 px-3"
@@ -441,217 +456,128 @@ export function ActivityView({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              )}
+            )}
+          </PageToolbarActions>
+        </PageToolbar>
+
+        {/* 二级筛选栏：多维过滤条件独立成行，避免与左侧导出按钮在中屏下互相挤压 */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-border/60 bg-muted/5">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="w-36">
+              <Select
+                value={filters.userId}
+                onValueChange={(value) => patchFilters({ userId: value })}
+              >
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="全部桌面用户" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="text-xs">全部桌面用户</SelectItem>
+                  {users.map((user) => (
+                    <SelectItem key={user.id} value={String(user.id)} className="text-xs">
+                      {user.username}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
-            {/* 右侧筛选条件 单行排列 */}
-            <div className="flex flex-wrap items-center gap-2 shrink-0 justify-start xl:justify-end">
-              <div className="w-36">
-                <Select
-                  value={filters.userId}
-                  onValueChange={(value) => patchFilters({ userId: value })}
-                >
-                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 shadow-none bg-background/80">
-                    <SelectValue placeholder="全部桌面用户" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL">全部桌面用户</SelectItem>
-                    {users.map((user) => (
-                      <SelectItem key={user.id} value={String(user.id)}>
-                        {user.username}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="w-36">
-                <Select
-                  value={filters.platformId}
-                  onValueChange={(value) => patchFilters({ platformId: value })}
-                >
-                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 shadow-none bg-background/80">
-                    <SelectValue placeholder="全部平台" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL">全部平台</SelectItem>
-                    {platforms.map((platform) => (
-                      <SelectItem key={platform.id} value={String(platform.id)}>
-                        {platform.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="w-32">
-                <Select
-                  value={filters.connection}
-                  onValueChange={(value) =>
-                    patchFilters({ connection: value as BrowserSessionFilters["connection"] })
-                  }
-                >
-                  <SelectTrigger className="h-8 text-xs rounded-md border-border/60 shadow-none bg-background/80">
-                    <SelectValue placeholder="全部连接方式" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL">全部连接方式</SelectItem>
-                    <SelectItem value="PROXY">代理</SelectItem>
-                    <SelectItem value="DIRECT">直连</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="w-[140px]">
-                <DatePicker
-                  size="sm"
-                  value={filters.startAt}
-                  max={filters.endAt || undefined}
-                  onChange={(value) => patchFilters({ startAt: value })}
-                  placeholder="起始日期"
-                  title="按会话开始时间筛选：起始日期"
-                />
-              </div>
-
-              <div className="w-[140px]">
-                <DatePicker
-                  size="sm"
-                  value={filters.endAt}
-                  min={filters.startAt || undefined}
-                  onChange={(value) => patchFilters({ endAt: value })}
-                  placeholder="结束日期"
-                  title="按会话开始时间筛选：结束日期（含当天）"
-                />
-              </div>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleResetFilters}
-                disabled={!hasActiveFilters || isRefreshing}
-                className="h-8 gap-1.5 px-2.5 text-xs rounded-md border-border/60 bg-background/80 hover:bg-muted text-muted-foreground hover:text-foreground shadow-none font-normal transition-colors shrink-0 disabled:opacity-40"
-                title="清空所有筛选条件"
+            <div className="w-36">
+              <Select
+                value={filters.platformId}
+                onValueChange={(value) => patchFilters({ platformId: value })}
               >
-                <RotateCcw className="h-3.5 w-3.5" />
-                <span>重置</span>
-              </Button>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="全部平台" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="text-xs">全部平台</SelectItem>
+                  {platforms.map((platform) => (
+                    <SelectItem key={platform.id} value={String(platform.id)} className="text-xs">
+                      {platform.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="w-32">
+              <Select
+                value={filters.connection}
+                onValueChange={(value) =>
+                  patchFilters({ connection: value as BrowserSessionFilters["connection"] })
+                }
+              >
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="全部连接方式" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="text-xs">全部连接方式</SelectItem>
+                  <SelectItem value="PROXY" className="text-xs">代理</SelectItem>
+                  <SelectItem value="DIRECT" className="text-xs">直连</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="w-[140px]">
+              <DatePicker
+                size="sm"
+                value={filters.startAt}
+                max={filters.endAt || undefined}
+                onChange={(value) => patchFilters({ startAt: value })}
+                placeholder="起始日期"
+                title="按会话开始时间筛选：起始日期"
+              />
+            </div>
+
+            <div className="w-[140px]">
+              <DatePicker
+                size="sm"
+                value={filters.endAt}
+                min={filters.startAt || undefined}
+                onChange={(value) => patchFilters({ endAt: value })}
+                placeholder="结束日期"
+                title="按会话开始时间筛选：结束日期（含当天）"
+              />
             </div>
           </div>
-        </CardContent>
-      </Card>
 
-      {viewMode === "sessions" ? (
-        <SessionTable
-          sessions={sessions}
-          onViewDetail={handleViewDetail}
-          isLoading={isRefreshing}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleResetFilters}
+            disabled={!hasActiveFilters || isRefreshing}
+            className="text-muted-foreground hover:text-foreground shrink-0 disabled:opacity-40"
+            title="清空所有筛选条件"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            <span>重置</span>
+          </Button>
+        </div>
+
+        {viewMode === "sessions" ? (
+          <SessionTable
+            sessions={sessions}
+            onViewDetail={handleViewDetail}
+            isLoading={isRefreshing}
+            embedded
+          />
+        ) : (
+          <DailyTable rows={dailyRows} isLoading={isDailyLoading} embedded />
+        )}
+
+        <TablePagination
+          currentPage={viewMode === "daily" ? dailyPage : currentPage}
+          totalPages={viewMode === "daily" ? displayTotalPages : totalPages}
+          totalItems={displayTotal}
+          pageSize={pageSize}
+          onPageChange={(page) =>
+            viewMode === "daily" ? setDailyPage(page) : onPageChange(page)
+          }
+          onPageSizeChange={onPageSizeChange}
+          disabled={isRefreshing || isDailyLoading}
         />
-      ) : (
-        <DailyTable rows={dailyRows} isLoading={isDailyLoading} />
-      )}
-
-      {/* 分页 */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-2 text-xs text-muted-foreground">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div>
-            第 <strong className="text-foreground">{viewMode === "daily" ? dailyPage : currentPage}</strong> 页，共 <strong className="text-foreground">{displayTotalPages}</strong> 页 · 共 <strong className="text-foreground">{displayTotal}</strong> 条记录
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <span className="text-muted-foreground">每页</span>
-            <Select
-              value={String(pageSize)}
-              onValueChange={(val) => onPageSizeChange?.(Number(val))}
-            >
-              <SelectTrigger className="h-7 w-[78px] text-xs rounded-md border-border/60 bg-background/80 shadow-none px-2">
-                <SelectValue placeholder={`${pageSize} 条`}>{`${pageSize} 条`}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="10">10 条</SelectItem>
-                <SelectItem value="30">30 条</SelectItem>
-                <SelectItem value="50">50 条</SelectItem>
-                <SelectItem value="100">100 条</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => (viewMode === "daily" ? setDailyPage(1) : onPageChange(1))}
-            disabled={(viewMode === "daily" ? dailyPage : currentPage) <= 1 || isRefreshing || isDailyLoading}
-            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
-            title="第一页"
-          >
-            <ChevronsLeft className="h-3.5 w-3.5" />
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => (viewMode === "daily" ? setDailyPage(dailyPage - 1) : onPageChange(currentPage - 1))}
-            disabled={(viewMode === "daily" ? dailyPage : currentPage) <= 1 || isRefreshing || isDailyLoading}
-            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
-            title="上一页"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" />
-          </Button>
-
-          {(viewMode === "daily" ? getPageItems(dailyPage, displayTotalPages) : getPageItems(currentPage, totalPages)).map((item, idx) => {
-            if (typeof item === "string") {
-              return (
-                <span
-                  key={`ellipsis-${idx}`}
-                  className="px-1 text-xs text-muted-foreground/80 select-none flex items-center justify-center min-w-[1.25rem]"
-                >
-                  ...
-                </span>
-              );
-            }
-            const isCurrent = item === (viewMode === "daily" ? dailyPage : currentPage);
-            return (
-              <Button
-                key={item}
-                variant={isCurrent ? "default" : "outline"}
-                size="sm"
-                onClick={() => (viewMode === "daily" ? setDailyPage(item) : onPageChange(item))}
-                disabled={isRefreshing || isDailyLoading}
-                className={`h-8 min-w-[2rem] px-2 text-xs rounded-md ${
-                  isCurrent
-                    ? "bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 font-semibold shadow-xs"
-                    : "border-border/60 bg-background/80 hover:bg-muted text-foreground font-normal"
-                }`}
-              >
-                {item}
-              </Button>
-            );
-          })}
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => (viewMode === "daily" ? setDailyPage(dailyPage + 1) : onPageChange(currentPage + 1))}
-            disabled={(viewMode === "daily" ? dailyPage : currentPage) >= displayTotalPages || isRefreshing || isDailyLoading}
-            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
-            title="下一页"
-          >
-            <ChevronRight className="h-3.5 w-3.5" />
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => (viewMode === "daily" ? setDailyPage(displayTotalPages) : onPageChange(totalPages))}
-            disabled={(viewMode === "daily" ? dailyPage : currentPage) >= displayTotalPages || isRefreshing || isDailyLoading}
-            className="h-8 w-8 p-0 text-xs rounded-md border-border/60"
-            title="最后一页"
-          >
-            <ChevronsRight className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
+      </DataCard>
 
       <SessionDetailModal
         open={detailOpen}

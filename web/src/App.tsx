@@ -13,9 +13,11 @@ import { ActivityView } from "@/components/activity/activity-view";
 import { SettingsView } from "@/components/settings/settings-view";
 import { Toaster } from "@/components/ui/sonner";
 import { api } from "@/lib/api-client";
+import { defaultCookieDomain } from "@/lib/cookie-parser";
 import { DesktopUser, UserStats, CreateUserPayload, UpdateUserPayload } from "@/types/user";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
 import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
+import { UserManagedPlatformAccount, UserManagedPlatformAccountPayload } from "@/types/managed-platform";
 import { AdminUser, CreateAdminPayload, UpdateAdminPayload } from "@/types/admin";
 import { UserLogItem } from "@/types/log";
 import {
@@ -415,6 +417,26 @@ export function App() {
     await loadPlatforms();
   };
 
+  // Per-user managed Ark account configuration. The API enforces the same
+  // super-admin boundary; the UI hides the controls for ordinary admins.
+  const handleGetUserManagedAccount = useCallback(
+    (userId: number): Promise<UserManagedPlatformAccount | null> => api.getUserManagedAccount(userId),
+    [],
+  );
+
+  const handleSaveUserManagedAccount = async (
+    userId: number,
+    payload: UserManagedPlatformAccountPayload,
+  ) => {
+    await api.upsertUserManagedAccount(userId, payload);
+    await loadUsers();
+  };
+
+  const handleDeleteUserManagedAccount = async (userId: number) => {
+    await api.deleteUserManagedAccount(userId);
+    await loadUsers();
+  };
+
   // Admin Mutators
   const handleCreateAdmin = async (payload: CreateAdminPayload) => {
     await api.createAdmin(payload);
@@ -518,6 +540,11 @@ export function App() {
             proxies={proxies}
             admins={admins}
             canAssignVpn={isSuperAdmin}
+            canManageManagedAccount={isSuperAdmin}
+            cookieDefaultDomain={defaultCookieDomain(platforms.find((platform) => platform.id === 1)?.url)}
+            onGetManagedAccount={isSuperAdmin ? handleGetUserManagedAccount : undefined}
+            onSaveManagedAccount={isSuperAdmin ? handleSaveUserManagedAccount : undefined}
+            onDeleteManagedAccount={isSuperAdmin ? handleDeleteUserManagedAccount : undefined}
           />
         )}
 

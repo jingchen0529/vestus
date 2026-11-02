@@ -31,7 +31,10 @@ interface UserTableProps {
   onToggleStatus: (user: DesktopUser) => void;
   onResetPassword: (user: DesktopUser) => void;
   onDeleteUser: (user: DesktopUser) => void;
+  onManageManagedAccount?: (user: DesktopUser) => void;
+  canManageManagedAccount?: boolean;
   isLoading?: boolean;
+  embedded?: boolean;
 }
 
 export function UserTable({
@@ -40,7 +43,10 @@ export function UserTable({
   onToggleStatus,
   onResetPassword,
   onDeleteUser,
+  onManageManagedAccount,
+  canManageManagedAccount = false,
   isLoading,
+  embedded = false,
 }: UserTableProps) {
   const isExpired = (expiresAt?: string | null) => {
     if (!expiresAt) return false;
@@ -67,20 +73,28 @@ export function UserTable({
 
   if (users.length === 0 && !isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center p-12 text-center border rounded-xl bg-card">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground mb-3">
-          <Building className="h-6 w-6" />
-        </div>
-        <h3 className="text-sm font-semibold text-foreground">暂无桌面端用户</h3>
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center py-16 px-6 text-center",
+          !embedded && "border rounded-xl bg-card shadow-sm"
+        )}
+      >
+        <Building className="h-10 w-10 text-muted-foreground/40 mb-3" />
+        <h3 className="text-sm font-medium text-foreground">暂无桌面端用户</h3>
         <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-          未检索到符合条件的用户账号，您可以点击上方按钮开通新用户
+          未检索到符合条件的用户账号，您可以点击上方【开通桌面端账号】录入新用户
         </p>
       </div>
     );
   }
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm overflow-hidden overflow-x-auto">
+    <div
+      className={cn(
+        "overflow-x-auto",
+        !embedded && "rounded-xl border bg-card shadow-sm overflow-hidden"
+      )}
+    >
       <Table>
         <TableHeader>
           <TableRow>
@@ -91,7 +105,7 @@ export function UserTable({
             <TableHead className="w-[140px]">最近设备</TableHead>
             <TableHead className="w-[110px]">账号状态</TableHead>
             <TableHead className="w-[120px]">授权到期</TableHead>
-            <TableHead className="w-[280px] text-right">操作管理</TableHead>
+            <TableHead className="w-[390px] text-right">操作管理</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -213,35 +227,33 @@ export function UserTable({
               <TableCell className="text-right whitespace-nowrap">
                 <div className="flex items-center justify-end gap-1.5">
                   <Button
-                    variant="ghost"
-                    size="sm"
+                    variant="table-action"
+                    size="xs"
                     onClick={() => onEditUser(user)}
-                    className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                   >
                     <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
                     <span>编辑</span>
                   </Button>
 
                   <Button
-                    variant="ghost"
-                    size="sm"
+                    variant="table-action"
+                    size="xs"
                     onClick={() => onResetPassword(user)}
-                    className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 border border-border/40 hover:border-amber-500/30 shadow-none font-normal transition-colors"
+                    className="hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
                   >
                     <KeyRound className="h-3.5 w-3.5 text-amber-500" />
                     <span>重置密码</span>
                   </Button>
 
                   <Button
-                    variant="ghost"
-                    size="sm"
+                    variant="table-action"
+                    size="xs"
                     onClick={() => onToggleStatus(user)}
-                    className={cn(
-                      "h-7 px-2 text-xs gap-1 rounded-md border border-border/40 shadow-none font-normal transition-colors",
+                    className={
                       user.status === "active"
-                        ? "text-muted-foreground hover:text-amber-600 hover:bg-amber-500/10 hover:border-amber-500/30"
-                        : "text-muted-foreground hover:text-emerald-600 hover:bg-emerald-500/10 hover:border-emerald-500/30"
-                    )}
+                        ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
+                        : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                    }
                   >
                     {user.status === "active" ? (
                       <>
@@ -256,11 +268,23 @@ export function UserTable({
                     )}
                   </Button>
 
+                  {canManageManagedAccount && onManageManagedAccount && (
+                    <Button
+                      variant="table-action"
+                      size="xs"
+                      onClick={() => onManageManagedAccount(user)}
+                      className="hover:text-primary hover:bg-primary/10 hover:border-primary/30"
+                    >
+                      <KeyRound className="h-3.5 w-3.5 text-primary" />
+                      <span>绑定托管账号</span>
+                    </Button>
+                  )}
+
                   <Button
-                    variant="ghost"
-                    size="sm"
+                    variant="table-action"
+                    size="xs"
                     onClick={() => onDeleteUser(user)}
-                    className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border/40 hover:border-destructive/30 shadow-none font-normal transition-colors"
+                    className="hover:text-destructive hover:bg-destructive/10 hover:border-destructive/30"
                   >
                     <Trash2 className="h-3.5 w-3.5 text-destructive" />
                     <span>删除</span>

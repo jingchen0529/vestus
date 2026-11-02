@@ -35,8 +35,12 @@ export interface BrowserHandleView {
   browser_id: number;
   /** 这个平台的浏览器本来就开着，这次没有启动新的浏览器进程。 */
   reused: boolean;
-  /** reused 时的进入方式：切回已有标签 / 在已开的浏览器里新开标签 / 命令行转交新窗口。 */
-  tab_action?: "activated" | "created" | null;
+  /** reused 时始终表示激活已有平台页面，不会创建新标签或窗口。 */
+  tab_action?: "activated" | null;
+  /** 实际使用的网络模式；托管平台可能强制使用代理。 */
+  direct_mode: boolean;
+  /** 是否由后台托管会话启动。 */
+  managed: boolean;
 }
 
 export interface BrowserProfileResetView {

@@ -9,20 +9,32 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BrowserSessionItem } from "@/types/browser-activity";
-import { formatDate, formatDuration } from "@/lib/utils";
-import { Eye, Clock, AlertTriangle, Server, Unplug } from "lucide-react";
+import { cn, formatDate, formatDuration } from "@/lib/utils";
+import { Activity, Eye, Clock, AlertTriangle, Server, Unplug } from "lucide-react";
 
 interface SessionTableProps {
   sessions: BrowserSessionItem[];
   onViewDetail: (session: BrowserSessionItem) => void;
   isLoading?: boolean;
+  embedded?: boolean;
 }
 
-export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTableProps) {
+export function SessionTable({
+  sessions,
+  onViewDetail,
+  isLoading,
+  embedded = false,
+}: SessionTableProps) {
   if (sessions.length === 0 && !isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center p-12 text-center border rounded-xl bg-card">
-        <h3 className="text-sm font-semibold text-foreground">暂无符合条件的会话追踪记录</h3>
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center py-16 px-6 text-center",
+          !embedded && "border rounded-xl bg-card shadow-sm"
+        )}
+      >
+        <Activity className="h-10 w-10 text-muted-foreground/40 mb-3" />
+        <h3 className="text-sm font-medium text-foreground">暂无符合条件的会话追踪记录</h3>
         <p className="text-xs text-muted-foreground mt-1 max-w-sm">
           桌面端打开内置浏览器并产生交互后，会话数据与访问明细会在此实时呈现
         </p>
@@ -31,7 +43,12 @@ export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTable
   }
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
+    <div
+      className={cn(
+        "overflow-x-auto",
+        !embedded && "rounded-xl border bg-card shadow-sm overflow-hidden"
+      )}
+    >
       <Table className="w-full min-w-[1020px]">
         <TableHeader>
           <TableRow className="hover:bg-muted/40">
@@ -46,7 +63,7 @@ export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTable
             <TableHead className="w-[130px] min-w-[125px] p-2 py-2.5 text-center whitespace-nowrap">设备码</TableHead>
             <TableHead className="w-[138px] min-w-[135px] p-1.5 py-2.5 text-center whitespace-nowrap">会话时间</TableHead>
             <TableHead className="w-[125px] min-w-[120px] p-1.5 py-2.5 text-center whitespace-nowrap">上报时间</TableHead>
-            <TableHead className="w-[68px] min-w-[65px] p-2 py-2.5 text-center whitespace-nowrap sticky right-0 bg-muted/95 backdrop-blur-xs z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] border-l border-border/30">详情</TableHead>
+            <TableHead className="w-[68px] min-w-[65px] p-2 py-2.5 text-center whitespace-nowrap sticky right-0 bg-muted/95 backdrop-blur-sm z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] border-l border-border/30">详情</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -170,10 +187,9 @@ export function SessionTable({ sessions, onViewDetail, isLoading }: SessionTable
               <TableCell className="text-center whitespace-nowrap p-2 py-2.5 sticky right-0 bg-card group-hover:bg-muted/60 transition-colors z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] border-l border-border/30">
                 <div className="flex justify-center">
                   <Button
-                    variant="ghost"
-                    size="sm"
+                    variant="table-action"
+                    size="xs"
                     onClick={() => onViewDetail(session)}
-                    className="h-7 px-2 text-xs gap-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/40 hover:border-border/70 shadow-none font-normal transition-colors"
                   >
                     <Eye className="h-3.5 w-3.5 text-muted-foreground" />
                     <span>查看</span>
