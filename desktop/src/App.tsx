@@ -260,11 +260,16 @@ function MainLayout() {
     }
   };
 
-  const handleOpenBrowser = async (platformId: number) => {
+  const handleOpenBrowser = async (platformId: number, managedAccountId?: number) => {
     try {
       const directMode = !proxyEnabled;
       const disableSandbox = !sandboxEnabled;
-      const handle = await tauriBridge.openBrowser(platformId, directMode, disableSandbox);
+      const handle = await tauriBridge.openBrowser(
+        platformId,
+        managedAccountId ?? null,
+        directMode,
+        disableSandbox,
+      );
       if (handle.reused) {
         success("已切回该平台页面", "浏览器里已有的页面原样保留，不会重复开新标签或窗口");
       } else if (handle.managed) {

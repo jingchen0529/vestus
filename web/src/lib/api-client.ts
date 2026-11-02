@@ -29,6 +29,7 @@ import {
   ManagedPlatformAccount,
   ManagedPlatformBinding,
   UpdateManagedPlatformAccountPayload,
+  UserManagedAccountBinding,
   UserManagedPlatformAccount,
   UserManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
@@ -233,6 +234,26 @@ export const api = {
       }
       throw error;
     }
+  },
+
+  async listUserManagedAccounts(id: number): Promise<UserManagedAccountBinding[]> {
+    const { items } = await request<ApiCollection<UserManagedAccountBinding>>(
+      `/api/admin/users/${id}/managed-accounts`,
+    );
+    return items;
+  },
+
+  async bindUserManagedAccount(id: number, managedAccountId: number): Promise<UserManagedAccountBinding> {
+    return request<UserManagedAccountBinding>(`/api/admin/users/${id}/managed-accounts`, {
+      method: "POST",
+      body: JSON.stringify({ managedAccountId }),
+    });
+  },
+
+  async unbindUserManagedAccount(id: number, managedAccountId: number): Promise<void> {
+    await request<null>(`/api/admin/users/${id}/managed-accounts/${managedAccountId}`, {
+      method: "DELETE",
+    });
   },
 
   async upsertUserManagedAccount(

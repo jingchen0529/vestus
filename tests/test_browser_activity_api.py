@@ -154,6 +154,120 @@ def test_repeated_reports_accumulate_into_one_session(api: Any) -> None:
     assert by_url["https://shop.example.test/items"]["scrolls"] == 2
 
 
+def test_same_platform_activity_is_separated_by_managed_account(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    account_ids = []
+    for name in ("账号 A", "账号 B"):
+        created = client.post(
+            "/api/admin/managed-platform-accounts",
+            headers=_bearer(admin_token),
+            json={
+                "platformId": platform_id,
+                "name": name,
+                "authMode": "cookie",
+                "cookieBundle": [{"name": "sid", "value": name, "domain": ".example.test"}],
+            },
+        )
+        assert created.status_code == 201, created.text
+        account_id = payload(created)["id"]
+        account_ids.append(account_id)
+        bound = client.post(
+            f"/api/admin/managed-platform-accounts/{account_id}/bindings",
+            headers=_bearer(admin_token),
+            json={"userId": 1},
+        )
+        assert bound.status_code == 201, bound.text
+
+    responses = []
+    for index, account_id in enumerate(account_ids):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                _page(f"https://shop.example.test/account-{index}", visits=1),
+                sessionKey=f"managed-session-{index}",
+                platformId=platform_id,
+                managedAccountId=account_id,
+            ),
+        )
+        assert response.status_code == 200, response.text
+        responses.append(payload(response))
+
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["total"] == 2
+    by_account = {row["managedAccountId"]: row for row in listing["items"]}
+    assert set(by_account) == set(account_ids)
+    assert by_account[account_ids[0]]["managedAccountName"] == "账号 A"
+    assert by_account[account_ids[1]]["managedAccountName"] == "账号 B"
+
+    legacy = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page("https://shop.example.test/legacy", visits=1), platformId=platform_id),
+    )
+    assert legacy.status_code == 200, legacy.text
+    legacy_row = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(legacy)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert legacy_row["managedAccountId"] is None
+
+
+def test_revoked_managed_account_cannot_continue_an_existing_activity_session(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    created = client.post(
+        "/api/admin/managed-platform-accounts",
+        headers=_bearer(admin_token),
+        json={
+            "platformId": platform_id,
+            "name": "账号 A",
+            "authMode": "cookie",
+            "cookieBundle": [{"name": "sid", "value": "cookie-a", "domain": ".example.test"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    account_id = payload(created)["id"]
+    assert client.post(
+        f"/api/admin/managed-platform-accounts/{account_id}/bindings",
+        headers=_bearer(admin_token),
+        json={"userId": 1},
+    ).status_code == 201
+
+    first = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/account-a", visits=1),
+            sessionKey="managed-session-revoked",
+            platformId=platform_id,
+            managedAccountId=account_id,
+        ),
+    )
+    assert first.status_code == 200, first.text
+
+    removed = client.delete(
+        f"/api/admin/users/1/managed-accounts/{account_id}",
+        headers=_bearer(admin_token),
+    )
+    assert removed.status_code == 200, removed.text
+
+    continued = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/account-a-continued", visits=1),
+            sessionKey="managed-session-revoked",
+            platformId=platform_id,
+            managedAccountId=account_id,
+        ),
+    )
+    assert continued.status_code == 403, continued.text
+
+
 def test_the_stored_address_keeps_the_path_and_drops_everything_else(api: Any) -> None:
     client, _module = api
     admin_token, user_token, platform_id = _setup(client)
@@ -946,7 +1060,7 @@ def test_daily_activity_respects_admin_scope(api: Any) -> None:
         },
     )
     assert beijing.status_code == 201, beijing.text
-    mine = _create_user(
+    _create_user(
         client, super_token, "daily-mine", boundAdminId=payload(beijing)["id"]
     )
     _create_user(client, super_token, "daily-theirs")

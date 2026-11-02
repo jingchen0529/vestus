@@ -51,6 +51,7 @@ const CLIENT_VERSION: &str = env!("VESTUS_CLIENT_VERSION");
 pub struct SessionKey {
     pub browser_id: u64,
     pub platform_id: i64,
+    pub managed_account_id: Option<i64>,
     pub direct_mode: bool,
 }
 
@@ -82,6 +83,8 @@ struct ActivityReport {
     session_key: String,
     browser_id: u64,
     platform_id: i64,
+    #[serde(default)]
+    managed_account_id: Option<i64>,
     direct_mode: bool,
     client_version: String,
     /// 操作系统暴露的机器标识。读不到时为 None，服务端按可空处理——采集失败
@@ -654,6 +657,7 @@ fn activity_report(
         session_key: session_key.to_string(),
         browser_id: key.browser_id,
         platform_id: key.platform_id,
+        managed_account_id: key.managed_account_id,
         direct_mode: key.direct_mode,
         client_version: CLIENT_VERSION.to_string(),
         device_id: crate::device::wire_device_id(),
@@ -715,6 +719,7 @@ mod tests {
                 &SessionKey {
                     browser_id: 1,
                     platform_id: 2,
+                    managed_account_id: None,
                     direct_mode: false,
                 },
                 "stable-session",
@@ -838,6 +843,7 @@ mod tests {
         let key = SessionKey {
             browser_id: 1,
             platform_id: 2,
+            managed_account_id: None,
             direct_mode: false,
         };
         let events = (0..MAX_TRACKED_PAGES)
@@ -873,6 +879,7 @@ mod tests {
         let key = SessionKey {
             browser_id: 1,
             platform_id: 2,
+            managed_account_id: None,
             direct_mode: false,
         };
         let events = (0..500)
@@ -947,6 +954,7 @@ mod tests {
         let key = SessionKey {
             browser_id: 1,
             platform_id: 2,
+            managed_account_id: None,
             direct_mode: false,
         };
         let rows = (0..501)
@@ -1002,6 +1010,7 @@ mod tests {
             session_key: "session".into(),
             browser_id: 1,
             platform_id: 2,
+            managed_account_id: None,
             direct_mode: false,
             reported_at_ms: 3,
             dropped_pages: 0,
@@ -1040,6 +1049,7 @@ mod tests {
             &SessionKey {
                 browser_id: 1,
                 platform_id: 2,
+                managed_account_id: None,
                 direct_mode: false,
             },
             "session",
@@ -1071,6 +1081,7 @@ mod tests {
         let key = SessionKey {
             browser_id: 1,
             platform_id: 2,
+            managed_account_id: None,
             direct_mode: false,
         };
         let mut reports = split_activity_reports(
@@ -1258,6 +1269,7 @@ mod tests {
             session_key: "0000000000000001000000010000000a".into(),
             browser_id: 7,
             platform_id: 3,
+            managed_account_id: Some(9),
             direct_mode: true,
             client_version: "0.1.8".into(),
             device_id: Some("a1b2c3d4e5f67890abcdef1234567890".into()),
@@ -1288,6 +1300,7 @@ mod tests {
         assert_eq!(json["sessionKey"], "0000000000000001000000010000000a");
         assert_eq!(json["browserId"], 7);
         assert_eq!(json["platformId"], 3);
+        assert_eq!(json["managedAccountId"], 9);
         assert_eq!(json["directMode"], true);
         assert_eq!(json["clientVersion"], "0.1.8");
         assert_eq!(json["reportedAtMs"], 1_700_000_000_000_u64);
@@ -1314,12 +1327,14 @@ mod tests {
         let first = SessionKey {
             browser_id: 1,
             platform_id: 3,
+            managed_account_id: None,
             direct_mode: false,
         }
         .wire_key();
         let second = SessionKey {
             browser_id: 2,
             platform_id: 3,
+            managed_account_id: None,
             direct_mode: false,
         }
         .wire_key();

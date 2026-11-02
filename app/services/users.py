@@ -144,13 +144,14 @@ def _assignment_name_maps(
             ).all()
         }
     if admin_ids:
-        admin_names = dict(
-            session.execute(
+        admin_names = {
+            int(row[0]): str(row[1])
+            for row in session.execute(
                 select(Admin.id, Admin.name).where(
                     Admin.id.in_(admin_ids), Admin.deleted_at.is_(None)
                 )
             ).all()
-        )
+        }
     return proxies, admin_names
 
 

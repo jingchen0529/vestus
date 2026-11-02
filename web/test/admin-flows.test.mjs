@@ -128,6 +128,57 @@ test("托管平台账号 API 使用专用管理路径", async () => {
   assert.match(requests[1].body, /"cookieBundle"/);
 });
 
+test("用户托管账号支持按账号列出、绑定和解绑多个入口", async () => {
+  const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input, options = {}) => {
+    requests.push({ url: String(input), method: options.method || "GET", body: options.body });
+    return new Response(JSON.stringify({
+      code: 0,
+      msg: "ok",
+      data: { items: [{ managedAccountId: 7, name: "账号 A" }, { managedAccountId: 8, name: "账号 B" }] },
+      requestId: "test",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  try {
+    await api.listUserManagedAccounts(3);
+    await api.bindUserManagedAccount(3, 8);
+    await api.unbindUserManagedAccount(3, 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(
+    requests.map(({ url, method }) => [url, method]),
+    [
+      ["/api/admin/users/3/managed-accounts", "GET"],
+      ["/api/admin/users/3/managed-accounts", "POST"],
+      ["/api/admin/users/3/managed-accounts/7", "DELETE"],
+    ],
+  );
+  assert.match(requests[1].body, /"managedAccountId":8/);
+});
+
+test("用户托管账号弹窗展示多个绑定且不回显 Cookie", async () => {
+  const { ManagedAccountBindingList } = await server.ssrLoadModule(
+    "/src/components/users/managed-account-dialog.tsx",
+  );
+  const html = renderToStaticMarkup(
+    createElement(ManagedAccountBindingList, {
+      bindings: [
+        { id: 1, userId: 3, platformId: 1, platformName: "方舟", managedAccountId: 7, name: "账号 A", status: "active" },
+        { id: 2, userId: 3, platformId: 1, platformName: "方舟", managedAccountId: 8, name: "账号 B", status: "active" },
+      ],
+    }),
+  );
+
+  assert.match(html, /账号 A/);
+  assert.match(html, /账号 B/);
+  assert.doesNotMatch(html, /secret-cookie|cookie-secret/);
+});
+
 test("用户列表不再提供按用户配置代理和平台的入口", async () => {
   const { UserTable } = await server.ssrLoadModule(
     "/src/components/users/user-table.tsx",

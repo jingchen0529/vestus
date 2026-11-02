@@ -126,8 +126,8 @@ def test_receipt_migration_preserves_existing_data_and_matches_metadata(tmp_path
 
     from app.db.base import Base
     config = Config("alembic.ini")
-    # The plaintext managed credential migration follows the managed account migration.
-    assert ScriptDirectory.from_config(config).get_current_head() == "0009"
+    # Managed identity and activity-account migrations follow the credential migration.
+    assert ScriptDirectory.from_config(config).get_current_head() == "0011"
     engine = create_engine(f"sqlite:///{tmp_path / 'migration.sqlite'}")
     try:
         with engine.begin() as connection:
@@ -142,6 +142,31 @@ def test_receipt_migration_preserves_existing_data_and_matches_metadata(tmp_path
             command.downgrade(config, "0006")
             assert "browser_activity_receipt" not in inspect(connection).get_table_names()
             assert connection.scalar(text("SELECT value FROM system_setting WHERE key='keep'")) == "old"
+    finally:
+        engine.dispose()
+
+
+def test_multi_account_migration_downgrade_refuses_to_drop_distinct_bindings(tmp_path: Any) -> None:
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+
+    config = Config("alembic.ini")
+    engine = create_engine(f"sqlite:///{tmp_path / 'multi-account-downgrade.sqlite'}")
+    try:
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+            connection.execute(
+                text(
+                    "INSERT INTO managed_platform_binding "
+                    "(user_id, platform_id, managed_account_id, status, created_at, updated_at) "
+                    "VALUES (1, 1, 9, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+                    "(1, 1, 10, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+            with pytest.raises(RuntimeError, match="cannot downgrade multi-account bindings"):
+                command.downgrade(config, "0009")
     finally:
         engine.dispose()
 

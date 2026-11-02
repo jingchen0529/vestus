@@ -47,6 +47,10 @@ class BrowserSession(Base):
     #: The client's own per-process session number, kept for support requests.
     browser_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     platform_id: Mapped[int] = mapped_column(IdType, nullable=False, index=True)
+    #: The administrator-bound upstream account used by this browser run.
+    #: ``NULL`` keeps reports from older desktop clients readable.
+    managed_account_id: Mapped[Optional[int]] = mapped_column(IdType, nullable=True, index=True)
+    managed_account_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     #: Also copied at report time; the platform may be renamed or removed later.
     platform_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     direct_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

@@ -21,7 +21,7 @@ interface PlatformLauncherProps {
   configError: string | null;
   proxyEnabled?: boolean;
   onRetryConfig: () => void;
-  onOpenBrowser: (platformId: number) => Promise<void> | void;
+  onOpenBrowser: (platformId: number, managedAccountId?: number) => Promise<void> | void;
 }
 
 export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
@@ -33,7 +33,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
   onRetryConfig,
   onOpenBrowser,
 }) => {
-  const [launchingPlatformId, setLaunchingPlatformId] = useState<number | null>(null);
+  const [launchingPlatformKey, setLaunchingPlatformKey] = useState<string | null>(null);
   const platforms = desktopConfig?.platforms || [];
   const directHosts = desktopConfig?.direct_hosts || [];
   const platformIcons = [Store, Video, Globe];
@@ -48,12 +48,13 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
       (Boolean(desktopConfig?.proxy_assigned) &&
         (status.phase === "ready" || status.phase === "browser_running")));
 
-  const handleOpenPlatform = async (platform: DesktopPlatform) => {
-    setLaunchingPlatformId(platform.id);
+  const handleOpenPlatform = async (platform: DesktopPlatform, managedAccountId?: number) => {
+    const key = managedAccountId ? `${platform.id}:${managedAccountId}` : String(platform.id);
+    setLaunchingPlatformKey(key);
     try {
-      await onOpenBrowser(platform.id);
+      await onOpenBrowser(platform.id, managedAccountId);
     } finally {
-      setLaunchingPlatformId(null);
+      setLaunchingPlatformKey(null);
     }
   };
 
@@ -125,17 +126,20 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
 
       {/* 单行紧凑平台列表 */}
       <div className="flex flex-col gap-2">
-        {platforms.map((platform, index) => {
+        {platforms.flatMap((platform, index) => {
           const Icon = platformIcons[index % platformIcons.length];
           const color = platformColors[index % platformColors.length];
-          const launching = launchingPlatformId === platform.id;
-
-          return (
+          const accounts = platform.managed_accounts?.length ? platform.managed_accounts : [null];
+          return accounts.map((account) => {
+            const entryKey = account ? `${platform.id}:${account.id}` : String(platform.id);
+            const launching = launchingPlatformKey === entryKey;
+            const unavailable = Boolean(account && account.status !== "active");
+            return (
             <button
               type="button"
-              key={platform.id}
-              onClick={() => handleOpenPlatform(platform)}
-              disabled={!canLaunch || launching}
+              key={entryKey}
+              onClick={() => handleOpenPlatform(platform, account?.id)}
+              disabled={!canLaunch || launching || unavailable}
               className="group flex items-center justify-between gap-3.5 rounded-xl border border-border/80 bg-card px-4 py-3 text-left shadow-sm hover:shadow-md transition-all hover:border-primary/50 hover:bg-accent/40 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -154,8 +158,11 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
                 )}
                 <div className="min-w-0 flex-1">
                   <h3 className="truncate text-sm font-medium text-foreground group-hover:text-primary transition-colors">
-                    {platform.name}
+                    {account ? `${platform.name} · ${account.name}` : platform.name}
                   </h3>
+                  {account && account.status !== "active" && (
+                    <span className="text-[10px] text-amber-600 dark:text-amber-300">{account.status}</span>
+                  )}
                 </div>
               </div>
 
@@ -170,7 +177,8 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
                 )}
               </div>
             </button>
-          );
+            );
+          });
         })}
 
         {!configLoading && !configError && platforms.length === 0 && (

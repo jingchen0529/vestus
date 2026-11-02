@@ -26,8 +26,11 @@ def safe_url(value):
         u = urlsplit(value)
         if u.scheme not in {"http", "https"}:
             return {"scheme": u.scheme}
-        return {"host": u.hostname, "path": u.path,
-                "query_keys": sorted(set(k for k, _ in parse_qsl(u.query)))}
+        return {
+            "host": u.hostname,
+            "path": u.path,
+            "query_keys": sorted({k for k, _ in parse_qsl(u.query)}),
+        }
     except Exception:
         return {"invalid_url": True}
 
@@ -74,7 +77,11 @@ def request_cookie_summaries(headers):
 
 def self_test():
     secret = "private-login-token"
-    headers = {"Set-Cookie": "sessionid=" + secret + "; HttpOnly\nttwid=1%7Cvisitor-secret%7C123; Domain=.example.test; Path=/; HttpOnly"}
+    headers = {
+        "Set-Cookie": "sessionid="
+        + secret
+        + "; HttpOnly\nttwid=1%7Cvisitor-secret%7C123; Domain=.example.test; Path=/; HttpOnly"
+    }
     result = set_cookie_summaries(headers)
     encoded = json.dumps(result)
     assert len(result) == 1 and secret not in encoded and "visitor-secret" not in encoded
@@ -160,8 +167,18 @@ def run(endpoint, output, seconds):
                         send("Network.enable", {}, session=sid)
                         emit("network_attached", target=tag)
                 elif method == "Storage.getCookies":
-                    cookies = [cookie_summary(c) for c in result.get("cookies", []) if c.get("name") == "ttwid"]
-                    cookies.sort(key=lambda c: (c.get("domain", ""), c.get("path", ""), json.dumps(c.get("partitionKey"), sort_keys=True)))
+                    cookies = [
+                        cookie_summary(c)
+                        for c in result.get("cookies", [])
+                        if c.get("name") == "ttwid"
+                    ]
+                    cookies.sort(
+                        key=lambda c: (
+                            c.get("domain", ""),
+                            c.get("path", ""),
+                            json.dumps(c.get("partitionKey"), sort_keys=True),
+                        )
+                    )
                     if cookies != last_cookies:
                         emit("cookie_store_changed", initial=last_cookies is None, cookies=cookies)
                         last_cookies = cookies

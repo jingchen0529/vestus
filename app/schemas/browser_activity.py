@@ -224,6 +224,9 @@ class BrowserActivityReport(BaseModel):
     )
     browser_id: int = Field(alias="browserId", ge=0, le=2**63 - 1)
     platform_id: int = Field(alias="platformId", ge=0, le=2**63 - 1)
+    managed_account_id: Optional[int] = Field(
+        default=None, alias="managedAccountId", ge=1, le=2**63 - 1
+    )
     direct_mode: bool = Field(default=False, alias="directMode")
     client_version: Optional[str] = Field(default="", alias="clientVersion", max_length=50)
     #: Machine identifier of the reporting desktop; optional so uploads from

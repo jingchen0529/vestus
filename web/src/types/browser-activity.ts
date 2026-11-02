@@ -7,6 +7,8 @@ export interface BrowserSessionItem {
   browserId: number;
   platformId: number;
   platformName?: string | null;
+  managedAccountId?: number | null;
+  managedAccountName?: string | null;
   /** 直连模式下打开的会话（未经上游代理）。 */
   directMode: boolean;
   /** 上报该会话的桌面客户端版本（如 v0.1.8）。 */
@@ -131,6 +133,8 @@ export interface DailyActivityItem {
   deviceId?: string | null;
   platformId: number;
   platformName?: string | null;
+  managedAccountId?: number | null;
+  managedAccountName?: string | null;
   /** 会话开始时刻的东八区自然日，`YYYY-MM-DD`。跨零点的会话整体归开始日。 */
   date: string;
   /** 当天合进来的会话个数。 */

@@ -23,10 +23,12 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.base import iso_datetime, utc_now
+from app.db.models import ManagedPlatformAccount, ManagedPlatformBinding
 from app.db.session import Database
 from app.repositories import browser_activity as activity_repo
 from app.repositories import platforms as platforms_repo
@@ -85,6 +87,40 @@ def _deltas(page: BrowserPageReport) -> Dict[str, int]:
     return {name: int(getattr(page, name)) for name in _COUNTERS}
 
 
+def _managed_account_name(
+    session: Session,
+    *,
+    user_id: int,
+    platform_id: int,
+    managed_account_id: Optional[int],
+) -> Optional[str]:
+    if managed_account_id is None:
+        return None
+    managed_pair = session.execute(
+        select(ManagedPlatformBinding, ManagedPlatformAccount)
+        .join(
+            ManagedPlatformAccount,
+            ManagedPlatformAccount.id == ManagedPlatformBinding.managed_account_id,
+        )
+        .where(
+            ManagedPlatformBinding.user_id == user_id,
+            ManagedPlatformBinding.platform_id == platform_id,
+            ManagedPlatformBinding.managed_account_id == managed_account_id,
+            ManagedPlatformBinding.status == "active",
+        )
+    ).first()
+    if managed_pair is None:
+        raise ForbiddenFieldError("浏览器活动所属托管账号与当前用户绑定不一致")
+    _binding, managed_account = managed_pair
+    if managed_account.status != "active":
+        raise ForbiddenFieldError("浏览器活动所属托管账号当前不可用")
+    return (
+        (managed_account.remote_display_name or "").strip()
+        or (managed_account.name or "").strip()
+        or f"账号-{managed_account.id}"
+    )
+
+
 def _session_for_report(
     session: Session,
     report: BrowserActivityReport,
@@ -106,8 +142,22 @@ def _session_for_report(
         session, user_id=user_id, session_key=report.session_key
     )
     if existing is not None:
+        if existing.managed_account_id != report.managed_account_id:
+            raise ForbiddenFieldError("同一浏览器会话不能切换托管账号")
+        _managed_account_name(
+            session,
+            user_id=user_id,
+            platform_id=report.platform_id,
+            managed_account_id=report.managed_account_id,
+        )
         return existing
     platform = platforms_repo.get(session, report.platform_id)
+    managed_account_name = _managed_account_name(
+        session,
+        user_id=user_id,
+        platform_id=report.platform_id,
+        managed_account_id=report.managed_account_id,
+    )
     started_at = min(
         (_server_time(page.first_seen_at_ms, now) for page in report.pages), default=now
     )
@@ -122,6 +172,8 @@ def _session_for_report(
                 browser_id=report.browser_id,
                 platform_id=report.platform_id,
                 platform_name=getattr(platform, "name", None),
+                managed_account_id=report.managed_account_id,
+                managed_account_name=managed_account_name,
                 direct_mode=report.direct_mode,
                 client_version=client_ver,
                 device_id=report.device_id,
@@ -296,6 +348,8 @@ def _daily_activity_dict(row: Any) -> Dict[str, Any]:
         "deviceId": row.device_id,
         "platformId": row.platform_id,
         "platformName": row.platform_name,
+        "managedAccountId": row.managed_account_id,
+        "managedAccountName": row.managed_account_name,
         # MySQL returns a date, SQLite the same day as "YYYY-MM-DD" text;
         # str() renders both identically.
         "date": str(row.day) if row.day else None,

@@ -13,14 +13,15 @@ failing log insert.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from app.db.models import Platform, Proxy, UploadedFile
+from app.db.models import Proxy
 from app.db.session import Database
 from app.repositories import desktop as desktop_repo
 from app.schemas.serializers import (
     desktop_lease_from_snapshot,
     desktop_proxy_dict,
+    managed_account_desktop_dict,
     platform_dict,
 )
 from app.services.errors import CredentialUnreadableError
@@ -50,7 +51,7 @@ def _desktop_proxy(proxy: Proxy) -> Dict[str, Any]:
 def _serialize(
     user_id: int,
     proxy: Optional[Proxy],
-    platforms: List[Tuple[Platform, Optional[UploadedFile]]],
+    platforms: List[Any],
 ) -> Dict[str, Any]:
     """Shape the desktop payload, re-checking the ``active`` status defensively.
 
@@ -63,8 +64,16 @@ def _serialize(
     return {
         "proxy": _desktop_proxy(visible_proxy) if visible_proxy is not None else None,
         "platforms": [
-            platform_dict(item, desktop=True, uploaded_file=uploaded_file)
-            for item, uploaded_file in visible_platforms
+            platform_dict(
+                platform,
+                desktop=True,
+                uploaded_file=uploaded_file,
+                managed_accounts=[
+                    managed_account_desktop_dict(binding, account)
+                    for binding, account in managed_accounts
+                ],
+            )
+            for platform, uploaded_file, managed_accounts in visible_platforms
         ],
         "profileKey": f"user-{user_id}",
     }
@@ -82,9 +91,7 @@ def get_user_desktop_config_with_lease(
             return None
         _user, proxy, platforms = snapshot
         result = _serialize(numeric_user_id, proxy, platforms)
-        result["lease"] = desktop_lease_from_snapshot(
-            numeric_user_id, proxy, [platform for platform, _uploaded_file in platforms]
-        )
+        result["lease"] = desktop_lease_from_snapshot(numeric_user_id, proxy, platforms)
         return result
 
 
@@ -101,9 +108,7 @@ def get_user_desktop_lease(database: Database, user_id: int | str) -> Optional[s
         if snapshot is None:
             return None
         _user, proxy, platforms = snapshot
-        return desktop_lease_from_snapshot(
-            numeric_user_id, proxy, [platform for platform, _uploaded_file in platforms]
-        )
+        return desktop_lease_from_snapshot(numeric_user_id, proxy, platforms)
 
 
 __all__ = ["get_user_desktop_config_with_lease", "get_user_desktop_lease"]

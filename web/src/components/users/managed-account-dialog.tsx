@@ -14,7 +14,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { DesktopUser } from "@/types/user";
 import {
+  ManagedPlatformAccount,
   UserManagedAuthMode,
+  UserManagedAccountBinding,
   UserManagedPlatformAccount,
   UserManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
@@ -45,6 +47,28 @@ export function buildManagedAccountPayload(
   return payload;
 }
 
+export function ManagedAccountBindingList({
+  bindings,
+}: {
+  bindings: UserManagedAccountBinding[];
+}) {
+  if (bindings.length === 0) {
+    return <div className="text-[11px] text-muted-foreground">暂未绑定账号</div>;
+  }
+  return (
+    <div className="space-y-1.5">
+      {bindings.map((item) => (
+        <div key={item.managedAccountId} className="flex items-center justify-between gap-2 rounded-md bg-background px-2.5 py-2 text-xs">
+          <div>
+            <div className="font-medium text-foreground">{item.name}</div>
+            <div className="text-[10px] text-muted-foreground">{item.platformName || `平台 #${item.platformId}`} · {item.status}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface ManagedAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -55,6 +79,10 @@ interface ManagedAccountDialogProps {
   cookieDefaultDomain?: string;
   onSave: (userId: number, payload: UserManagedPlatformAccountPayload) => Promise<void>;
   onDelete: (userId: number) => Promise<void>;
+  bindings?: UserManagedAccountBinding[];
+  availableAccounts?: ManagedPlatformAccount[];
+  onBind?: (userId: number, managedAccountId: number) => Promise<void>;
+  onUnbind?: (userId: number, managedAccountId: number) => Promise<void>;
 }
 
 export function ManagedAccountDialog({
@@ -66,6 +94,10 @@ export function ManagedAccountDialog({
   cookieDefaultDomain,
   onSave,
   onDelete,
+  bindings = [],
+  availableAccounts = [],
+  onBind,
+  onUnbind,
 }: ManagedAccountDialogProps) {
   const [authMode, setAuthMode] = useState<UserManagedAuthMode>("cookie");
   const [username, setUsername] = useState("");
@@ -73,6 +105,7 @@ export function ManagedAccountDialog({
   const [cookieJson, setCookieJson] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [bindingId, setBindingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -135,6 +168,37 @@ export function ManagedAccountDialog({
   };
 
   const busy = saving || deleting || accountLoading;
+  const boundIds = new Set(bindings.map((item) => item.managedAccountId));
+
+  const bindExisting = async (managedAccountId: number) => {
+    if (!user || !onBind) return;
+    setBindingId(managedAccountId);
+    try {
+      await onBind(user.id, managedAccountId);
+      toast.success("托管账号已绑定");
+    } catch (error) {
+      toast.error("绑定托管账号失败", {
+        description: error instanceof Error ? error.message : "请稍后重试",
+      });
+    } finally {
+      setBindingId(null);
+    }
+  };
+
+  const unbindExisting = async (managedAccountId: number, name: string) => {
+    if (!user || !onUnbind || !window.confirm(`确认解除“${name}”的绑定？`)) return;
+    setBindingId(managedAccountId);
+    try {
+      await onUnbind(user.id, managedAccountId);
+      toast.success(`托管账号 ${name} 已解除绑定`);
+    } catch (error) {
+      toast.error("解除绑定失败", {
+        description: error instanceof Error ? error.message : "请稍后重试",
+      });
+    } finally {
+      setBindingId(null);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -156,6 +220,37 @@ export function ManagedAccountDialog({
           </div>
         ) : (
           <form className="space-y-4 py-2" onSubmit={submit}>
+            {(bindings.length > 0 || availableAccounts.length > 0) && (
+              <div className="space-y-2 rounded-lg border border-border/70 bg-muted/20 p-3">
+                <div className="text-xs font-semibold text-foreground">已绑定托管账号</div>
+                <ManagedAccountBindingList bindings={bindings} />
+                {onUnbind && bindings.length > 0 && (
+                  <div className="space-y-1.5 border-t border-border/60 pt-2">
+                    {bindings.map((item) => (
+                      <div key={item.managedAccountId} className="flex items-center justify-between gap-2 text-xs">
+                        <span>解除 {item.name}</span>
+                        <Button type="button" variant="ghost" size="xs" className="text-destructive" onClick={() => void unbindExisting(item.managedAccountId, item.name)} disabled={bindingId === item.managedAccountId || busy}>
+                          <Trash2 className="h-3 w-3" />解除
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {onBind && availableAccounts.some((item) => !boundIds.has(item.id)) && (
+                  <div className="space-y-1.5 border-t border-border/60 pt-2">
+                    <div className="text-[11px] text-muted-foreground">绑定账号库中的其他账号</div>
+                    {availableAccounts.filter((item) => !boundIds.has(item.id)).map((item) => (
+                      <div key={item.id} className="flex items-center justify-between gap-2 text-xs">
+                        <span>{item.name} · #{item.id}</span>
+                        <Button type="button" variant="outline" size="xs" onClick={() => void bindExisting(item.id)} disabled={bindingId === item.id || busy}>
+                          {bindingId === item.id ? "绑定中" : "绑定"}
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="user-managed-auth-mode">认证方式</Label>
               <Select value={authMode} onValueChange={(value: UserManagedAuthMode) => setAuthMode(value)} disabled={busy}>

@@ -14,14 +14,26 @@ unassigned user onto whichever node an administrator happened to touch last.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any, List, Optional, Tuple
 
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import and_, asc, desc, func, select
 from sqlalchemy.orm import Session, aliased
 
-from app.db.models import Platform, Proxy, UploadedFile, User
+from app.db.models import (
+    ManagedPlatformAccount,
+    ManagedPlatformBinding,
+    Platform,
+    Proxy,
+    UploadedFile,
+    User,
+)
 
-DesktopSnapshot = Tuple[User, Optional[Proxy], List[Tuple[Platform, Optional[UploadedFile]]]]
+DesktopPlatformSnapshot = Tuple[
+    Platform,
+    Optional[UploadedFile],
+    List[Tuple[ManagedPlatformBinding, ManagedPlatformAccount]],
+]
+DesktopSnapshot = Tuple[User, Optional[Proxy], List[DesktopPlatformSnapshot]]
 
 
 def _resolved_proxy_id() -> Any:
@@ -62,7 +74,14 @@ def load_user_snapshot(session: Session, user_id: int) -> Optional[DesktopSnapsh
     configuration and each response can retain its user-scoped profile key.
     """
     rows = session.execute(
-        select(User, Proxy, Platform, UploadedFile)
+        select(
+            User,
+            Proxy,
+            Platform,
+            UploadedFile,
+            ManagedPlatformBinding,
+            ManagedPlatformAccount,
+        )
         .select_from(User)
         .outerjoin(
             Proxy,
@@ -73,22 +92,45 @@ def load_user_snapshot(session: Session, user_id: int) -> Optional[DesktopSnapsh
             Platform.status == "active",
         )
         .outerjoin(UploadedFile, UploadedFile.path == Platform.icon_url)
+        .outerjoin(
+            ManagedPlatformBinding,
+            and_(
+                ManagedPlatformBinding.user_id == User.id,
+                ManagedPlatformBinding.platform_id == Platform.id,
+                ManagedPlatformBinding.status == "active",
+            ),
+        )
+        .outerjoin(
+            ManagedPlatformAccount,
+            ManagedPlatformAccount.id == ManagedPlatformBinding.managed_account_id,
+        )
         .where(User.id == user_id, User.deleted_at.is_(None))
         .order_by(
             Platform.sort_order,
             Platform.id,
+            ManagedPlatformBinding.id,
         )
     ).all()
     if not rows:
         return None
     user = rows[0][0]
     proxy = rows[0][1]
-    platforms: List[Tuple[Platform, Optional[UploadedFile]]] = []
-    seen_platform_ids: Set[int] = set()
+    platforms: List[DesktopPlatformSnapshot] = []
+    by_platform_id: dict[int, DesktopPlatformSnapshot] = {}
     for row in rows:
         platform = row[2]
-        if platform is None or platform.id in seen_platform_ids:
+        if platform is None:
             continue
-        seen_platform_ids.add(platform.id)
-        platforms.append((platform, row[3]))
+        snapshot = by_platform_id.get(platform.id)
+        if snapshot is None:
+            accounts: List[Tuple[ManagedPlatformBinding, ManagedPlatformAccount]] = []
+            snapshot = (platform, row[3], accounts)
+            by_platform_id[platform.id] = snapshot
+            platforms.append(snapshot)
+        binding = row[4]
+        account = row[5]
+        if binding is not None and account is not None:
+            accounts = snapshot[2]
+            if all(existing[0].id != binding.id for existing in accounts):
+                accounts.append((binding, account))
     return user, proxy, platforms

@@ -19,7 +19,7 @@ use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
 use crate::browser::{BrowserError, BrowserSessionManager};
 use crate::bypass::DirectHosts;
 use crate::cdp;
-use crate::config::{self, DesktopPlatform, ProxyForm, ValidatedConfig};
+use crate::config::{self, DesktopPlatform, ManagedAccountView, ProxyForm, ValidatedConfig};
 use crate::device;
 use crate::managed_cdp;
 use crate::probe;
@@ -99,6 +99,20 @@ struct DesktopPlatformWire {
     icon_url: Option<String>,
     #[serde(rename = "sortOrder", alias = "sort_order", default)]
     sort_order: i64,
+    #[serde(rename = "managedAccounts", alias = "managed_accounts", default)]
+    managed_accounts: Vec<ManagedAccountWire>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManagedAccountWire {
+    id: i64,
+    name: String,
+    #[serde(default = "default_managed_account_status")]
+    status: String,
+}
+
+fn default_managed_account_status() -> String {
+    "active".into()
 }
 
 /// The platform button is the only administrator-controlled object exposed to
@@ -108,6 +122,14 @@ pub struct DesktopPlatformView {
     pub id: i64,
     pub name: String,
     pub icon_url: Option<String>,
+    pub managed_accounts: Vec<DesktopManagedAccountView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DesktopManagedAccountView {
+    pub id: i64,
+    pub name: String,
+    pub status: String,
 }
 
 /// Stable snake_case IPC result requested by the desktop frontend.
@@ -204,6 +226,29 @@ fn validate_desktop_config(
         }
         let name = validate_label(&platform.name, "平台名称", 100)?;
         let url = validate_http_url(&platform.url, "平台网址")?;
+        let mut account_ids = HashSet::new();
+        let mut managed_accounts = Vec::with_capacity(platform.managed_accounts.len());
+        for account in platform.managed_accounts {
+            if account.id <= 0 || !account_ids.insert(account.id) {
+                return Err(CommandError::new(
+                    "管理员下发的托管账号 ID 无效或重复",
+                    "invalid_desktop_config",
+                ));
+            }
+            let account_name = validate_label(&account.name, "托管账号名称", 255)?;
+            let status = account.status.trim().to_ascii_lowercase();
+            if !matches!(status.as_str(), "active" | "expired" | "revoked" | "invalid") {
+                return Err(CommandError::new(
+                    "管理员下发的托管账号状态无效",
+                    "invalid_desktop_config",
+                ));
+            }
+            managed_accounts.push(ManagedAccountView {
+                id: account.id,
+                name: account_name,
+                status,
+            });
+        }
         platforms.push(DesktopPlatform {
             id: platform.id,
             name,
@@ -213,6 +258,7 @@ fn validate_desktop_config(
                 .as_deref()
                 .and_then(|value| resolve_uploaded_asset_url(api_base, value)),
             sort_order: platform.sort_order,
+            managed_accounts,
         });
     }
     platforms.sort_by_key(|platform| (platform.sort_order, platform.id));
@@ -255,6 +301,15 @@ fn platform_views(platforms: &[DesktopPlatform]) -> Vec<DesktopPlatformView> {
             id: platform.id,
             name: platform.name.clone(),
             icon_url: platform.icon_url.clone(),
+            managed_accounts: platform
+                .managed_accounts
+                .iter()
+                .map(|account| DesktopManagedAccountView {
+                    id: account.id,
+                    name: account.name.clone(),
+                    status: account.status.clone(),
+                })
+                .collect(),
         })
         .collect()
 }
@@ -289,6 +344,23 @@ fn validate_http_url(value: &str, label: &str) -> CmdResult<String> {
         ));
     }
     Ok(parsed.to_string())
+}
+
+fn validate_bootstrap_account_id(
+    requested: Option<i64>,
+    returned: u64,
+) -> CmdResult<i64> {
+    let returned = i64::try_from(returned)
+        .map_err(|_| CommandError::new("托管账号 ID 无效", "managed_session_invalid"))?;
+    if let Some(requested) = requested {
+        if requested != returned {
+            return Err(CommandError::new(
+                "托管登录会话与所选账号不一致",
+                "managed_session_invalid",
+            ));
+        }
+    }
+    Ok(returned)
 }
 
 /// 当前状态快照。前端轮询或收到事件后调用。
@@ -626,6 +698,7 @@ pub async fn open_browser<R: Runtime>(
     browsers: tauri::State<'_, BrowserSessionManager>,
     activity: tauri::State<'_, ActivityCollector>,
     platform_id: i64,
+    managed_account_id: Option<i64>,
     direct_mode: Option<bool>,
     disable_sandbox: Option<bool>,
 ) -> CmdResult<BrowserHandleView> {
@@ -643,6 +716,7 @@ pub async fn open_browser<R: Runtime>(
             auth_generation,
             profile_key.as_deref(),
             platform_id,
+            managed_account_id,
             direct_mode,
         )
         .ok_or_else(|| {
@@ -664,9 +738,11 @@ pub async fn open_browser<R: Runtime>(
     // account from inheriting the previous account's cookies/local storage.
     // The bootstrap payload is consumed only after the normal desktop auth
     // and platform allowlist checks above have succeeded.
+    let requested_managed_account_id = managed_account_id;
     let managed_session = auth
         .fetch_managed_session::<managed_cdp::ManagedBootstrapWire>(
             platform_id,
+            managed_account_id,
             device::wire_device_id(),
         )
         .await
@@ -676,7 +752,8 @@ pub async fn open_browser<R: Runtime>(
                 "{profile_key}::managed-account-{}::credential-version-{}",
                 wire.managed_account_id, wire.credential_version
             );
-            let managed_account_id = wire.managed_account_id;
+            let managed_account_id =
+                validate_bootstrap_account_id(requested_managed_account_id, wire.managed_account_id)?;
             let session = managed_cdp::managed_session_from_bootstrap(target.as_str().into(), wire)
                 .map_err(|error| {
                     CommandError::new(
@@ -687,10 +764,17 @@ pub async fn open_browser<R: Runtime>(
             Ok::<_, CommandError>((profile_key, managed_account_id, session))
         })
         .transpose()?;
-    let (browser_profile_key, managed_account_id, managed_session) = managed_session.map_or_else(
+    let (browser_profile_key, resolved_managed_account_id, managed_session) = managed_session.map_or_else(
         || (profile_key.clone(), None, None),
         |(key, managed_account_id, session)| (key, Some(managed_account_id), Some(session)),
     );
+    if requested_managed_account_id.is_some() && resolved_managed_account_id.is_none() {
+        return Err(CommandError::new(
+            "指定的托管账号不可用，请重新同步配置",
+            "managed_account_not_found",
+        ));
+    }
+    let managed_account_id = resolved_managed_account_id;
 
     // Managed sessions use the administrator-selected proxy route. A client
     // cannot create a second direct-mode profile containing the same account.
@@ -702,6 +786,7 @@ pub async fn open_browser<R: Runtime>(
                 auth_generation,
                 Some(&profile_key),
                 platform_id,
+                managed_account_id,
                 false,
             )
             .ok_or_else(|| {
@@ -739,7 +824,9 @@ pub async fn open_browser<R: Runtime>(
                 &account_dir,
                 platform_id,
                 direct_mode,
-                managed_account_id,
+                u64::try_from(managed_account_id).map_err(|_| {
+                    CommandError::new("托管账号 ID 无效", "managed_session_invalid")
+                })?,
                 profile.dir(),
             )
             .await;
@@ -804,6 +891,7 @@ pub async fn open_browser<R: Runtime>(
     let activity_key = ActivitySessionKey {
         browser_id,
         platform_id,
+        managed_account_id,
         direct_mode,
     };
     let initial_url = if managed_session.is_some() {
@@ -1225,7 +1313,11 @@ mod tests {
             },
             "platforms": [
                 {"id": 2, "name": "平台二", "url": "https://two.example.test", "sortOrder": 20},
-                {"id": 1, "name": "平台一", "url": "https://one.example.test", "sortOrder": 10}
+                {"id": 1, "name": "平台一", "url": "https://one.example.test", "sortOrder": 10,
+                 "managedAccounts": [
+                    {"id": 9, "name": "账号 A", "status": "active"},
+                    {"id": 10, "name": "账号 B", "status": "active"}
+                 ]}
             ],
             "profileKey": "profile-user-7",
             "lease": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -1241,10 +1333,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_bootstrap_response_for_a_different_managed_account() {
+        let error = validate_bootstrap_account_id(Some(9), 10).unwrap_err();
+        assert_eq!(error.code, "managed_session_invalid");
+        assert!(error.message.contains("所选账号"));
+        assert_eq!(validate_bootstrap_account_id(Some(9), 9).unwrap(), 9);
+    }
+
+    #[test]
     fn validates_and_sorts_server_platform_allowlist() {
         let validated = validate_desktop_config(desktop_wire(), TEST_API_BASE).unwrap();
         assert_eq!(validated.platforms[0].id, 1);
         assert_eq!(validated.platforms[1].id, 2);
+        assert_eq!(validated.platforms[0].managed_accounts.len(), 2);
+        assert_eq!(validated.platforms[0].managed_accounts[1].name, "账号 B");
         let config = validated.proxy.unwrap();
         assert_eq!(config.password, "server-only-secret");
         assert_eq!(
@@ -1334,7 +1436,8 @@ mod tests {
         assert_eq!(object.len(), 4);
         assert_eq!(value["proxy_assigned"], true);
         assert_eq!(value["proxy_ip"], "203.0.113.27");
-        assert_eq!(value["platforms"][0].as_object().unwrap().len(), 3);
+        assert_eq!(value["platforms"][0].as_object().unwrap().len(), 4);
+        assert!(value["platforms"][0]["managed_accounts"].is_array());
         assert!(value["platforms"][0]["icon_url"].is_null());
         assert_eq!(value["direct_hosts"][0], "lf3-ad-platform.byteadverts.com");
         let json = serde_json::to_string(&value).unwrap();
@@ -1369,6 +1472,16 @@ mod tests {
         invalid_lease.lease = "not-a-lease".into();
         assert_eq!(
             validate_desktop_config(invalid_lease, TEST_API_BASE)
+                .err()
+                .unwrap()
+                .code,
+            "invalid_desktop_config"
+        );
+
+        let mut invalid_account = desktop_wire();
+        invalid_account.platforms[1].managed_accounts[0].id = 0;
+        assert_eq!(
+            validate_desktop_config(invalid_account, TEST_API_BASE)
                 .err()
                 .unwrap()
                 .code,

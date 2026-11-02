@@ -41,6 +41,12 @@ class ManagedPlatformAccount(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
     last_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Identity discovered by a server-side, read-only provider probe.  These
+    # fields are display metadata only; the managed account id remains the
+    # isolation and authorization key.
+    remote_account_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    remote_display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    identity_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True, index=True)
     created_by: Mapped[Optional[int]] = mapped_column(IdType, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -51,7 +57,12 @@ class ManagedPlatformAccount(Base):
 class ManagedPlatformBinding(Base):
     __tablename__ = "managed_platform_binding"
     __table_args__ = (
-        UniqueConstraint("user_id", "platform_id", name="uq_managed_binding_user_platform"),
+        UniqueConstraint(
+            "user_id",
+            "platform_id",
+            "managed_account_id",
+            name="uq_managed_binding_user_platform_account",
+        ),
         {**TABLE_ARGS},
     )
 

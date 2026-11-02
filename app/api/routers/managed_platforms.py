@@ -10,6 +10,7 @@ from app.api.deps import audit_context, get_db, super_admin_auth, user_auth
 from app.api.envelope import EnvelopeRoute
 from app.db.session import Database
 from app.schemas.managed_platforms import (
+    ManagedAccountBindingCreate,
     ManagedBindingCreate,
     ManagedBootstrapConsumeRequest,
     ManagedBootstrapRequest,
@@ -146,6 +147,54 @@ def get_user_managed_account(
     return result
 
 
+@router.get("/api/admin/users/{user_id}/managed-accounts", tags=["managed-platforms"])
+def list_user_managed_accounts(
+    user_id: int,
+    _auth: Dict[str, Any] = Depends(super_admin_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    return {"items": managed_service.list_user_accounts(db, user_id)}
+
+
+@router.post(
+    "/api/admin/users/{user_id}/managed-accounts",
+    status_code=201,
+    tags=["managed-platforms"],
+)
+def add_user_managed_account(
+    user_id: int,
+    payload: ManagedAccountBindingCreate,
+    request: Request,
+    auth: Dict[str, Any] = Depends(super_admin_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    return managed_service.bind_account(
+        db,
+        payload.managed_account_id,
+        user_id,
+        audit=audit_context(request, auth),
+    )
+
+
+@router.delete(
+    "/api/admin/users/{user_id}/managed-accounts/{managed_account_id}",
+    tags=["managed-platforms"],
+)
+def remove_user_managed_account(
+    user_id: int,
+    managed_account_id: int,
+    request: Request,
+    auth: Dict[str, Any] = Depends(super_admin_auth),
+    db: Database = Depends(get_db),
+) -> None:
+    managed_service.unbind_account(
+        db,
+        managed_account_id,
+        user_id,
+        audit=audit_context(request, auth),
+    )
+
+
 @router.put("/api/admin/users/{user_id}/managed-account", tags=["managed-platforms"])
 def save_user_managed_account(
     user_id: int,
@@ -190,6 +239,7 @@ def issue_managed_bootstrap(
         auth["id"],
         platform_id,
         payload.device_id,
+        managed_account_id=payload.managed_account_id,
         audit=audit_context(request, auth),
     )
 

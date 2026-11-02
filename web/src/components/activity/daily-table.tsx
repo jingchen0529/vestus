@@ -65,7 +65,7 @@ export function DailyTable({
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
-            <TableRow key={`${row.date}-${row.userId}-${row.deviceId ?? "unknown"}-${row.platformId}`} className="hover:bg-muted/40 transition-colors text-xs">
+            <TableRow key={`${row.date}-${row.userId}-${row.deviceId ?? "unknown"}-${row.platformId}-${row.managedAccountId ?? "manual"}`} className="hover:bg-muted/40 transition-colors text-xs">
               {/* 日期 */}
               <TableCell className="text-center whitespace-nowrap p-2 py-2.5">
                 <div className="flex items-center justify-center gap-1 whitespace-nowrap font-medium text-foreground">
@@ -95,6 +95,7 @@ export function DailyTable({
               {/* 平台 */}
               <TableCell className="text-center text-foreground whitespace-nowrap p-2 py-2.5">
                 {row.platformName || `平台 #${row.platformId}`}
+                {row.managedAccountName ? ` · ${row.managedAccountName}` : ""}
               </TableCell>
 
               {/* 会话数 */}

@@ -69,13 +69,17 @@ VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app.main:app
 - 桌面端用户认证：`POST/GET /api/user/auth/login|me`，`POST /api/user/auth/logout|change-password`
 - 桌面端用户管理：`/api/admin/users`
 - 代理和平台管理：`/api/admin/proxies`、`/api/admin/platforms`
-- 方舟托管账号：超级管理员在桌面用户行内使用
-  `GET/PUT/DELETE /api/admin/users/{user_id}/managed-account` 配置，每个用户一个账号；
-  认证方式只有 `server_login`（账号/密码）和 `cookie`（Cookie JSON），业务平台固定为“方舟”，
-  没有托管授权到期日。账号、密码和 Cookie 按产品要求明文保存，仅超级管理员接口可读取；旧的
-  `/api/admin/managed-platform-accounts*` 兼容接口也只允许超级管理员调用。桌面端仍按需兑换
-  `/api/user/managed-platforms/{platform_id}/bootstrap` 的一次性 Cookie 会话。旧数据若仍是密文，
-  读取时兼容使用 `VESTUS_PLATFORM_SECRET_KEY`。服务端登录模式还需要配置
+- 方舟托管账号：超级管理员可以为一个桌面用户绑定多个账号。账号列表使用
+  `GET/POST/DELETE /api/admin/users/{user_id}/managed-accounts` 及按账号解绑路径；旧的
+  `GET/PUT/DELETE /api/admin/users/{user_id}/managed-account` 仅作为单账号兼容接口，多账号时不会覆盖已有绑定。
+  认证方式只有 `server_login`（账号/密码）和 `cookie`（Cookie JSON），业务平台固定为“方舟”。账号、密码和 Cookie
+  仅超级管理员接口可读取；桌面配置只下发账号 ID、显示名称和状态，不下发 Cookie。桌面端按需兑换
+  `/api/user/managed-platforms/{platform_id}/bootstrap` 的一次性 Cookie 会话，请求多账号时必须携带
+  `managedAccountId`。旧数据若仍是密文，读取时兼容使用 `VESTUS_PLATFORM_SECRET_KEY`。Cookie 本身不可靠地包含用户名；
+  服务端身份探针能读取方舟当前账号信息时保存远端名称，否则使用管理员别名。
+- 浏览器活动上报：`BrowserActivityReport` 的 `managedAccountId` 可选；服务端会校验它属于当前用户和平台，并在会话列表、
+  日汇总中返回 `managedAccountId` 与 `managedAccountName`。没有该字段的旧客户端记录仍然有效。
+  服务端登录模式还需要配置
   `VESTUS_MANAGED_CHROMIUM_PATH` 并安装 Python Playwright；验证码、MFA 或无法识别的
   方舟登录页会返回 `needs_manual_verification`，不会绕过风控。
 - 全局桌面配置：桌面端 `/api/user/desktop-config`；已废弃的管理员 `/api/admin/users/{id}/desktop-config` 按用户接口统一返回 HTTP 410

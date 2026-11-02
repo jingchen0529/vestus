@@ -96,6 +96,7 @@ export function SessionTable({
               {/* 平台 */}
               <TableCell className="text-center text-foreground whitespace-nowrap p-2 py-2.5">
                 {session.platformName || `平台 #${session.platformId}`}
+                {session.managedAccountName ? ` · ${session.managedAccountName}` : ""}
               </TableCell>
 
               {/* 连接方式 */}

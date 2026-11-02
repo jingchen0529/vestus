@@ -580,6 +580,7 @@ impl DesktopAuthState {
     pub(crate) async fn fetch_managed_session<T: DeserializeOwned>(
         &self,
         platform_id: i64,
+        managed_account_id: Option<i64>,
         device_id: Option<String>,
     ) -> AuthResult<Option<T>> {
         let _operation = self.operation.lock().await;
@@ -595,7 +596,7 @@ impl DesktopAuthState {
             .post(self.managed_endpoint(platform_id, "bootstrap")?)
             .bearer_auth(&token)
             .timeout(MANAGED_REQUEST_TIMEOUT)
-            .json(&serde_json::json!({ "deviceId": device_id }))
+            .json(&managed_bootstrap_body(managed_account_id, device_id.as_deref()))
             .send()
             .await
             .map_err(network_error)?;
@@ -970,6 +971,15 @@ impl DesktopAuthState {
     }
 }
 
+fn managed_bootstrap_body(managed_account_id: Option<i64>, device_id: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::Map::new();
+    if let Some(account_id) = managed_account_id {
+        body.insert("managedAccountId".into(), serde_json::json!(account_id));
+    }
+    body.insert("deviceId".into(), serde_json::json!(device_id));
+    serde_json::Value::Object(body)
+}
+
 #[derive(Deserialize)]
 struct TokenMetadata {
     typ: String,
@@ -1289,6 +1299,17 @@ mod tests {
         }))
         .expect("snake_case alias stays accepted");
         assert_eq!(legacy.bootstrap_token, "legacy-snake");
+    }
+
+    #[test]
+    fn managed_bootstrap_body_contains_account_id_only_when_selected() {
+        let selected = managed_bootstrap_body(Some(9), Some("device-a"));
+        assert_eq!(selected["managedAccountId"], 9);
+        assert_eq!(selected["deviceId"], "device-a");
+
+        let legacy = managed_bootstrap_body(None, None);
+        assert!(legacy.get("managedAccountId").is_none());
+        assert!(legacy["deviceId"].is_null());
     }
 
     #[derive(Default)]

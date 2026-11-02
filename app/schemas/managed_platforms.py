@@ -147,6 +147,11 @@ class ManagedBindingCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
+class ManagedAccountBindingCreate(BaseModel):
+    managed_account_id: int = Field(alias="managedAccountId", ge=1)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+
 class ManagedPlatformUserConfig(BaseModel):
     """The reduced, user-scoped administrator configuration payload."""
 
@@ -181,6 +186,7 @@ class ManagedPlatformUserConfig(BaseModel):
 
 
 class ManagedBootstrapRequest(BaseModel):
+    managed_account_id: Optional[int] = Field(default=None, alias="managedAccountId", ge=1)
     device_id: Optional[str] = Field(default=None, alias="deviceId", max_length=64)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -192,6 +198,7 @@ class ManagedBootstrapConsumeRequest(BaseModel):
 
 
 __all__ = [
+    "ManagedAccountBindingCreate",
     "ManagedBindingCreate",
     "ManagedBootstrapConsumeRequest",
     "ManagedBootstrapRequest",

@@ -89,12 +89,12 @@ def unbind_from_admin(session: Session, admin_id: int) -> int:
         .where(User.bound_admin_id == int(admin_id), User.deleted_at.is_(None))
         .values(bound_admin_id=None)
     )
-    return int(result.rowcount or 0)
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 def stats(session: Session, bound_admin_id: Optional[int] = None) -> Dict[str, int]:
     now = utc_now()
-    live = [User.deleted_at.is_(None)]
+    live: list[Any] = [User.deleted_at.is_(None)]
     if bound_admin_id is not None:
         live.append(User.bound_admin_id == int(bound_admin_id))
     rows = session.execute(

@@ -5,6 +5,13 @@ export interface DesktopPlatform {
   id: number;
   name: string;
   icon_url?: string | null;
+  managed_accounts?: DesktopManagedAccount[];
+}
+
+export interface DesktopManagedAccount {
+  id: number;
+  name: string;
+  status: "active" | "expired" | "revoked" | "invalid" | string;
 }
 
 export interface DesktopConfigView {
@@ -68,11 +75,13 @@ export const tauriBridge = {
 
   async openBrowser(
     platformId: number,
+    managedAccountId: number | null = null,
     directMode: boolean = false,
     disableSandbox: boolean = false,
   ): Promise<BrowserHandleView> {
     return await invokeDesktop<BrowserHandleView>("open_browser", {
       platformId,
+      managedAccountId,
       directMode,
       disableSandbox,
     });

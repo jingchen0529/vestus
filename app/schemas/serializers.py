@@ -13,11 +13,13 @@ from typing import Any, Dict, List, Optional
 
 from app.core.security import decrypt_proxy_password
 from app.core.uploads import is_inline_safe, normalize_upload_reference
-from app.db.base import ip_text, iso_datetime
+from app.db.base import ip_text, iso_datetime, utc_now
 from app.db.models import (
     Admin,
     BrowserPageVisit,
     BrowserSession,
+    ManagedPlatformAccount,
+    ManagedPlatformBinding,
     Platform,
     Proxy,
     UploadedFile,
@@ -127,6 +129,7 @@ def platform_dict(
     *,
     desktop: bool = False,
     uploaded_file: Optional[UploadedFile] = None,
+    managed_accounts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "id": item.id,
@@ -141,20 +144,45 @@ def platform_dict(
             "createdAt": iso_datetime(item.created_at),
             "updatedAt": iso_datetime(item.updated_at),
         })
+    elif managed_accounts is not None:
+        result["managedAccounts"] = managed_accounts
     return result
+
+
+def managed_account_desktop_dict(
+    binding: ManagedPlatformBinding, account: ManagedPlatformAccount
+) -> Dict[str, Any]:
+    status = binding.status
+    if account.status != "active":
+        status = account.status
+    elif account.expires_at is not None and account.expires_at <= utc_now():
+        status = "expired"
+    display_name = (
+        (account.remote_display_name or "").strip()
+        or (account.name or "").strip()
+        or f"账号-{account.id}"
+    )
+    return {
+        "id": account.id,
+        "name": display_name,
+        "status": status,
+        "expiresAt": iso_datetime(account.expires_at),
+        "remoteAccountId": account.remote_account_id,
+        "remoteDisplayName": account.remote_display_name,
+    }
 
 
 def desktop_lease_from_snapshot(
     user_id: int,
     proxy: Optional[Proxy],
-    platforms: List[Platform],
+    platforms: List[Any],
 ) -> str:
     """Hash the exact ORM snapshot used to serialize a desktop response.
 
     Password changes are represented by a digest of the Fernet ciphertext;
     plaintext proxy credentials are never decrypted or hashed here.
     """
-    payload = {
+    payload: Dict[str, Any] = {
         "profileKey": f"user-{user_id}",
         "proxy": None
         if proxy is None
@@ -169,7 +197,12 @@ def desktop_lease_from_snapshot(
             "status": proxy.status,
             "updatedAt": proxy.updated_at.isoformat(timespec="microseconds"),
         },
-        "platforms": [
+        "platforms": [],
+    }
+    for platform_snapshot in platforms:
+        platform = platform_snapshot[0]
+        managed_accounts = platform_snapshot[2] if len(platform_snapshot) > 2 else []
+        payload["platforms"].append(
             {
                 "id": platform.id,
                 "name": platform.name,
@@ -177,10 +210,20 @@ def desktop_lease_from_snapshot(
                 "sortOrder": platform.sort_order,
                 "status": platform.status,
                 "updatedAt": platform.updated_at.isoformat(timespec="microseconds"),
+                "managedAccounts": [
+                    {
+                        "bindingId": binding.id,
+                        "managedAccountId": account.id,
+                        "bindingStatus": binding.status,
+                        "accountStatus": account.status,
+                        "credentialVersion": account.credential_version,
+                        "expiresAt": iso_datetime(account.expires_at),
+                        "updatedAt": account.updated_at.isoformat(timespec="microseconds"),
+                    }
+                    for binding, account in managed_accounts
+                ],
             }
-            for platform in platforms
-        ],
-    }
+        )
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -226,6 +269,8 @@ def browser_session_dict(item: BrowserSession) -> Dict[str, Any]:
         "browserId": item.browser_id,
         "platformId": item.platform_id,
         "platformName": item.platform_name,
+        "managedAccountId": item.managed_account_id,
+        "managedAccountName": item.managed_account_name,
         "directMode": bool(item.direct_mode),
         "clientVersion": getattr(item, "client_version", "") or "",
         "pageCount": item.page_count,
@@ -268,6 +313,7 @@ __all__ = [
     "browser_page_visit_dict",
     "browser_session_dict",
     "desktop_lease_from_snapshot",
+    "managed_account_desktop_dict",
     "desktop_proxy_dict",
     "log_dict",
     "platform_dict",

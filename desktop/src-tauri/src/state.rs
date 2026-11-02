@@ -271,6 +271,7 @@ impl AppState {
         auth_generation: u64,
         auth_profile_key: Option<&str>,
         platform_id: i64,
+        managed_account_id: Option<i64>,
         direct_mode: bool,
     ) -> Option<BrowserLaunchInfo> {
         let guard = self.inner.lock().expect("状态锁已中毒");
@@ -284,12 +285,20 @@ impl AppState {
         {
             return None;
         }
-        let target_url = desktop
+        let platform = desktop
             .platforms
             .iter()
-            .find(|platform| platform.id == platform_id)?
-            .url
-            .clone();
+            .find(|platform| platform.id == platform_id)?;
+        if let Some(account_id) = managed_account_id {
+            let account = platform
+                .managed_accounts
+                .iter()
+                .find(|account| account.id == account_id)?;
+            if account.status != "active" {
+                return None;
+            }
+        }
+        let target_url = platform.url.clone();
 
         let port = if direct_mode {
             None
@@ -438,6 +447,7 @@ mod tests {
                 url: "https://platform.example.test/".into(),
                 icon_url: None,
                 sort_order: 0,
+                managed_accounts: Vec::new(),
             }],
         );
         assert!(state.begin_testing());
@@ -527,10 +537,11 @@ mod tests {
                 url: "https://platform.example.test/".into(),
                 icon_url: None,
                 sort_order: 0,
+                managed_accounts: Vec::new(),
             }],
         );
         assert!(state
-            .resolve_browser_launch(7, 1, Some("profile-7"), 1, true)
+            .resolve_browser_launch(7, 1, Some("profile-7"), 1, None, true)
             .is_some());
         assert!(state.mark_browser_opened(true).is_some());
         assert!(state.snapshot().browser_open);
@@ -540,7 +551,46 @@ mod tests {
         assert!(state.invalidate_desktop_configuration(7, 1, revision));
         assert!(!state.snapshot().browser_open);
         assert!(state
-            .resolve_browser_launch(7, 1, Some("profile-7"), 1, true)
+            .resolve_browser_launch(7, 1, Some("profile-7"), 1, None, true)
+            .is_none());
+    }
+
+    #[test]
+    fn managed_account_selection_is_scoped_to_the_platform_allowlist() {
+        let state = AppState::default();
+        state.set_desktop_assignment(
+            7,
+            1,
+            "profile-7".into(),
+            vec![DesktopPlatform {
+                id: 1,
+                name: "方舟".into(),
+                url: "https://platform.example.test/".into(),
+                icon_url: None,
+                sort_order: 0,
+                managed_accounts: vec![
+                    crate::config::ManagedAccountView {
+                        id: 9,
+                        name: "账号 A".into(),
+                        status: "active".into(),
+                    },
+                    crate::config::ManagedAccountView {
+                        id: 10,
+                        name: "账号 B".into(),
+                        status: "active".into(),
+                    },
+                ],
+            }],
+        );
+
+        assert!(state
+            .resolve_browser_launch(7, 1, Some("profile-7"), 1, Some(9), true)
+            .is_some());
+        assert!(state
+            .resolve_browser_launch(7, 1, Some("profile-7"), 1, Some(10), true)
+            .is_some());
+        assert!(state
+            .resolve_browser_launch(7, 1, Some("profile-7"), 1, Some(11), true)
             .is_none());
     }
 
@@ -583,6 +633,7 @@ mod tests {
                     url: "https://platform.example.test/".into(),
                     icon_url: None,
                     sort_order: 0,
+                    managed_accounts: Vec::new(),
                 }],
             ),
             0

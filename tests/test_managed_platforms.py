@@ -92,6 +92,76 @@ def test_admin_verify_without_managed_browser_returns_explicit_provider_error(ap
     assert "needs_manual_verification" in response.text
 
 
+def test_managed_account_verification_persists_non_sensitive_identity_metadata(api: Any) -> None:
+    client, module = api
+    admin_token, _user_token, platform = _setup(client)
+    created = client.post(
+        "/api/admin/managed-platform-accounts",
+        headers=_bearer(admin_token),
+        json={
+            "platformId": platform["id"],
+            "name": "管理员别名",
+            "authMode": "cookie",
+            "cookieBundle": [{"name": "sid", "value": "cookie-secret", "domain": ".example.test"}],
+        },
+    )
+    account_id = payload(created)["id"]
+
+    from app.services import managed_platforms as managed_service
+
+    class IdentityProvider:
+        def verify(self, **_kwargs: Any) -> managed_service.ManagedLoginResult:
+            return managed_service.ManagedLoginResult(
+                "verified",
+                [{"name": "sid", "value": "refreshed", "domain": ".example.test"}],
+                remote_account_id="remote-123",
+                remote_display_name="远端账号",
+            )
+
+    verified = managed_service.verify_account(
+        module.db._database, account_id, provider=IdentityProvider()
+    )
+    assert verified["remoteAccountId"] == "remote-123"
+    assert verified["remoteDisplayName"] == "远端账号"
+    assert "cookieBundle" not in verified
+
+
+def test_identity_metadata_is_cleared_when_a_refresh_cannot_identify_the_account(api: Any) -> None:
+    client, module = api
+    admin_token, _user_token, platform = _setup(client)
+    created = client.post(
+        "/api/admin/managed-platform-accounts",
+        headers=_bearer(admin_token),
+        json={
+            "platformId": platform["id"],
+            "name": "管理员别名",
+            "authMode": "cookie",
+            "cookieBundle": [{"name": "sid", "value": "cookie-secret", "domain": ".example.test"}],
+        },
+    )
+    account_id = payload(created)["id"]
+    from app.services import managed_platforms as managed_service
+
+    class Provider:
+        def __init__(self, identity: bool) -> None:
+            self.identity = identity
+
+        def verify(self, **_kwargs: Any) -> managed_service.ManagedLoginResult:
+            return managed_service.ManagedLoginResult(
+                "verified",
+                [{"name": "sid", "value": "refreshed", "domain": ".example.test"}],
+                remote_account_id="remote-123" if self.identity else None,
+                remote_display_name="远端账号" if self.identity else None,
+            )
+
+    managed_service.verify_account(module.db._database, account_id, provider=Provider(True))
+    refreshed = managed_service.verify_account(
+        module.db._database, account_id, provider=Provider(False)
+    )
+    assert refreshed["remoteAccountId"] is None
+    assert refreshed["remoteDisplayName"] is None
+
+
 def test_user_bootstrap_cookie_is_single_use_and_requires_binding(api: Any) -> None:
     client, module = api
     admin_token, user_token, platform = _setup(client)
@@ -516,4 +586,165 @@ def test_cookie_bundle_preserves_browser_attributes_after_round_trip(api: Any) -
     assert cookie["httpOnly"] is True
     assert cookie["sameSite"] == "Lax"
     assert cookie["expiresAt"].startswith("2099-12-31T00:00:00")
+
+
+def test_multiple_managed_accounts_are_listed_and_bootstrapped_independently(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform = _setup(client)
+
+    account_ids: list[int] = []
+    for name, cookie_value in (("账号 A", "cookie-a"), ("账号 B", "cookie-b")):
+        response = client.post(
+            "/api/admin/managed-platform-accounts",
+            headers=_bearer(admin_token),
+            json={
+                "platformId": platform["id"],
+                "name": name,
+                "authMode": "cookie",
+                "cookieBundle": [{"name": "sid", "value": cookie_value, "domain": ".example.test"}],
+            },
+        )
+        assert response.status_code == 201, response.text
+        account_id = payload(response)["id"]
+        account_ids.append(account_id)
+        bound = client.post(
+            f"/api/admin/managed-platform-accounts/{account_id}/bindings",
+            headers=_bearer(admin_token),
+            json={"userId": 1},
+        )
+        assert bound.status_code == 201, bound.text
+
+    listed = client.get(
+        "/api/admin/users/1/managed-accounts", headers=_bearer(admin_token)
+    )
+    assert listed.status_code == 200, listed.text
+    items = payload(listed)["items"]
+    assert [item["managedAccountId"] for item in items] == account_ids
+    assert [item["name"] for item in items] == ["账号 A", "账号 B"]
+
+    desktop_config = client.get("/api/user/desktop-config", headers=_bearer(user_token))
+    assert desktop_config.status_code == 200, desktop_config.text
+    desktop_platform = payload(desktop_config)["platforms"][0]
+    assert [item["id"] for item in desktop_platform["managedAccounts"]] == account_ids
+    assert "cookieBundle" not in desktop_platform["managedAccounts"][0]
+
+    consumed_values = []
+    for account_id, cookie_value in zip(account_ids, ("cookie-a", "cookie-b"), strict=True):
+        issued = client.post(
+            f"/api/user/managed-platforms/{platform['id']}/bootstrap",
+            headers=_bearer(user_token),
+            json={"managedAccountId": account_id, "deviceId": f"device-{account_id}"},
+        )
+        assert issued.status_code == 200, issued.text
+        assert payload(issued)["managedAccountId"] == account_id
+        consumed = client.post(
+            f"/api/user/managed-platforms/{platform['id']}/bootstrap/consume",
+            headers=_bearer(user_token),
+            json={
+                "bootstrapToken": payload(issued)["bootstrapToken"],
+                "deviceId": f"device-{account_id}",
+            },
+        )
+        assert consumed.status_code == 200, consumed.text
+        consumed_values.append(payload(consumed)["cookieBundle"][0]["value"])
+        assert consumed_values[-1] == cookie_value
+    assert consumed_values == ["cookie-a", "cookie-b"]
+
+    legacy = client.post(
+        f"/api/user/managed-platforms/{platform['id']}/bootstrap",
+        headers=_bearer(user_token),
+        json={"deviceId": "legacy-device"},
+    )
+    assert legacy.status_code == 409, legacy.text
+
+    removed = client.delete(
+        f"/api/admin/users/1/managed-accounts/{account_ids[0]}",
+        headers=_bearer(admin_token),
+    )
+    assert removed.status_code == 200, removed.text
+    remaining = client.get(
+        "/api/admin/users/1/managed-accounts", headers=_bearer(admin_token)
+    )
+    assert [item["managedAccountId"] for item in payload(remaining)["items"]] == [account_ids[1]]
+
+
+def test_binding_model_allows_two_accounts_for_one_user_and_platform(api: Any) -> None:
+    _client, module = api
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db.models import ManagedPlatformAccount, ManagedPlatformBinding
+
+    account = ManagedPlatformAccount(
+        platform_id=1,
+        name="identity-fields-optional",
+        auth_mode="cookie",
+        allowed_hosts=[],
+    )
+    assert account.remote_account_id is None
+    assert account.remote_display_name is None
+    assert account.identity_checked_at is None
+
+    with module.db.session() as session:
+        session.add_all(
+            [
+                ManagedPlatformBinding(
+                    user_id=1,
+                    platform_id=1,
+                    managed_account_id=101,
+                    status="active",
+                ),
+                ManagedPlatformBinding(
+                    user_id=1,
+                    platform_id=1,
+                    managed_account_id=102,
+                    status="active",
+                ),
+            ]
+        )
+        session.flush()
+        assert session.query(ManagedPlatformBinding).count() == 2
+        session.add(
+            ManagedPlatformBinding(
+                user_id=1,
+                platform_id=1,
+                managed_account_id=102,
+                status="active",
+            )
+        )
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+        else:  # pragma: no cover - the old model takes this branch
+            raise AssertionError("duplicate user/platform/account binding was accepted")
+
+
+def test_binding_repository_can_list_and_get_account_specific_rows(api: Any) -> None:
+    _client, module = api
+    from app.db.models import ManagedPlatformBinding
+    from app.repositories import managed_platforms as repository
+
+    with module.db.session() as session:
+        session.add_all(
+            [
+                ManagedPlatformBinding(
+                    user_id=1,
+                    platform_id=1,
+                    managed_account_id=201,
+                    status="active",
+                ),
+                ManagedPlatformBinding(
+                    user_id=1,
+                    platform_id=1,
+                    managed_account_id=202,
+                    status="active",
+                ),
+            ]
+        )
+        session.flush()
+        listed = repository.list_bindings(session, 1, 1)
+        assert [item.managed_account_id for item in listed] == [201, 202]
+        selected = repository.get_binding_for_account(session, 1, 1, 202)
+        assert selected is not None
+        assert selected.managed_account_id == 202
 

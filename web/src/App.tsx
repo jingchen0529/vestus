@@ -17,7 +17,11 @@ import { defaultCookieDomain } from "@/lib/cookie-parser";
 import { DesktopUser, UserStats, CreateUserPayload, UpdateUserPayload } from "@/types/user";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
 import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
-import { UserManagedPlatformAccount, UserManagedPlatformAccountPayload } from "@/types/managed-platform";
+import {
+  ManagedPlatformAccount,
+  UserManagedPlatformAccount,
+  UserManagedPlatformAccountPayload,
+} from "@/types/managed-platform";
 import { AdminUser, CreateAdminPayload, UpdateAdminPayload } from "@/types/admin";
 import { UserLogItem } from "@/types/log";
 import {
@@ -146,6 +150,7 @@ export function App() {
 
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [platforms, setPlatforms] = useState<PlatformItem[]>([]);
+  const [managedAccounts, setManagedAccounts] = useState<ManagedPlatformAccount[]>([]);
 
   // Admins state
   const [admins, setAdmins] = useState<AdminUser[]>([]);
@@ -226,6 +231,15 @@ export function App() {
     }
   }, []);
 
+  const loadManagedAccounts = useCallback(async () => {
+    if (!isSuperAdmin) return;
+    try {
+      setManagedAccounts(await api.listManagedPlatformAccounts());
+    } catch (err: any) {
+      toast.error("加载托管账号失败", { description: err.message });
+    }
+  }, [isSuperAdmin]);
+
   const loadAdmins = useCallback(async (searchQuery?: unknown, statusQuery?: unknown) => {
     if (!isSuperAdmin) return;
     try {
@@ -284,6 +298,7 @@ export function App() {
         loadUserStats(),
         loadProxies(),
         loadPlatforms(),
+        loadManagedAccounts(),
         loadAdmins(),
         loadLogs(),
         loadSessions(),
@@ -291,7 +306,7 @@ export function App() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadAdmins, loadLogs, loadSessions]);
+  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadManagedAccounts, loadAdmins, loadLogs, loadSessions]);
 
   // Initial Load on login
   useEffect(() => {
@@ -437,6 +452,21 @@ export function App() {
     await loadUsers();
   };
 
+  const handleGetUserManagedAccounts = useCallback(
+    (userId: number) => api.listUserManagedAccounts(userId),
+    [],
+  );
+
+  const handleBindUserManagedAccount = async (userId: number, managedAccountId: number) => {
+    await api.bindUserManagedAccount(userId, managedAccountId);
+    await loadUsers();
+  };
+
+  const handleUnbindUserManagedAccount = async (userId: number, managedAccountId: number) => {
+    await api.unbindUserManagedAccount(userId, managedAccountId);
+    await loadUsers();
+  };
+
   // Admin Mutators
   const handleCreateAdmin = async (payload: CreateAdminPayload) => {
     await api.createAdmin(payload);
@@ -542,9 +572,13 @@ export function App() {
             canAssignVpn={isSuperAdmin}
             canManageManagedAccount={isSuperAdmin}
             cookieDefaultDomain={defaultCookieDomain(platforms.find((platform) => platform.id === 1)?.url)}
+            availableManagedAccounts={managedAccounts}
             onGetManagedAccount={isSuperAdmin ? handleGetUserManagedAccount : undefined}
+            onGetManagedAccounts={isSuperAdmin ? handleGetUserManagedAccounts : undefined}
             onSaveManagedAccount={isSuperAdmin ? handleSaveUserManagedAccount : undefined}
             onDeleteManagedAccount={isSuperAdmin ? handleDeleteUserManagedAccount : undefined}
+            onBindManagedAccount={isSuperAdmin ? handleBindUserManagedAccount : undefined}
+            onUnbindManagedAccount={isSuperAdmin ? handleUnbindUserManagedAccount : undefined}
           />
         )}
 

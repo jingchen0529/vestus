@@ -49,6 +49,8 @@ class ManagedLoginResult:
     status: str
     cookie_bundle: List[Dict[str, Any]]
     detail: str = ""
+    remote_account_id: Optional[str] = None
+    remote_display_name: Optional[str] = None
 
 
 class ManagedLoginProvider(Protocol):
@@ -333,9 +335,48 @@ def _account_dict(item: ManagedPlatformAccount) -> Dict[str, Any]:
         "expiresAt": iso_datetime(item.expires_at),
         "status": item.status,
         "lastVerifiedAt": iso_datetime(item.last_verified_at),
+        "remoteAccountId": item.remote_account_id,
+        "remoteDisplayName": item.remote_display_name,
+        "identityCheckedAt": iso_datetime(item.identity_checked_at),
         "createdBy": item.created_by,
         "createdAt": iso_datetime(item.created_at),
         "updatedAt": iso_datetime(item.updated_at),
+    }
+
+
+def _account_display_name(item: ManagedPlatformAccount) -> str:
+    return (
+        (item.remote_display_name or "").strip()
+        or (item.name or "").strip()
+        or f"账号-{item.id}"
+    )
+
+
+def _binding_dict(
+    binding: ManagedPlatformBinding,
+    account: ManagedPlatformAccount,
+    *,
+    platform_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    status = binding.status
+    if account.status != "active":
+        status = account.status
+    elif account.expires_at is not None and account.expires_at <= utc_now():
+        status = "expired"
+    return {
+        "id": binding.id,
+        "userId": binding.user_id,
+        "platformId": binding.platform_id,
+        "platformName": platform_name,
+        "managedAccountId": account.id,
+        "name": _account_display_name(account),
+        "accountName": _account_display_name(account),
+        "status": status,
+        "expiresAt": iso_datetime(account.expires_at),
+        "credentialVersion": account.credential_version,
+        "remoteAccountId": account.remote_account_id,
+        "remoteDisplayName": account.remote_display_name,
+        "identityCheckedAt": iso_datetime(account.identity_checked_at),
     }
 
 
@@ -520,6 +561,9 @@ def update_account(
             item.credential_version = int(item.credential_version) + 1
             item.last_verified_at = None
             item.last_error = None
+            item.remote_account_id = None
+            item.remote_display_name = None
+            item.identity_checked_at = None
         try:
             session.flush()
         except IntegrityError as exc:
@@ -582,18 +626,13 @@ def bind_account(
             visible_admin_id is not None and user.bound_admin_id != int(visible_admin_id)
         ):
             raise NotFoundError(MANAGED_USER_NOT_FOUND)
-        existing = managed_repo.get_binding(session, user.id, account.platform_id)
+        existing = managed_repo.get_binding_for_account(
+            session, user.id, account.platform_id, account.id
+        )
         if existing is not None:
-            existing.managed_account_id = account.id
             existing.status = "active"
             existing.updated_at = utc_now()
-            result = {
-                "id": existing.id,
-                "userId": existing.user_id,
-                "platformId": existing.platform_id,
-                "managedAccountId": existing.managed_account_id,
-                "status": existing.status,
-            }
+            result = _binding_dict(existing, account)
         else:
             item = ManagedPlatformBinding(
                 user_id=user.id,
@@ -606,13 +645,7 @@ def bind_account(
                 session.flush()
             except IntegrityError as exc:
                 raise ConflictError("该用户已绑定此平台的托管账号") from exc
-            result = {
-                "id": item.id,
-                "userId": item.user_id,
-                "platformId": item.platform_id,
-                "managedAccountId": item.managed_account_id,
-                "status": item.status,
-            }
+            result = _binding_dict(item, account)
         record(
             session,
             audit,
@@ -645,8 +678,10 @@ def unbind_account(
             visible_admin_id is not None and user.bound_admin_id != int(visible_admin_id)
         ):
             raise NotFoundError(MANAGED_USER_NOT_FOUND)
-        binding = managed_repo.get_binding(session, user.id, account.platform_id)
-        if binding is None or binding.managed_account_id != account.id:
+        binding = managed_repo.get_binding_for_account(
+            session, user.id, account.platform_id, account.id
+        )
+        if binding is None:
             raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
         session.delete(binding)
         record(
@@ -669,11 +704,39 @@ def get_user_account(database: Database, user_id: int | str) -> Optional[Dict[st
         platform = session.get(Platform, MANAGED_ARK_PLATFORM_ID)
         if platform is None:
             return None
-        pair = managed_repo.get_binding_account(session, user.id, platform.id)
-        if pair is None:
+        bindings = managed_repo.list_bindings(session, user.id, platform.id)
+        if not bindings:
             return None
-        _binding, account = pair
+        if len(bindings) > 1:
+            raise ConflictError("该用户已绑定多个托管账号，请使用托管账号列表接口")
+        account = managed_repo.get_account(session, bindings[0].managed_account_id)
+        if account is None:
+            return None
         return _account_detail_dict(account, platform_name=platform.name)
+
+
+def list_user_accounts(
+    database: Database, user_id: int | str
+) -> List[Dict[str, Any]]:
+    with database.session() as session:
+        user = users_repo.get_active(session, user_id)
+        if user is None:
+            raise NotFoundError(MANAGED_USER_NOT_FOUND)
+        bindings = managed_repo.list_bindings_for_user(session, user.id)
+        result: List[Dict[str, Any]] = []
+        for binding in bindings:
+            account = managed_repo.get_account(session, binding.managed_account_id)
+            if account is None:
+                continue
+            platform = session.get(Platform, binding.platform_id)
+            result.append(
+                _binding_dict(
+                    binding,
+                    account,
+                    platform_name=platform.name if platform is not None else None,
+                )
+            )
+        return result
 
 
 def upsert_user_account(
@@ -699,7 +762,14 @@ def upsert_user_account(
         if user is None:
             raise NotFoundError(MANAGED_USER_NOT_FOUND)
         platform = _require_ark_platform(session)
-        pair = managed_repo.get_binding_account(session, user.id, platform.id)
+        bindings = managed_repo.list_bindings(session, user.id, platform.id)
+        if len(bindings) > 1:
+            raise ConflictError("该用户已绑定多个托管账号，请使用按账号接口保存")
+        pair = None
+        if bindings:
+            account = managed_repo.get_account(session, bindings[0].managed_account_id)
+            if account is not None:
+                pair = (bindings[0], account)
         if pair is None:
             account = ManagedPlatformAccount(
                 platform_id=platform.id,
@@ -707,7 +777,7 @@ def upsert_user_account(
                 auth_mode=auth_mode,
                 username=username if auth_mode == "server_login" else None,
                 password=password if auth_mode == "server_login" else None,
-                cookie_bundle=list(cookies) if auth_mode == "cookie" else None,
+                cookie_bundle=list(cookies or []) if auth_mode == "cookie" else None,
                 allowed_hosts=_platform_allowed_hosts(platform),
                 credential_version=1,
                 expires_at=None,
@@ -729,7 +799,7 @@ def upsert_user_account(
             account.auth_mode = auth_mode
             account.username = username if auth_mode == "server_login" else None
             account.password = password if auth_mode == "server_login" else None
-            account.cookie_bundle = list(cookies) if auth_mode == "cookie" else None
+            account.cookie_bundle = list(cookies or []) if auth_mode == "cookie" else None
             account.encrypted_username = None
             account.encrypted_password = None
             account.encrypted_cookie_bundle = None
@@ -769,7 +839,14 @@ def delete_user_account(
         platform = session.get(Platform, MANAGED_ARK_PLATFORM_ID)
         if platform is None:
             raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
-        pair = managed_repo.get_binding_account(session, user.id, platform.id)
+        bindings = managed_repo.list_bindings(session, user.id, platform.id)
+        if len(bindings) > 1:
+            raise ConflictError("该用户已绑定多个托管账号，请使用托管账号列表接口删除指定账号")
+        pair = None
+        if bindings:
+            account = managed_repo.get_account(session, bindings[0].managed_account_id)
+            if account is not None:
+                pair = (bindings[0], account)
         if pair is None:
             raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
         binding, account = pair
@@ -832,6 +909,13 @@ def verify_account(
         item.last_verified_at = utc_now()
         item.last_error = None
         item.status = "active"
+        item.remote_account_id = result.remote_account_id
+        item.remote_display_name = result.remote_display_name
+        item.identity_checked_at = (
+            utc_now()
+            if result.remote_account_id or result.remote_display_name
+            else None
+        )
         record(
             session,
             audit,
@@ -848,9 +932,18 @@ def _load_bootstrap_context(
     database: Database,
     user_id: int,
     platform_id: int,
+    managed_account_id: Optional[int] = None,
 ) -> tuple[ManagedPlatformBinding, ManagedPlatformAccount, Platform]:
     with database.session() as session:
-        binding = managed_repo.get_binding(session, user_id, platform_id)
+        if managed_account_id is None:
+            bindings = managed_repo.list_bindings(session, user_id, platform_id)
+            if len(bindings) > 1:
+                raise ConflictError("该平台绑定了多个托管账号，请选择具体账号")
+            binding = bindings[0] if bindings else None
+        else:
+            binding = managed_repo.get_binding_for_account(
+                session, user_id, platform_id, managed_account_id
+            )
         if binding is None:
             raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
         if binding.status != "active":
@@ -872,10 +965,16 @@ def issue_bootstrap(
     platform_id: int | str,
     device_id: Optional[str],
     *,
+    managed_account_id: Optional[int | str] = None,
     provider: Optional[ManagedLoginProvider] = None,
     audit: Optional[AuditContext] = None,
 ) -> Dict[str, Any]:
-    _binding, account, platform = _load_bootstrap_context(database, int(user_id), int(platform_id))
+    _binding, account, platform = _load_bootstrap_context(
+        database,
+        int(user_id),
+        int(platform_id),
+        int(managed_account_id) if managed_account_id is not None else None,
+    )
     username, password, cookies = _credential_values(account)
     # Reuse a verified bundle while issuing short-lived bootstrap grants. A
     # desktop retry must not re-run the provider and bump credential_version,
@@ -905,6 +1004,13 @@ def issue_bootstrap(
             fresh.credential_version = int(fresh.credential_version) + 1
             fresh.last_verified_at = utc_now()
             fresh.last_error = None
+            fresh.remote_account_id = result.remote_account_id
+            fresh.remote_display_name = result.remote_display_name
+            fresh.identity_checked_at = (
+                utc_now()
+                if result.remote_account_id or result.remote_display_name
+                else None
+            )
             account_version = fresh.credential_version
             allowed_hosts = list(fresh.allowed_hosts or []) or _platform_allowed_hosts(platform)
     else:
@@ -936,6 +1042,7 @@ def issue_bootstrap(
         )
         return {
             "bootstrapToken": raw_token,
+            "managedAccountId": account.id,
             "credentialVersion": account_version,
             "allowedHosts": allowed_hosts,
             "expiresAt": iso_datetime(row.expires_at),
@@ -969,11 +1076,15 @@ def consume_bootstrap(
         # concurrent administrator unbind/switch with the final credential
         # check: either the revoke wins and the grant is rejected, or the
         # already-started consume completes before the revoke commits.
-        binding = managed_repo.get_binding_for_update(session, row.user_id, row.platform_id)
+        binding = managed_repo.get_binding_for_account_for_update(
+            session,
+            row.user_id,
+            row.platform_id,
+            row.managed_account_id,
+        )
         if (
             binding is None
             or binding.status != "active"
-            or binding.managed_account_id != row.managed_account_id
         ):
             raise ConflictError(MANAGED_GRANT_INVALID)
         account = managed_repo.get_account(session, row.managed_account_id)

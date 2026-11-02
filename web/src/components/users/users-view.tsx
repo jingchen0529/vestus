@@ -6,6 +6,8 @@ import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user"
 import { ProxyItem } from "@/types/proxy";
 import { AdminUser } from "@/types/admin";
 import {
+  ManagedPlatformAccount,
+  UserManagedAccountBinding,
   UserManagedPlatformAccount,
   UserManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
@@ -53,6 +55,10 @@ interface UsersViewProps {
   onGetManagedAccount?: (userId: number) => Promise<UserManagedPlatformAccount | null>;
   onSaveManagedAccount?: (userId: number, payload: UserManagedPlatformAccountPayload) => Promise<void>;
   onDeleteManagedAccount?: (userId: number) => Promise<void>;
+  availableManagedAccounts?: ManagedPlatformAccount[];
+  onGetManagedAccounts?: (userId: number) => Promise<UserManagedAccountBinding[]>;
+  onBindManagedAccount?: (userId: number, managedAccountId: number) => Promise<void>;
+  onUnbindManagedAccount?: (userId: number, managedAccountId: number) => Promise<void>;
 }
 
 export function UsersView({
@@ -76,6 +82,10 @@ export function UsersView({
   onGetManagedAccount,
   onSaveManagedAccount,
   onDeleteManagedAccount,
+  availableManagedAccounts = [],
+  onGetManagedAccounts,
+  onBindManagedAccount,
+  onUnbindManagedAccount,
 }: UsersViewProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<DesktopUser | null>(null);
@@ -90,6 +100,7 @@ export function UsersView({
   const [managedDialogOpen, setManagedDialogOpen] = useState(false);
   const [managedUser, setManagedUser] = useState<DesktopUser | null>(null);
   const [managedAccount, setManagedAccount] = useState<UserManagedPlatformAccount | null>(null);
+  const [managedBindings, setManagedBindings] = useState<UserManagedAccountBinding[]>([]);
   const [managedAccountLoading, setManagedAccountLoading] = useState(false);
 
   const handleOpenCreate = () => {
@@ -128,16 +139,44 @@ export function UsersView({
     if (!canManageManagedAccount || !onGetManagedAccount) return;
     setManagedUser(user);
     setManagedAccount(null);
+    setManagedBindings([]);
     setManagedDialogOpen(true);
     setManagedAccountLoading(true);
     try {
-      setManagedAccount(await onGetManagedAccount(user.id));
+      const [legacyResult, bindingsResult] = await Promise.allSettled([
+        onGetManagedAccount ? onGetManagedAccount(user.id) : Promise.resolve(null),
+        onGetManagedAccounts ? onGetManagedAccounts(user.id) : Promise.resolve([]),
+      ]);
+      if (legacyResult.status === "fulfilled") {
+        setManagedAccount(legacyResult.value);
+      }
+      if (bindingsResult.status === "fulfilled") {
+        setManagedBindings(bindingsResult.value);
+      } else {
+        throw bindingsResult.reason;
+      }
     } catch (error) {
       toast.error("读取托管账号失败", {
         description: error instanceof Error ? error.message : "请稍后重试",
       });
     } finally {
       setManagedAccountLoading(false);
+    }
+  };
+
+  const handleBindManagedAccount = async (userId: number, managedAccountId: number) => {
+    if (!onBindManagedAccount) return;
+    await onBindManagedAccount(userId, managedAccountId);
+    if (onGetManagedAccounts && managedUser?.id === userId) {
+      setManagedBindings(await onGetManagedAccounts(userId));
+    }
+  };
+
+  const handleUnbindManagedAccount = async (userId: number, managedAccountId: number) => {
+    if (!onUnbindManagedAccount) return;
+    await onUnbindManagedAccount(userId, managedAccountId);
+    if (onGetManagedAccounts && managedUser?.id === userId) {
+      setManagedBindings(await onGetManagedAccounts(userId));
     }
   };
 
@@ -226,14 +265,19 @@ export function UsersView({
             if (!open) {
               setManagedUser(null);
               setManagedAccount(null);
+              setManagedBindings([]);
             }
           }}
           user={managedUser}
           account={managedAccount}
+          bindings={managedBindings}
+          availableAccounts={availableManagedAccounts}
           accountLoading={managedAccountLoading}
           cookieDefaultDomain={cookieDefaultDomain}
           onSave={onSaveManagedAccount}
           onDelete={onDeleteManagedAccount}
+          onBind={handleBindManagedAccount}
+          onUnbind={handleUnbindManagedAccount}
         />
       )}
 

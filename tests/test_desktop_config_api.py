@@ -605,6 +605,7 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
                 "url": "http://one.example.test",
                 "iconUrl": "",
                 "sortOrder": 10,
+                    "managedAccounts": [],
             },
             {
                 "id": first_platform_id,
@@ -612,6 +613,7 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
                 "url": "https://two.example.test/path",
                 "iconUrl": "",
                 "sortOrder": 20,
+                    "managedAccounts": [],
             },
         ],
         "profileKey": f"user-{user['id']}",

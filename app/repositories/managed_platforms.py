@@ -32,7 +32,66 @@ def get_binding(
         select(ManagedPlatformBinding).where(
             ManagedPlatformBinding.user_id == int(user_id),
             ManagedPlatformBinding.platform_id == int(platform_id),
+        ).order_by(ManagedPlatformBinding.id)
+    )
+
+
+def list_bindings(
+    session: Session, user_id: int | str, platform_id: int | str
+) -> list[ManagedPlatformBinding]:
+    return list(
+        session.scalars(
+            select(ManagedPlatformBinding)
+            .where(
+                ManagedPlatformBinding.user_id == int(user_id),
+                ManagedPlatformBinding.platform_id == int(platform_id),
+            )
+            .order_by(ManagedPlatformBinding.id)
+        ).all()
+    )
+
+
+def list_bindings_for_user(
+    session: Session, user_id: int | str
+) -> list[ManagedPlatformBinding]:
+    return list(
+        session.scalars(
+            select(ManagedPlatformBinding)
+            .where(ManagedPlatformBinding.user_id == int(user_id))
+            .order_by(ManagedPlatformBinding.platform_id, ManagedPlatformBinding.id)
+        ).all()
+    )
+
+
+def get_binding_for_account(
+    session: Session,
+    user_id: int | str,
+    platform_id: int | str,
+    managed_account_id: int | str,
+) -> Optional[ManagedPlatformBinding]:
+    return session.scalar(
+        select(ManagedPlatformBinding).where(
+            ManagedPlatformBinding.user_id == int(user_id),
+            ManagedPlatformBinding.platform_id == int(platform_id),
+            ManagedPlatformBinding.managed_account_id == int(managed_account_id),
         )
+    )
+
+
+def get_binding_for_account_for_update(
+    session: Session,
+    user_id: int | str,
+    platform_id: int | str,
+    managed_account_id: int | str,
+) -> Optional[ManagedPlatformBinding]:
+    return session.scalar(
+        select(ManagedPlatformBinding)
+        .where(
+            ManagedPlatformBinding.user_id == int(user_id),
+            ManagedPlatformBinding.platform_id == int(platform_id),
+            ManagedPlatformBinding.managed_account_id == int(managed_account_id),
+        )
+        .with_for_update()
     )
 
 
@@ -45,6 +104,7 @@ def get_binding_for_update(
             ManagedPlatformBinding.user_id == int(user_id),
             ManagedPlatformBinding.platform_id == int(platform_id),
         )
+        .order_by(ManagedPlatformBinding.id)
         .with_for_update()
     )
 
@@ -87,9 +147,13 @@ def purge_expired_sessions(session: Session, now: datetime) -> int:
 __all__ = [
     "get_account",
     "get_binding",
+    "get_binding_for_account",
+    "get_binding_for_account_for_update",
     "get_binding_account",
     "get_binding_for_update",
     "get_session_for_update",
     "list_accounts",
+    "list_bindings",
+    "list_bindings_for_user",
     "purge_expired_sessions",
 ]

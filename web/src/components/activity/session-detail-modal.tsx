@@ -261,6 +261,7 @@ export function SessionDetailModal({
                 {summary.username || `#${summary.userId}`}
                 <span className="text-muted-foreground font-normal ml-1.5">
                   @ {summary.platformName || `平台 #${summary.platformId}`}
+                  {summary.managedAccountName ? ` · ${summary.managedAccountName}` : ""}
                 </span>
               </span>
             </div>

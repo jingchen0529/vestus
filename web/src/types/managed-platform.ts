@@ -39,6 +39,9 @@ export interface ManagedPlatformAccount {
   createdBy?: number | null;
   createdAt?: string;
   updatedAt?: string;
+  remoteAccountId?: string | null;
+  remoteDisplayName?: string | null;
+  identityCheckedAt?: string | null;
 }
 
 export interface CreateManagedPlatformAccountPayload {
@@ -70,6 +73,22 @@ export interface ManagedPlatformBinding {
   platformId: number;
   managedAccountId: number;
   status: "active" | "revoked";
+}
+
+export interface UserManagedAccountBinding {
+  id: number;
+  userId: number;
+  platformId: number;
+  platformName?: string | null;
+  managedAccountId: number;
+  name: string;
+  accountName?: string;
+  status: ManagedAccountStatus | "active";
+  expiresAt?: string | null;
+  credentialVersion?: number;
+  remoteAccountId?: string | null;
+  remoteDisplayName?: string | null;
+  identityCheckedAt?: string | null;
 }
 
 export interface ManagedAccountVerification {

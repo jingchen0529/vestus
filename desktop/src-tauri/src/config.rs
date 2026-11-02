@@ -43,6 +43,15 @@ pub struct DesktopPlatform {
     pub url: String,
     pub icon_url: Option<String>,
     pub sort_order: i64,
+    pub managed_accounts: Vec<ManagedAccountView>,
+}
+
+/// Non-sensitive metadata for one administrator-bound upstream account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedAccountView {
+    pub id: i64,
+    pub name: String,
+    pub status: String,
 }
 
 impl ValidatedConfig {
