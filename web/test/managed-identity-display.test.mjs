@@ -28,8 +28,8 @@ test("绑定总览展示远端身份并提供「检查登录态」操作", async
   assert.match(source, /\{item\.remoteDisplayName && item\.remoteDisplayName !== item\.name \? \(/);
   assert.match(source, /平台身份：\$\{item\.remoteDisplayName\}；点击重新校验登录态/);
   assert.match(source, /onClick=\{\(\) => void handleCheckIdentity\(item\)\}/);
-  // 检查登录态只面向 Cookie 模式账号，且走统一的回调。
-  assert.match(source, /onCheckIdentity && item\.authMode === "cookie"/);
+  // 检查登录态支持 Cookie 与服务端登录模式（自动恢复中除外），且走统一的回调。
+  assert.match(source, /onCheckIdentity && item\.authMode !== "official_sso" && !isManagedRecovering\(item\)/);
   assert.match(source, /await onCheckIdentity\(item\.managedAccountId\)/);
   assert.match(source, /登录态有效：\$\{result\.account\.remoteDisplayName/);
   assert.match(source, /登录态已失效，会话已标记过期/);
@@ -79,8 +79,8 @@ test("用户绑定列表提供检查入口且检查后刷新绑定", async () =>
     path.join(webRoot, "src/components/users/managed-account-dialog.tsx"),
     "utf8",
   );
-  // 列表操作列的检查按钮：仅 Cookie 模式 + 提供回调时显示。
-  assert.match(dialog, /onCheckIdentity && resolvedAuthMode === "cookie"/);
+  // 列表操作列的检查按钮：非官方 SSO 模式 + 提供回调时显示。
+  assert.match(dialog, /onCheckIdentity && resolvedAuthMode !== "official_sso"/);
   assert.match(dialog, /await onCheckIdentity\(item\.managedAccountId\)/);
   assert.match(dialog, /检查中…/);
   assert.match(dialog, /登录态有效：\$\{result\.account\.remoteDisplayName/);

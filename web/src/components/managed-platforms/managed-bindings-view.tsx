@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isManagedRecovering, managedRecoveryLabel } from "@/lib/managed-recovery";
 import {
   CheckCircle2,
   Edit2,
@@ -95,6 +96,16 @@ export function ManagedBindingsView({
   // 弹窗状态：新增与编辑
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<ManagedBindingItem | null>(null);
+  const refreshRef = useRef({ onRefresh, isRefreshing });
+  refreshRef.current = { onRefresh, isRefreshing };
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !refreshRef.current.isRefreshing) {
+        refreshRef.current.onRefresh();
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const handleOpenCreate = () => {
     setEditingItem(null);
@@ -177,6 +188,14 @@ export function ManagedBindingsView({
   };
 
   const sessionBadge = (item: ManagedBindingItem) => {
+    if (isManagedRecovering(item)) {
+      return <Badge variant="warning" className="gap-1 text-[10px]" title={item.lastError || undefined}>
+        <RefreshCw className="h-3 w-3 animate-spin" />{managedRecoveryLabel(item)}
+      </Badge>;
+    }
+    if (item.recoveryStatus === "failed") {
+      return <Badge variant="destructive" className="text-[10px]" title={item.lastError || undefined}>自动恢复失败</Badge>;
+    }
     if (item.sessionStatus === "expired") {
       return (
         <Badge variant="destructive" className="gap-1 text-[10px]" title={item.lastError || undefined}>
@@ -314,7 +333,7 @@ export function ManagedBindingsView({
                     <div className="flex flex-col">
                       <span className="text-sm font-medium text-foreground">{item.name}</span>
                       {item.remoteDisplayName && item.remoteDisplayName !== item.name ? (
-                        onCheckIdentity && item.authMode === "cookie" ? (
+                        onCheckIdentity && item.authMode !== "official_sso" && !isManagedRecovering(item) ? (
                           <button
                             type="button"
                             className="text-left text-[11px] text-muted-foreground hover:text-primary hover:underline underline-offset-2 transition-colors disabled:opacity-60"
@@ -350,7 +369,7 @@ export function ManagedBindingsView({
                   </TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <div className="flex justify-end gap-1.5">
-                      {onCheckIdentity && item.authMode === "cookie" && (
+                      {onCheckIdentity && item.authMode !== "official_sso" && !isManagedRecovering(item) && (
                         <Button
                           variant="table-action"
                           size="xs"

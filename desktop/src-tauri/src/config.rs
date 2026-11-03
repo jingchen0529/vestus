@@ -52,6 +52,29 @@ pub struct ManagedAccountView {
     pub id: i64,
     pub name: String,
     pub status: String,
+    pub credential_version: u64,
+    pub session_status: String,
+    pub auto_relogin: bool,
+    pub recovery_status: String,
+    pub recovery_attempts: u32,
+    pub last_error: Option<String>,
+}
+
+#[cfg(test)]
+impl ManagedAccountView {
+    pub(crate) fn active(id: i64, name: &str) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            status: "active".into(),
+            credential_version: 1,
+            session_status: "valid".into(),
+            auto_relogin: false,
+            recovery_status: "idle".into(),
+            recovery_attempts: 0,
+            last_error: None,
+        }
+    }
 }
 
 impl ValidatedConfig {

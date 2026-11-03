@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import JSON, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import TABLE_ARGS, Base, DateTime6, IdType, utc_now
@@ -39,9 +39,15 @@ class ManagedPlatformAccount(Base):
     credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
-    # 上游会话（cookie）是否仍可用。"expired" 表示客户端上报了平台侧退出登录，
-    # 打开该账号前必须先由管理员重新验证凭据。与 status（管理员启停）正交。
+    # 会话失效与管理员启停正交；只有重新登录并验证成功才能恢复 valid。
     session_status: Mapped[str] = mapped_column(String(16), nullable=False, default="valid")
+    auto_relogin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    recovery_status: Mapped[str] = mapped_column(String(16), nullable=False, default="idle", index=True)
+    recovery_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_recovery_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True, index=True)
+    recovery_lease_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    recovery_lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
+    last_recovered_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
     last_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Identity discovered by a server-side, read-only provider probe.  These

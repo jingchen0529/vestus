@@ -6,7 +6,8 @@
 //! validates its host boundary, and renders the two fixed commands needed by a
 //! managed launch: `Network.setCookies` followed by `Page.navigate`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -31,8 +32,6 @@ const NAVIGATE_COMMAND_ID: i64 = 2;
 const TARGETS_COMMAND_ID: i64 = 3;
 const ATTACH_COMMAND_ID: i64 = 4;
 const DETACH_COMMAND_ID: i64 = 5;
-const PAGE_ENABLE_COMMAND_ID: i64 = 6;
-const FRAME_TREE_COMMAND_ID: i64 = 7;
 
 /// Immutable identity of the credential actually installed in a browser.
 /// Kept in Rust only; neither credentials nor navigation URLs enter reports.
@@ -728,52 +727,98 @@ impl LogoutPolicy {
 
 struct LogoutDetector {
     policy: LogoutPolicy,
-    session_id: String,
-    main_frame_id: Option<String>,
+    /// 每个已接管的标签页会话 -> 其主 frame id。只有这里登记过的会话会被
+    /// 处理；复制标签页、新开标签页与首个标签页一视同仁。
+    sessions: HashMap<String, Option<String>>,
     detected: bool,
-    detached: bool,
 }
 
 impl LogoutDetector {
-    fn observe(&mut self, event: &Value) {
-        if event.get("method").and_then(Value::as_str) == Some("Target.detachedFromTarget")
-            && event.pointer("/params/sessionId").and_then(Value::as_str)
-                == Some(self.session_id.as_str())
-        {
-            self.detached = true;
-            return;
-        }
-        if event.get("sessionId").and_then(Value::as_str) != Some(self.session_id.as_str()) {
-            return;
-        }
-        match event.get("method").and_then(Value::as_str) {
-            Some("Page.frameNavigated") => {
-                if let Some(frame) = event.pointer("/params/frame") {
-                    if frame.get("parentId").is_none() {
-                        self.observe_main_frame(frame);
-                    }
-                }
-            }
-            Some("Page.navigatedWithinDocument") => {
-                if let Some(main_frame_id) = self.main_frame_id.as_deref() {
-                    if event.pointer("/params/frameId").and_then(Value::as_str)
-                        == Some(main_frame_id)
-                    {
-                        self.observe_url(event.pointer("/params/url").and_then(Value::as_str));
-                    }
-                }
-            }
-            _ => {}
+    fn new(policy: LogoutPolicy) -> Self {
+        Self {
+            policy,
+            sessions: HashMap::new(),
+            detected: false,
         }
     }
 
-    fn observe_main_frame(&mut self, frame: &Value) {
+    fn has_tracked_session(&self) -> bool {
+        !self.sessions.is_empty()
+    }
+
+    /// 登记一个页面会话；返回 `Some` 表示这是新接管的标签页，还需要为它
+    /// 启用 `Page` 域并播种 frame tree。
+    fn observe_attach(&mut self, event: &Value) -> Option<String> {
+        if event.get("method").and_then(Value::as_str) != Some("Target.attachedToTarget") {
+            return None;
+        }
+        if event.pointer("/params/targetInfo/type").and_then(Value::as_str) != Some("page") {
+            return None;
+        }
+        let session_id = event.pointer("/params/sessionId").and_then(Value::as_str)?;
+        if self.sessions.contains_key(session_id) {
+            return None;
+        }
+        self.sessions
+            .insert(session_id.to_string(), None);
+        Some(session_id.to_string())
+    }
+
+    fn observe(&mut self, event: &Value) {
+        match event.get("method").and_then(Value::as_str) {
+            Some("Target.attachedToTarget") => {
+                self.observe_attach(event);
+            }
+            Some("Target.detachedFromTarget") => {
+                if let Some(session_id) = event.pointer("/params/sessionId").and_then(Value::as_str)
+                {
+                    self.sessions.remove(session_id);
+                }
+            }
+            _ => {
+                let Some(session_id) = event.get("sessionId").and_then(Value::as_str) else {
+                    return;
+                };
+                // 未登记的会话（采集器等其他连接）一律忽略。
+                if !self.sessions.contains_key(session_id) {
+                    return;
+                }
+                match event.get("method").and_then(Value::as_str) {
+                    Some("Page.frameNavigated") => {
+                        if let Some(frame) = event.pointer("/params/frame") {
+                            if frame.get("parentId").is_none() {
+                                self.observe_main_frame(session_id, frame);
+                            }
+                        }
+                    }
+                    Some("Page.navigatedWithinDocument") => {
+                        let main_frame_id = self
+                            .sessions
+                            .get(session_id)
+                            .and_then(Option::as_deref);
+                        if let Some(main_frame_id) = main_frame_id {
+                            if event.pointer("/params/frameId").and_then(Value::as_str)
+                                == Some(main_frame_id)
+                            {
+                                self.observe_url(event.pointer("/params/url").and_then(Value::as_str));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn observe_main_frame(&mut self, session_id: &str, frame: &Value) {
         if let Some(id) = frame
             .get("id")
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
         {
-            self.main_frame_id = Some(id.to_string());
+            if let Some(tracked) = self.sessions.get_mut(session_id) {
+                *tracked = Some(id.to_string());
+            }
             self.observe_url(frame.get("url").and_then(Value::as_str));
         }
     }
@@ -783,6 +828,42 @@ impl LogoutDetector {
             self.detected = true;
         }
     }
+}
+
+/// 登出监听的观察步进：把事件喂给 detector；遇到新接管的标签页时为它启用
+/// `Page` 域并播种 frame tree，保证该标签页从一开始的导航就被看到。
+async fn process_watch_event(
+    socket: &mut ManagedSocket,
+    detector: &mut LogoutDetector,
+    event: &Value,
+) -> Result<(), ManagedCdpError> {
+    let newly_attached = detector.observe_attach(event);
+    detector.observe(event);
+    let Some(session_id) = newly_attached else {
+        return Ok(());
+    };
+    send_command_observing(
+        socket,
+        next_command_id(),
+        "Page.enable",
+        json!({}),
+        Some(&session_id),
+        |event| detector.observe(event),
+    )
+    .await?;
+    let tree = send_command_observing(
+        socket,
+        next_command_id(),
+        "Page.getFrameTree",
+        json!({}),
+        Some(&session_id),
+        |event| detector.observe(event),
+    )
+    .await?;
+    if let Some(frame) = tree.pointer("/frameTree/frame") {
+        detector.observe_main_frame(&session_id, frame);
+    }
+    Ok(())
 }
 
 /// Owns an independent, already-subscribed CDP connection. Setup completes
@@ -799,9 +880,6 @@ impl LogoutWatch {
             if self.detector.detected {
                 return Ok(true);
             }
-            if self.detector.detached {
-                return Ok(false);
-            }
             let Some(frame) = self.socket.next().await else {
                 return Ok(false);
             };
@@ -809,7 +887,7 @@ impl LogoutWatch {
                 Message::Text(text) => {
                     let event: Value = serde_json::from_str(&text)
                         .map_err(|_| ManagedCdpError::InvalidResponse)?;
-                    self.detector.observe(&event);
+                    process_watch_event(&mut self.socket, &mut self.detector, &event).await?;
                 }
                 Message::Close(_) => return Ok(false),
                 _ => {}
@@ -825,98 +903,109 @@ pub(crate) async fn prepare_logout_watch(
     let Some(policy) = LogoutPolicy::for_platform(&session.target_url) else {
         return Ok(None);
     };
-    prepare_logout_watch_with_policy(endpoint, &session.allowed_hosts, policy)
+    prepare_logout_watch_with_policy(endpoint, policy)
         .await
         .map(Some)
 }
 
 async fn prepare_logout_watch_with_policy(
     endpoint: &DevToolsEndpoint,
-    allowed_hosts: &[String],
     policy: LogoutPolicy,
 ) -> Result<LogoutWatch, ManagedCdpError> {
     let mut socket = connect(endpoint).await?;
-    let target_id = {
-        // DevToolsActivePort can precede the first about:blank frame. Wait
-        // before navigation instead of silently losing the watch for this run.
-        let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
-        loop {
-            let targets = send_command(
-                &mut socket,
-                TARGETS_COMMAND_ID,
-                "Target.getTargets",
-                json!({}),
-                None,
-            )
-            .await?;
-            let selection = select_single_target(&targets, allowed_hosts);
-            let starting_page = targets
-                .get("targetInfos")
-                .and_then(Value::as_array)
-                .is_some_and(|targets| {
-                    let pages: Vec<_> = targets
-                        .iter()
-                        .filter(|target| target["type"] == "page")
-                        .collect();
-                    pages.is_empty() || (pages.len() == 1 && pages[0]["url"] == "")
-                });
-            match selection {
-                Ok(target_id) => break target_id,
-                Err(_) if starting_page && tokio::time::Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    };
-    let attach = send_command(
+    // 浏览器级 auto-attach：现存与之后新开/复制的标签页都会送来
+    // attachedToTarget。监听只观察事件并匹配固定登出地址，页面内容不出进程。
+    send_command(
         &mut socket,
-        ATTACH_COMMAND_ID,
-        "Target.attachToTarget",
-        json!({"targetId": target_id, "flatten": true}),
+        next_command_id(),
+        "Target.setAutoAttach",
+        json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
         None,
     )
     .await?;
-    let attached_session = attach
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .ok_or(ManagedCdpError::InvalidResponse)?
-        .to_string();
-    let mut detector = LogoutDetector {
-        policy,
-        session_id: attached_session.clone(),
-        main_frame_id: None,
-        detected: false,
-        detached: false,
-    };
-    send_command_observing(
+    let mut detector = LogoutDetector::new(policy);
+    // 再把当前已存在的页面逐个显式接管，保证注入/导航开始前监听已就位
+    // （首个 about:blank 页在 DevToolsActivePort 出现时就已存在）。
+    let targets = send_command(
         &mut socket,
-        PAGE_ENABLE_COMMAND_ID,
-        "Page.enable",
+        next_command_id(),
+        "Target.getTargets",
         json!({}),
-        Some(&attached_session),
-        |event| detector.observe(event),
+        None,
     )
     .await?;
-    let tree = send_command_observing(
-        &mut socket,
-        FRAME_TREE_COMMAND_ID,
-        "Page.getFrameTree",
-        json!({}),
-        Some(&attached_session),
-        |event| detector.observe(event),
-    )
-    .await?;
-    let frame = tree
-        .pointer("/frameTree/frame")
-        .ok_or(ManagedCdpError::InvalidResponse)?;
-    detector.observe_main_frame(frame);
-    if detector.main_frame_id.is_none() {
-        return Err(ManagedCdpError::InvalidResponse);
+    let page_ids: Vec<String> = targets
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .map(|infos| {
+            infos
+                .iter()
+                .filter(|target| target.get("type").and_then(Value::as_str) == Some("page"))
+                .filter_map(|target| {
+                    target
+                        .get("targetId")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for target_id in page_ids {
+        let attach = send_command(
+            &mut socket,
+            next_command_id(),
+            "Target.attachToTarget",
+            json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .await?;
+        let Some(session_id) = attach.get("sessionId").and_then(Value::as_str) else {
+            return Err(ManagedCdpError::InvalidResponse);
+        };
+        let attach_event = json!({
+            "method": "Target.attachedToTarget",
+            "params": {"sessionId": session_id, "targetInfo": {"type": "page"}},
+        });
+        process_watch_event(&mut socket, &mut detector, &attach_event).await?;
+    }
+    if !detector.has_tracked_session() {
+        // 冷启动连页面都还没创建：留在原地读事件，等 auto-attach 送来首个页面。
+        let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+        loop {
+            if detector.has_tracked_session() {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ManagedCdpError::Timeout);
+            }
+            let Some(frame) = socket.next().await else {
+                return Err(ManagedCdpError::Transport("调试通道在接管页面前关闭".into()));
+            };
+            let frame = frame.map_err(|error| ManagedCdpError::Transport(error.to_string()))?;
+            let Message::Text(text) = frame else {
+                continue;
+            };
+            let event: Value =
+                serde_json::from_str(&text).map_err(|_| ManagedCdpError::InvalidResponse)?;
+            process_watch_event(&mut socket, &mut detector, &event).await?;
+        }
     }
     Ok(LogoutWatch { socket, detector })
 }
 
+type ManagedSocket = WebSocketStream<TcpStream>;
+
+/// 命令自增 ID：登出监听会随标签页开合动态发送 Page.enable/getFrameTree，
+/// 不再使用固定序号。
+static NEXT_COMMAND_ID: AtomicI64 = AtomicI64::new(100);
+
+fn next_command_id() -> i64 {
+    NEXT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Cookie 注入仍要求“恰好一个页面目标”：多页面或陌生域名页面的环境直接拒绝
+/// 注入，防止把会话 Cookie 装进不受信页面。登出监听不受此限制——它只观察。
 fn select_single_target(
     result: &Value,
     allowed_hosts: &[String],
@@ -961,8 +1050,6 @@ fn select_single_target(
     }
     Ok(target_id.to_string())
 }
-
-type ManagedSocket = WebSocketStream<TcpStream>;
 
 async fn connect(endpoint: &DevToolsEndpoint) -> Result<ManagedSocket, ManagedCdpError> {
     let stream = timeout(
@@ -1218,19 +1305,28 @@ mod tests {
     }
 
     fn logout_detector() -> LogoutDetector {
-        LogoutDetector {
-            policy: LogoutPolicy::for_platform("https://agent.oceanengine.com/").unwrap(),
-            session_id: "attached".into(),
-            main_frame_id: Some("main".into()),
-            detected: false,
-            detached: false,
-        }
+        let mut detector = LogoutDetector::new(
+            LogoutPolicy::for_platform("https://agent.oceanengine.com/").unwrap(),
+        );
+        detector.observe(&json!({
+            "method": "Target.attachedToTarget",
+            "params": {"sessionId": "attached", "targetInfo": {"type": "page"}},
+        }));
+        detector
+    }
+
+    fn attach(detector: &mut LogoutDetector, session_id: &str) {
+        detector.observe(&json!({
+            "method": "Target.attachedToTarget",
+            "params": {"sessionId": session_id, "targetInfo": {"type": "page"}},
+        }));
     }
 
     #[test]
-    fn logout_detector_rejects_subframes_and_other_attached_targets() {
+    fn logout_detector_ignores_untracked_sessions_then_tracks_new_tabs() {
         let url = "https://sso.oceanengine.com/account/page/service/sso_logout";
         let mut detector = logout_detector();
+        // 未登记会话（如采集器等其他连接）与子 frame、同文档子 frame 一律忽略。
         for event in [
             json!({"method": "Page.frameNavigated", "sessionId": "other",
                    "params": {"frame": {"id": "main", "url": url}}}),
@@ -1245,6 +1341,15 @@ mod tests {
         detector.observe(
             &json!({"method": "Page.frameNavigated", "sessionId": "attached",
                                 "params": {"frame": {"id": "main", "url": url}}}),
+        );
+        assert!(detector.detected);
+
+        // 复制/新开的标签页登记后同样是主战场：另一个标签页登出也必须命中。
+        let mut detector = logout_detector();
+        attach(&mut detector, "duplicated");
+        detector.observe(
+            &json!({"method": "Page.frameNavigated", "sessionId": "duplicated",
+                                "params": {"frame": {"id": "dup-main", "url": url}}}),
         );
         assert!(detector.detected);
     }
@@ -1270,12 +1375,29 @@ mod tests {
     }
 
     #[test]
-    fn detached_watch_is_not_a_logout() {
+    fn detached_tab_is_dropped_and_stops_being_observed() {
+        let url = "https://sso.oceanengine.com/account/page/service/sso_logout";
         let mut detector = logout_detector();
         detector.observe(&json!({"method": "Target.detachedFromTarget",
                                 "params": {"sessionId": "attached"}}));
-        assert!(detector.detached);
+        assert!(!detector.has_tracked_session());
+        detector.observe(
+            &json!({"method": "Page.frameNavigated", "sessionId": "attached",
+                                "params": {"frame": {"id": "main", "url": url}}}),
+        );
         assert!(!detector.detected);
+    }
+
+    #[test]
+    fn non_page_targets_are_never_tracked() {
+        let mut detector = LogoutDetector::new(
+            LogoutPolicy::for_platform("https://agent.oceanengine.com/").unwrap(),
+        );
+        detector.observe(&json!({
+            "method": "Target.attachedToTarget",
+            "params": {"sessionId": "worker", "targetInfo": {"type": "service_worker"}},
+        }));
+        assert!(!detector.has_tracked_session());
     }
 
     #[test]
@@ -1326,9 +1448,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-            let mut targets_read = 0;
             for method in [
-                "Target.getTargets",
+                "Target.setAutoAttach",
                 "Target.getTargets",
                 "Target.attachToTarget",
                 "Page.enable",
@@ -1341,9 +1462,7 @@ mod tests {
                 assert_eq!(command["method"], method);
                 let result = match method {
                     "Target.getTargets" => {
-                        targets_read += 1;
-                        let url = if targets_read == 1 { "" } else { "about:blank" };
-                        json!({"targetInfos": [{"targetId": "page", "type": "page", "url": url}]})
+                        json!({"targetInfos": [{"targetId": "page", "type": "page", "url": "about:blank"}]})
                     }
                     "Target.attachToTarget" => json!({"sessionId": "attached"}),
                     "Page.getFrameTree" => {
@@ -1352,6 +1471,7 @@ mod tests {
                     _ => json!({}),
                 };
                 if method == "Page.enable" {
+                    // 在回执之前就推登出事件：监听必须保留并识别它。
                     ws.send(Message::Text(json!({"method": "Page.frameNavigated", "sessionId": "attached",
                         "params": {"frame": {"id": "main", "url": "https://sso.oceanengine.com/account/page/service/sso_logout"}}
                     }).to_string().into())).await.unwrap();
@@ -1364,6 +1484,82 @@ mod tests {
                 .await
                 .unwrap();
             }
+        });
+        let session = validate_session(serde_json::from_value(session_json()).unwrap()).unwrap();
+        let watch = prepare_logout_watch(&endpoint, &session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(watch.wait().await.unwrap());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicated_tab_logout_triggers_the_watch() {
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = DevToolsEndpoint {
+            port: listener.local_addr().unwrap().port(),
+            browser_path: "/devtools/browser/duplicate-test".into(),
+        };
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            for method in [
+                "Target.setAutoAttach",
+                "Target.getTargets",
+                "Target.attachToTarget",
+                "Page.enable",
+                "Page.getFrameTree",
+            ] {
+                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
+                    panic!("expected command");
+                };
+                let command: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(command["method"], method);
+                let result = match method {
+                    "Target.getTargets" => {
+                        json!({"targetInfos": [{"targetId": "page", "type": "page", "url": "about:blank"}]})
+                    }
+                    "Target.attachToTarget" => json!({"sessionId": "first"}),
+                    "Page.getFrameTree" => {
+                        json!({"frameTree": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/workbench"}}})
+                    }
+                    _ => json!({}),
+                };
+                ws.send(Message::Text(
+                    json!({"id": command["id"], "result": result}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            }
+            // 用户复制标签页：auto-attach 送来第二个页面会话。
+            ws.send(Message::Text(json!({
+                "method": "Target.attachedToTarget",
+                "params": {"sessionId": "dup", "targetInfo": {"type": "page"}}
+            }).to_string().into())).await.unwrap();
+            // 复制页登出：必须同样命中。
+            for method in ["Page.enable", "Page.getFrameTree"] {
+                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
+                    panic!("expected {method}");
+                };
+                let command: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(command["method"], method);
+                assert_eq!(command["sessionId"], "dup");
+                let result = if method == "Page.getFrameTree" {
+                    json!({"frameTree": {"frame": {"id": "dup-main", "url": "https://agent.oceanengine.com/workbench"}}})
+                } else {
+                    json!({})
+                };
+                ws.send(Message::Text(
+                    json!({"id": command["id"], "result": result}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            }
+            ws.send(Message::Text(json!({"method": "Page.frameNavigated", "sessionId": "dup",
+                "params": {"frame": {"id": "dup-main", "url": "https://sso.oceanengine.com/account/page/service/sso_logout"}}
+            }).to_string().into())).await.unwrap();
         });
         let session = validate_session(serde_json::from_value(session_json()).unwrap()).unwrap();
         let watch = prepare_logout_watch(&endpoint, &session)

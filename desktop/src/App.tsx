@@ -99,6 +99,7 @@ function MainLayout() {
     let active = true;
     let unlistenFn: (() => void) | undefined;
     let unlistenExpiredFn: (() => void) | undefined;
+    let unlistenRecoveredFn: (() => void) | undefined;
 
     void tauriBridge
       .getStatus()
@@ -182,10 +183,54 @@ function MainLayout() {
         // A failed event subscription must not create an unhandled rejection.
       });
 
+    // 服务端自动登录完成：刷新配置后按当前本机偏好自动重新打开托管浏览器。
+    tauriBridge
+      .onManagedSessionRecovered((payload) => {
+        if (!active) return;
+        if (!payload.recovered) {
+          error("自动恢复登录未完成", payload.detail || "请联系管理员检查账号凭据");
+          void syncDesktopConfig(false);
+          return;
+        }
+        info("托管登录已自动恢复", "正在重新打开该平台的托管浏览器");
+        void (async () => {
+          try {
+            await syncDesktopConfig(false);
+            let proxyStored = true;
+            let sandboxStored = true;
+            try {
+              proxyStored = localStorage.getItem("vestus-desktop-proxy-enabled") !== "false";
+              sandboxStored = localStorage.getItem("vestus-desktop-sandbox-enabled") !== "false";
+            } catch {
+              // 读不到本机偏好时使用默认值（代理 + 沙箱）。
+            }
+            await tauriBridge.openBrowser(
+              payload.platformId,
+              payload.managedAccountId,
+              !proxyStored,
+              !sandboxStored,
+            );
+            if (active) success("托管浏览器已恢复", "已用新的登录状态重新打开平台");
+          } catch (reopenError) {
+            if (active) {
+              error("自动恢复后重新打开失败", reopenError instanceof Error ? reopenError.message : "请手动重新打开平台");
+            }
+          }
+        })();
+      })
+      .then((unlisten) => {
+        if (active) unlistenRecoveredFn = unlisten;
+        else unlisten();
+      })
+      .catch(() => {
+        // A failed event subscription must not create an unhandled rejection.
+      });
+
     return () => {
       active = false;
       if (unlistenFn) unlistenFn();
       if (unlistenExpiredFn) unlistenExpiredFn();
+      if (unlistenRecoveredFn) unlistenRecoveredFn();
     };
   }, [desktopRuntime, authReady, currentUser?.id]);
 

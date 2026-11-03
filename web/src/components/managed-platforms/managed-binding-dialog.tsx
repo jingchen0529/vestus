@@ -78,8 +78,10 @@ export function ManagedBindingDialog({
   const [source, setSource] = useState<BindingSource>(onCreateAccount ? "create" : "existing");
   const [selectedAccountId, setSelectedAccountId] = useState("");
   const [accountName, setAccountName] = useState("");
-  const [authMode, setAuthMode] = useState<UserManagedAuthMode>("cookie");
+  const [authMode, setAuthMode] = useState<UserManagedAuthMode>("server_login");
   const [username, setUsername] = useState("");
+  const originalUsername = useRef("");
+  const [hasPassword, setHasPassword] = useState(false);
   const [password, setPassword] = useState("");
   const [cookieJson, setCookieJson] = useState("");
 
@@ -88,6 +90,9 @@ export function ManagedBindingDialog({
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const candidates = bindableAccounts(availableAccounts, allBindings, Number(selectedUserId));
+  // 回调身份不稳定（父组件每次渲染都传新函数）：放进 ref，避免表单被反复重置。
+  const getDetailRef = useRef(onGetAccountDetail);
+  getDetailRef.current = onGetAccountDetail;
 
   // 初始化与重置表单
   useEffect(() => {
@@ -101,6 +106,8 @@ export function ManagedBindingDialog({
       return;
     }
     setDetailError(false);
+    originalUsername.current = "";
+    setHasPassword(false);
     setSelectedAccountId("");
     setSource(onCreateAccount ? "create" : "existing");
 
@@ -115,15 +122,18 @@ export function ManagedBindingDialog({
       setPassword("");
       setCookieJson("");
 
-      if (onGetAccountDetail) {
+      const loadDetail = getDetailRef.current;
+      if (loadDetail) {
         setDetailLoading(true);
-        onGetAccountDetail(bindingToEdit.userId, bindingToEdit.managedAccountId)
+        loadDetail(bindingToEdit.userId, bindingToEdit.managedAccountId)
           .then((detail) => {
             if (!active) return;
             if (detail.name) setAccountName(detail.name);
             if (detail.authMode) setAuthMode(detail.authMode);
-            if (detail.username) setUsername(detail.username);
-            if (detail.password) setPassword(detail.password);
+            originalUsername.current = detail.username || "";
+            setUsername(detail.username || "");
+            setHasPassword(Boolean(detail.hasPassword));
+            setPassword("");
             if (detail.cookieBundle && detail.cookieBundle.length > 0) {
               setCookieJson(JSON.stringify(detail.cookieBundle, null, 2));
             }
@@ -143,14 +153,15 @@ export function ManagedBindingDialog({
       // 新增模式
       setSelectedUserId("");
       setAccountName("");
-      setAuthMode("cookie");
+      setAuthMode("server_login");
       setUsername("");
       setPassword("");
       setCookieJson("");
       setDetailLoading(false);
     }
     return () => { active = false; };
-  }, [open, bindingToEdit, onGetAccountDetail]);
+    // 只在打开/切换编辑目标时重置表单；父组件轮询刷新不能清掉正在输入的内容。
+  }, [open, bindingToEdit]);
 
   // 当选择的用户变更时，自动生成推荐的账号别名
   const handleUserChange = (userIdStr: string) => {
@@ -219,8 +230,13 @@ export function ManagedBindingDialog({
         authMode,
       };
       if (authMode === "server_login") {
-        if (parsedPayload.username) updatePayload.username = parsedPayload.username;
+        if (!parsedPayload.username || (!hasPassword && !parsedPayload.password)) {
+          toast.error("请输入邮箱和密码");
+          return;
+        }
+        if (parsedPayload.username !== originalUsername.current) updatePayload.username = parsedPayload.username;
         if (parsedPayload.password) updatePayload.password = parsedPayload.password;
+        updatePayload.autoRelogin = true;
       } else if (parsedPayload.cookieBundle && parsedPayload.cookieBundle.length > 0) {
         updatePayload.cookieBundle = parsedPayload.cookieBundle;
       }
@@ -481,6 +497,9 @@ export function ManagedBindingDialog({
               {/* 凭据内容 - 均单独一行 */}
               {authMode === "server_login" ? (
                 <>
+                  <p className="rounded-md bg-primary/5 p-3 text-xs text-muted-foreground">
+                    保存后系统自动登录并保存完整 Cookie；会话失效后自动重新登录，无需手动获取。密码已保存时留空即可保留。
+                  </p>
                   <div className="space-y-1.5">
                     <Label htmlFor="binding-dialog-username">方舟账号</Label>
                     <Input
@@ -497,11 +516,11 @@ export function ManagedBindingDialog({
                     <Label htmlFor="binding-dialog-password">方舟密码</Label>
                     <Input
                       id="binding-dialog-password"
-                      type="text"
+                      type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       autoComplete="off"
-                      placeholder={isEditing ? "留空保持不变" : "请输入密码"}
+                      placeholder={hasPassword ? "密码已保存，不修改请留空" : "请输入密码"}
                       className="bg-muted/40 hover:bg-muted/60 focus:bg-background border-border/80 text-xs transition-colors"
                       disabled={submitting}
                     />

@@ -1662,12 +1662,30 @@ def test_identity_check_endpoint_rejects_non_cookie_account(api: Any, monkeypatc
     account_id = payload(response)["id"]
     calls: list = []
     _install_probe(monkeypatch, _verified_probe(calls))
+    # 自动登录还没写回 Cookie：没有可校验的会话，直接拒绝且不发探测请求。
     checked = client.post(
         f"/api/admin/managed-platform-accounts/{account_id}/identity-check",
         headers=_bearer(admin_token),
     )
     assert checked.status_code == 400, checked.text
+    assert "还没有可校验的登录会话" in checked.text
     assert calls == []
+
+    # 自动登录成功后 Cookie 与 Cookie 模式同源：身份校验同样可用。
+    from sqlalchemy import text as sql_text
+
+    with module.db.session() as session:
+        session.execute(
+            sql_text("UPDATE managed_platform_account SET cookie_bundle = :bundle WHERE id = :id"),
+            {"bundle": '[{"name":"sessionid","value":"stored-cookie","domain":".example.test"}]', "id": account_id},
+        )
+    verified = client.post(
+        f"/api/admin/managed-platform-accounts/{account_id}/identity-check",
+        headers=_bearer(admin_token),
+    )
+    assert verified.status_code == 200, verified.text
+    assert payload(verified)["state"] == "verified"
+    assert len(calls) == 1
 
 
 def test_identity_check_endpoint_maps_unavailable_to_503(

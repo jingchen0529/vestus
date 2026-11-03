@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     login_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
     login_lock_minutes: int = DEFAULT_LOGIN_LOCK_MINUTES
     cookie_secure: bool = False
+    managed_recovery_enabled: bool = True
     cors_origins: str = DEFAULT_CORS_ORIGINS
 
     product_name: str = ""
@@ -122,7 +123,7 @@ class Settings(BaseSettings):
         assert info.field_name is not None
         return _positive_int(value, _TOLERANT_INT_DEFAULTS[info.field_name])
 
-    @field_validator("cookie_secure", mode="before")
+    @field_validator("cookie_secure", "managed_recovery_enabled", mode="before")
     @classmethod
     def _tolerant_flag(cls, value: Any) -> bool:
         if isinstance(value, bool):

@@ -72,6 +72,7 @@ export function buildManagedAccountPayload(
     payload.name = values.name.trim();
   }
   if (values.authMode === "server_login") {
+    payload.autoRelogin = true;
     if (values.username.trim()) payload.username = values.username.trim();
     if (values.password) payload.password = values.password;
   } else if (values.cookieJson.trim()) {
@@ -238,7 +239,7 @@ export function ManagedAccountBindingList({
                 {showActions && (
                   <TableCell className="py-3 pr-4 text-right whitespace-nowrap">
                     <div className="flex justify-end gap-1.5">
-                      {onCheckIdentity && resolvedAuthMode === "cookie" && (
+                      {onCheckIdentity && resolvedAuthMode !== "official_sso" && (
                         <Button
                           type="button"
                           variant="table-action"

@@ -29,7 +29,18 @@ export interface ManagedCookieInput {
   sourceScheme?: string;
 }
 
-export interface ManagedPlatformAccount {
+export type ManagedRecoveryStatus = "idle" | "pending" | "running" | "retry_wait" | "failed";
+
+export interface ManagedRecoveryState {
+  autoRelogin?: boolean;
+  recoveryStatus?: ManagedRecoveryStatus;
+  recoveryAttempts?: number;
+  nextRecoveryAt?: string | null;
+  lastRecoveredAt?: string | null;
+  lastError?: string | null;
+}
+
+export interface ManagedPlatformAccount extends ManagedRecoveryState {
   id: number;
   platformId: number;
   name: string;
@@ -55,6 +66,7 @@ export interface CreateManagedPlatformAccountPayload {
   authMode: ManagedAuthMode;
   username?: string;
   password?: string;
+  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
   allowedHosts?: string[];
   expiresAt?: string | null;
@@ -66,6 +78,7 @@ export interface UpdateManagedPlatformAccountPayload {
   authMode?: ManagedAuthMode;
   username?: string;
   password?: string;
+  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
   allowedHosts?: string[];
   expiresAt?: string | null;
@@ -80,7 +93,7 @@ export interface ManagedPlatformBinding {
   status: "active" | "revoked";
 }
 
-export interface UserManagedAccountBinding {
+export interface UserManagedAccountBinding extends ManagedRecoveryState {
   id: number;
   userId: number;
   platformId: number;
@@ -105,7 +118,7 @@ export interface ManagedAccountVerification {
   verification?: "verified";
 }
 
-export interface UserManagedPlatformAccount {
+export interface UserManagedPlatformAccount extends ManagedRecoveryState {
   id?: number;
   name?: string;
   platformId: number;
@@ -113,6 +126,8 @@ export interface UserManagedPlatformAccount {
   authMode: UserManagedAuthMode;
   username?: string | null;
   password?: string | null;
+  hasPassword?: boolean;
+  sessionStatus?: ManagedSessionStatus;
   cookieBundle?: ManagedCookieInput[] | null;
   expiresAt?: string | null;
   allowedHosts?: string[];
@@ -121,7 +136,7 @@ export interface UserManagedPlatformAccount {
 }
 
 /** 「绑定托管」总览页的一行：用户 × 托管账号绑定及其会话状态。 */
-export interface ManagedBindingItem {
+export interface ManagedBindingItem extends ManagedRecoveryState {
   bindingId: number;
   userId: number;
   username: string;
@@ -160,6 +175,7 @@ export interface UserManagedPlatformAccountPayload {
   authMode: UserManagedAuthMode;
   username?: string;
   password?: string;
+  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
 }
 
@@ -172,6 +188,7 @@ export interface UpdateUserManagedAccountPayload {
   authMode?: UserManagedAuthMode;
   username?: string;
   password?: string;
+  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
 }
 

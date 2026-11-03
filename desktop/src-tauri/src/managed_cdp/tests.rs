@@ -151,7 +151,7 @@ fn real_chromium_observes_immediate_redirect_and_same_document_logout() {
             let (_browser, endpoint) = launch_test_browser();
             let session = local_session(format!("{base}{path}"));
             let watch =
-                prepare_logout_watch_with_policy(&endpoint, &session.allowed_hosts, policy.clone())
+                prepare_logout_watch_with_policy(&endpoint, policy.clone())
                     .await
                     .unwrap();
             let waiter = tokio::spawn(watch.wait());

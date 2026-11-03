@@ -172,6 +172,14 @@ def managed_account_desktop_dict(
         "expiresAt": iso_datetime(account.expires_at),
         "remoteAccountId": account.remote_account_id,
         "remoteDisplayName": account.remote_display_name,
+        "credentialVersion": account.credential_version,
+        "sessionStatus": account.session_status,
+        "autoRelogin": bool(account.auto_relogin and account.auth_mode == "server_login"),
+        "recoveryStatus": account.recovery_status or "idle",
+        "recoveryAttempts": account.recovery_attempts or 0,
+        "nextRecoveryAt": iso_datetime(account.next_recovery_at),
+        "lastRecoveredAt": iso_datetime(account.last_recovered_at),
+        "lastError": account.last_error,
     }
 
 

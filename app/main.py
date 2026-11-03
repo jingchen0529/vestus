@@ -10,8 +10,10 @@ each one gets an isolated :class:`~app.db.session.Database`.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from http import HTTPStatus
-from typing import Any, Dict, List
+from typing import Any, AsyncIterator, Dict, List
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -85,7 +87,20 @@ def create_app(database: Database | None = None) -> FastAPI:
     """
     settings = validate_startup_settings()
 
-    app = FastAPI(title=API_TITLE, version=API_VERSION, description=API_DESCRIPTION)
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        from app.services.managed_recovery import ManagedRecoveryWorker
+
+        worker = ManagedRecoveryWorker(application.state.db) if settings.managed_recovery_enabled else None
+        if worker is not None:
+            worker.start()
+        try:
+            yield
+        finally:
+            if worker is not None:
+                await asyncio.to_thread(worker.stop)
+
+    app = FastAPI(title=API_TITLE, version=API_VERSION, description=API_DESCRIPTION, lifespan=lifespan)
     app.state.db = database if database is not None else Database()
 
     # Registration order is load bearing: Starlette makes the most recently

@@ -994,7 +994,7 @@ test("托管账号表单只保留认证方式和对应凭据", async () => {
       password: "ark-password",
       cookieJson: "",
     }),
-    { authMode: "server_login", username: "ark-user", password: "ark-password" },
+    { authMode: "server_login", autoRelogin: true, username: "ark-user", password: "ark-password" },
   );
   assert.deepEqual(
     dialogModule.buildManagedAccountPayload({

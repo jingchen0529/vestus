@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import secrets
 import threading
 import time
-import urllib.error
-import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -22,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.core.config import ConfigurationError
+from app.core.config import ConfigurationError, get_settings
 from app.core.security import decrypt_platform_value, encrypt_platform_value
 from app.db.base import iso_datetime, parse_datetime, utc_now
 from app.db.models import ManagedBrowserSession, ManagedPlatformAccount, ManagedPlatformBinding, Platform
@@ -31,7 +28,6 @@ from app.repositories import managed_platforms as managed_repo
 from app.repositories import platforms as platforms_repo
 from app.repositories import users as users_repo
 from app.services.audit import AuditContext, record
-from app.services.managed_identity import IdentityProbeOutcome, probe_remote_identity
 from app.services.errors import (
     BadRequestError,
     ConflictError,
@@ -39,6 +35,8 @@ from app.services.errors import (
     ManagedVerificationRequiredError,
     NotFoundError,
 )
+from app.services.managed_identity import IdentityProbeOutcome, probe_remote_identity
+from app.services.managed_recovery import cancel_recovery, queue_recovery, recovery_fields
 
 MANAGED_ACCOUNT_NOT_FOUND = "托管平台账号不存在"
 MANAGED_BINDING_NOT_FOUND = "该用户未绑定托管平台账号"
@@ -162,6 +160,7 @@ def _playwright_cookie(cookie: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _api_cookie(cookie: Mapping[str, Any]) -> Dict[str, Any]:
+    expires = cookie.get("expires")
     cookie = _canonical_cookie(cookie)
     result: Dict[str, Any] = {
         "name": cookie["name"],
@@ -173,7 +172,8 @@ def _api_cookie(cookie: Mapping[str, Any]) -> Dict[str, Any]:
     }
     if cookie.get("sameSite"):
         result["sameSite"] = cookie["sameSite"]
-    expires = cookie.get("expires")
+    if cookie.get("expiresAt"):
+        result["expiresAt"] = cookie["expiresAt"]
     if expires and float(expires) > 0:
         value = datetime.fromtimestamp(float(expires), timezone.utc).replace(tzinfo=None)
         result["expiresAt"] = iso_datetime(value)
@@ -231,13 +231,7 @@ def _same_site_host(value: str, platform_url: str) -> bool:
 
 
 class PlaywrightManagedLoginProvider:
-    """Generic Playwright verifier for a configured managed Chromium binary.
-
-    It deliberately does not contain Ark-specific selectors or anti-bot
-    bypasses.  If the upstream page presents a login, captcha, MFA or another
-    unknown flow, the result is ``needs_manual_verification`` and no cookie is
-    persisted by the service.
-    """
+    """Headless login with an explicit Ark adapter and generic cookie verification."""
 
     def __init__(self, executable_path: Optional[str] = None, timeout_ms: int = 30_000):
         self.executable_path = executable_path
@@ -319,6 +313,11 @@ class PlaywrightManagedLoginProvider:
             expiry_error = _cookie_expiry_error(cookie_bundle)
             if expiry_error:
                 return ManagedLoginResult("invalid", [], f"Cookie 校验失败：{expiry_error}")
+        if auth_mode == "server_login":
+            from app.services.managed_ark_login import supports_ark_login
+
+            if not supports_ark_login(platform_url):
+                return ManagedLoginResult("unsupported", [], "自动登录目前仅支持巨量引擎方舟")
         executable_path = self._path()
         try:
             from playwright.sync_api import sync_playwright
@@ -334,6 +333,7 @@ class PlaywrightManagedLoginProvider:
                 )
                 try:
                     context: Any = browser.new_context()
+                    context.set_default_timeout(self.timeout_ms)
                     if auth_mode == "cookie":
                         context.add_cookies([_playwright_cookie(item) for item in cookie_bundle])
                     page = context.new_page()
@@ -355,29 +355,13 @@ class PlaywrightManagedLoginProvider:
                         timeout=self.timeout_ms,
                     )
                     if auth_mode == "server_login":
-                        password_input = page.locator('input[type="password"]').first
-                        if password_input.count() == 0:
-                            return ManagedLoginResult(
-                                "needs_manual_verification", [], "页面没有可识别的密码输入框"
-                            )
-                        username_input = page.locator(
-                            'input[type="email"], input[type="text"]'
-                        ).first
-                        if username_input.count() == 0:
-                            return ManagedLoginResult(
-                                "needs_manual_verification", [], "页面没有可识别的账号输入框"
-                            )
-                        username_input.fill(username or "")
-                        password_input.fill(password or "")
-                        submit = page.locator('button[type="submit"]').first
-                        if submit.count() == 0:
-                            submit = page.locator("button").first
-                        if submit.count() == 0:
-                            return ManagedLoginResult(
-                                "needs_manual_verification", [], "页面没有可识别的登录按钮"
-                            )
-                        submit.click()
-                        page.wait_for_timeout(1_000)
+                        from app.services.managed_ark_login import login_ark
+
+                        result = login_ark(page, context, username or "", password or "", self.timeout_ms)
+                        return ManagedLoginResult(
+                            result.status, [_api_cookie(cookie) for cookie in result.cookie_bundle],
+                            result.detail, result.remote_account_id, result.remote_display_name,
+                        )
                     # domcontentloaded 不代表 SPA 已渲染；立即判定会拿到空文本，
                     # 把未渲染的未登录页误判成已登录。等页面出内容再判。
                     page.wait_for_timeout(2_000)
@@ -492,6 +476,7 @@ def _account_dict(item: ManagedPlatformAccount) -> Dict[str, Any]:
         "createdBy": item.created_by,
         "createdAt": iso_datetime(item.created_at),
         "updatedAt": iso_datetime(item.updated_at),
+        **recovery_fields(item),
     }
 
 
@@ -532,6 +517,8 @@ def _binding_dict(
         "remoteDisplayName": account.remote_display_name,
         "identityCheckedAt": iso_datetime(account.identity_checked_at),
         "lastVerifiedAt": iso_datetime(account.last_verified_at),
+        "lastError": account.last_error,
+        **recovery_fields(account),
     }
 
 
@@ -544,6 +531,7 @@ def _account_detail_dict(
         "platformName": platform_name or "方舟",
         "username": username,
         "password": password,
+        "hasPassword": bool(password),
         "cookieBundle": cookies,
     }
 
@@ -554,6 +542,23 @@ def _credential_values(item: ManagedPlatformAccount) -> tuple[Optional[str], Opt
     username = _decrypt_platform_secret(item.encrypted_username) if item.encrypted_username else None
     password = _decrypt_platform_secret(item.encrypted_password) if item.encrypted_password else None
     return username, password, _parse_cookie_bundle(item.encrypted_cookie_bundle)
+
+
+def _configure_recovery(
+    account: ManagedPlatformAccount, values: Dict[str, Any], *, credentials_changed: bool = False, new: bool = False
+) -> None:
+    was_enabled = bool(account.auto_relogin)
+    if not get_settings().managed_recovery_enabled or account.auth_mode != "server_login":
+        account.auto_relogin = False
+    elif values.get("auto_relogin") is not None:
+        account.auto_relogin = bool(values["auto_relogin"])
+    elif new or (credentials_changed and values.get("auth_mode") == "server_login"):
+        account.auto_relogin = True
+    if not account.auto_relogin or account.status != "active":
+        cancel_recovery(account)
+    elif credentials_changed or new or not was_enabled:
+        cancel_recovery(account)
+        queue_recovery(account, reset=True)
 
 
 def _require_platform(session: Any, platform_id: int) -> Platform:
@@ -655,11 +660,9 @@ def _session_probe_cache_store(account_id: int, credential_version: int, status:
 
 
 def refresh_session_statuses(database: Database, user_id: int | str) -> None:
-    """桌面端拉取配置前单向收紧会话状态：valid -> expired，永不自动恢复。
+    """探测已分发会话；确定失效才收紧状态并为密码托管账号排队恢复。
 
-    失效只能由管理员保存新凭据（那时重新探测）或客户端上报触发；探测不可达、
-    平台变更响应结构等情况一律保持现状，绝不据此把有效会话标成失效。
-    每个确定结论按 (账号, 凭据版本) 缓存，避免每次同步都请求上游。
+    网络失败保持现状，每个确定结论按账号和凭据版本缓存。
     """
     with database.session() as session:
         if users_repo.get_active(session, user_id) is None:
@@ -677,7 +680,7 @@ def refresh_session_statuses(database: Database, user_id: int | str) -> None:
                 ManagedPlatformBinding.status == "active",
                 ManagedPlatformAccount.status == "active",
                 ManagedPlatformAccount.session_status == "valid",
-                ManagedPlatformAccount.auth_mode == "cookie",
+                ManagedPlatformAccount.auth_mode.in_(("cookie", "server_login")),
                 ManagedPlatformAccount.cookie_bundle.isnot(None),
                 ManagedPlatformBinding.platform_id == Platform.id,
                 Platform.status == "active",
@@ -708,7 +711,7 @@ def refresh_session_statuses(database: Database, user_id: int | str) -> None:
         if status != "expired":
             continue
         with _managed_transaction(database) as session:
-            managed_repo.expire_account_session(
+            applied = managed_repo.expire_account_session(
                 session,
                 account_id=account_id,
                 platform_id=platform_id,
@@ -717,6 +720,10 @@ def refresh_session_statuses(database: Database, user_id: int | str) -> None:
                 now=utc_now(),
                 last_error="自动校验：上游会话已失效",
             )
+            if applied:
+                expired = managed_repo.get_account_for_update(session, account_id)
+                if expired is not None:
+                    queue_recovery(expired)
 
 
 def list_accounts(database: Database) -> List[Dict[str, Any]]:
@@ -744,7 +751,9 @@ def create_account(
     with database.session() as session:
         platform = _require_platform(session, int(values["platform_id"]))
         identity_outcome = (
-            _probe_cookie_credentials(platform, cookies) if auth_mode == "cookie" else None
+            _probe_cookie_credentials(platform, list(cookies or []))
+            if auth_mode == "cookie"
+            else None
         )
         try:
             item = ManagedPlatformAccount(
@@ -761,6 +770,7 @@ def create_account(
                 created_by=values.get("created_by"),
             )
             _apply_identity_outcome(item, identity_outcome)
+            _configure_recovery(item, values, new=True)
             session.add(item)
             session.flush()
         except IntegrityError as exc:
@@ -793,7 +803,7 @@ def update_account(
         credential_changed = False
         if "name" in values:
             item.name = str(values["name"]).strip()
-        if "auth_mode" in values:
+        if values.get("auth_mode") is not None and values["auth_mode"] != item.auth_mode:
             item.auth_mode = values["auth_mode"]
             # Changing the source of credentials invalidates any cached
             # session from the previous mode; never reuse it silently.
@@ -861,6 +871,7 @@ def update_account(
                 _apply_identity_outcome(
                     item, _probe_cookie_credentials(platform, _credential_values(item)[2])
                 )
+        _configure_recovery(item, values, credentials_changed=credential_changed)
         try:
             session.flush()
         except IntegrityError as exc:
@@ -895,6 +906,8 @@ def delete_account(
         item.password = None
         item.username = None
         item.last_error = "管理员已撤销"
+        item.auto_relogin = False
+        cancel_recovery(item)
         record(
             session,
             audit,
@@ -920,12 +933,19 @@ def check_account_identity(
         item = managed_repo.get_account_for_update(session, account_id)
         if item is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
-        if item.auth_mode != "cookie":
-            raise BadRequestError("仅 Cookie 模式的托管账号支持在线校验登录态")
+        if item.auth_mode not in {"cookie", "server_login"}:
+            raise BadRequestError("该托管账号不支持在线校验登录态")
         platform = platforms_repo.get(session, item.platform_id)
         if platform is None:
             raise NotFoundError(MANAGED_PLATFORM_NOT_FOUND)
-        outcome = _identity_probe(platform.url, _credential_values(item)[2])
+        # 服务端登录成功后 Cookie 与 Cookie 模式存放在同一字段，探测逻辑完全一致；
+        # 还没有登录会话（自动登录未完成）时才拒绝。
+        cookies = _credential_values(item)[2]
+        if not cookies:
+            raise BadRequestError(
+                "该账号还没有可校验的登录会话，请等待自动登录完成或导入 Cookie"
+            )
+        outcome = _identity_probe(platform.url, cookies)
         if outcome is None:
             raise BadRequestError("该平台暂不支持在线校验登录态（Cookie 需包含 sessionid）")
         now = utc_now()
@@ -936,9 +956,13 @@ def check_account_identity(
             item.last_verified_at = now
             item.session_status = "valid"
             item.last_error = None
+            cancel_recovery(item)
         elif outcome.state == "invalid":
+            if item.session_status != "expired":
+                item.credential_version = int(item.credential_version) + 1
             item.session_status = "expired"
             item.last_error = outcome.detail or "上游登录态已失效"
+            queue_recovery(item)
         else:
             raise ManagedProviderUnavailableError(
                 f"managed_identity_probe_unavailable: {outcome.detail or '登录态校验请求失败'}"
@@ -1170,6 +1194,7 @@ def create_user_bound_account(
                 created_by=audit.actor_id if audit else None,
             )
             _apply_identity_outcome(account, identity_outcome)
+            _configure_recovery(account, values, new=True)
             session.add(account)
             session.flush()
         except IntegrityError as exc:
@@ -1283,6 +1308,7 @@ def update_user_bound_account(
                 account, _probe_cookie_credentials(platform, _credential_values(account)[2])
             )
 
+        _configure_recovery(account, values, credentials_changed=credential_changed)
         try:
             session.flush()
         except IntegrityError as exc:
@@ -1358,6 +1384,7 @@ def upsert_user_account(
                 created_by=audit.actor_id if audit else None,
             )
             _apply_identity_outcome(account, identity_outcome)
+            _configure_recovery(account, values, new=True)
             session.add(account)
             session.flush()
             binding = ManagedPlatformBinding(
@@ -1393,6 +1420,7 @@ def upsert_user_account(
                 _apply_identity_outcome(
                     account, _probe_cookie_credentials(platform, list(cookies or []))
                 )
+            _configure_recovery(account, values, credentials_changed=True)
             session.flush()
         result = _account_detail_dict(account, platform_name=platform.name)
         record(
@@ -1475,6 +1503,7 @@ def _mark_cookie_session_invalid(
             item.session_status = "expired"
             item.credential_version = int(item.credential_version) + 1
         item.last_error = detail
+        queue_recovery(item)
 
 
 
@@ -1504,7 +1533,9 @@ def _load_bootstrap_context(
         if account.status != "active" or (account.expires_at is not None and account.expires_at <= utc_now()):
             raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
         if account.session_status == "expired":
-            raise ConflictError(MANAGED_ACCOUNT_SESSION_EXPIRED)
+            if account.auto_relogin and account.recovery_status in {"idle", "pending", "running", "retry_wait"}:
+                raise ConflictError("托管账号正在自动恢复登录，请稍后重试")
+            raise ConflictError(account.last_error or MANAGED_ACCOUNT_SESSION_EXPIRED)
         platform = _require_platform(session, platform_id)
         if platform.status != "active":
             raise ConflictError(MANAGED_PLATFORM_INACTIVE)
@@ -1533,6 +1564,7 @@ def issue_bootstrap(
     # otherwise every click would create another local profile for the same
     # managed account. Administrators explicitly verify/rotate credentials
     # when the upstream session needs refreshing.
+    reuse_identity_outcome: Optional[IdentityProbeOutcome] = None
     if not cookies:
         provider = provider or get_managed_login_provider()
         result = provider.verify(
@@ -1582,8 +1614,7 @@ def issue_bootstrap(
             account_version = fresh.credential_version
     else:
         account_version = account.credential_version
-        reuse_identity_outcome: Optional[IdentityProbeOutcome] = None
-        if account.auth_mode == "cookie":
+        if account.auth_mode in {"cookie", "server_login"}:
             # 复用已存 Cookie 时兜底探测：身份未知或结果超期才发起。
             # 明确失效则标记会话过期并拒发票据；探测本身失败不影响发放。
             identity_fresh = (
@@ -1603,7 +1634,9 @@ def issue_bootstrap(
                             and fresh.credential_version == account.credential_version
                         ):
                             fresh.session_status = "expired"
+                            fresh.credential_version = int(fresh.credential_version) + 1
                             fresh.last_error = reuse_identity_outcome.detail
+                            queue_recovery(fresh)
                     raise ConflictError(MANAGED_ACCOUNT_SESSION_EXPIRED)
     raw_token = secrets.token_urlsafe(32)
     now = utc_now()
@@ -1797,6 +1830,7 @@ def report_session_expired(
         if account is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
         if applied:
+            queue_recovery(account)
             record(
                 session,
                 audit,
@@ -1867,6 +1901,7 @@ def list_all_bindings(
                     "status": binding.status,
                     "accountStatus": account.status,
                     "sessionStatus": session_status,
+                    **recovery_fields(account),
                     "lastError": account.last_error,
                     "credentialVersion": account.credential_version,
                     "expiresAt": iso_datetime(account.expires_at),

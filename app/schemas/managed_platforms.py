@@ -72,6 +72,7 @@ class ManagedPlatformAccountCreate(BaseModel):
     auth_mode: str = Field(default="cookie", alias="authMode")
     username: Optional[str] = Field(default=None, max_length=256)
     password: Optional[str] = Field(default=None, max_length=512)
+    auto_relogin: Optional[bool] = Field(default=None, alias="autoRelogin", strict=True)
     cookie_bundle: Optional[List[ManagedCookie]] = Field(default=None, alias="cookieBundle", max_length=256)
     allowed_hosts: List[str] = Field(default_factory=list, alias="allowedHosts", max_length=64)
     expires_at: Optional[str] = Field(default=None, alias="expiresAt")
@@ -111,6 +112,7 @@ class ManagedPlatformAccountUpdate(BaseModel):
     auth_mode: Optional[str] = Field(default=None, alias="authMode")
     username: Optional[str] = Field(default=None, max_length=256)
     password: Optional[str] = Field(default=None, max_length=512)
+    auto_relogin: Optional[bool] = Field(default=None, alias="autoRelogin", strict=True)
     cookie_bundle: Optional[List[ManagedCookie]] = Field(default=None, alias="cookieBundle", max_length=256)
     allowed_hosts: Optional[List[str]] = Field(default=None, alias="allowedHosts", max_length=64)
     expires_at: Optional[str] = Field(default=None, alias="expiresAt")
@@ -158,6 +160,7 @@ class ManagedPlatformUserConfig(BaseModel):
     auth_mode: str = Field(alias="authMode")
     username: Optional[str] = Field(default=None, max_length=256)
     password: Optional[str] = Field(default=None, max_length=512)
+    auto_relogin: Optional[bool] = Field(default=None, alias="autoRelogin", strict=True)
     cookie_bundle: Optional[List[ManagedCookie]] = Field(default=None, alias="cookieBundle", max_length=256)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -206,6 +209,7 @@ class ManagedPlatformUserAccountUpdate(BaseModel):
     auth_mode: Optional[str] = Field(default=None, alias="authMode")
     username: Optional[str] = Field(default=None, max_length=256)
     password: Optional[str] = Field(default=None, max_length=512)
+    auto_relogin: Optional[bool] = Field(default=None, alias="autoRelogin", strict=True)
     cookie_bundle: Optional[List[ManagedCookie]] = Field(default=None, alias="cookieBundle", max_length=256)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 

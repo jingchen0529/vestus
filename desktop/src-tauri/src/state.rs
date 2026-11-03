@@ -569,16 +569,8 @@ mod tests {
                 icon_url: None,
                 sort_order: 0,
                 managed_accounts: vec![
-                    crate::config::ManagedAccountView {
-                        id: 9,
-                        name: "账号 A".into(),
-                        status: "active".into(),
-                    },
-                    crate::config::ManagedAccountView {
-                        id: 10,
-                        name: "账号 B".into(),
-                        status: "active".into(),
-                    },
+                    crate::config::ManagedAccountView::active(9, "账号 A"),
+                    crate::config::ManagedAccountView::active(10, "账号 B"),
                 ],
             }],
         );

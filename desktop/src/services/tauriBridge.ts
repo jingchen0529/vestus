@@ -12,6 +12,12 @@ export interface DesktopManagedAccount {
   id: number;
   name: string;
   status: "active" | "expired" | "revoked" | "invalid" | string;
+  credential_version?: number;
+  session_status?: "valid" | "expired";
+  auto_relogin?: boolean;
+  recovery_status?: "idle" | "pending" | "running" | "retry_wait" | "failed";
+  recovery_attempts?: number;
+  last_error?: string | null;
 }
 
 export interface DesktopConfigView {
@@ -58,6 +64,16 @@ export interface ManagedSessionExpiredEvent {
   applied: boolean;
   reported: boolean;
   browserClosed: boolean;
+  autoRelogin?: boolean;
+  recoveryStatus?: "idle" | "pending" | "running" | "retry_wait" | "failed";
+}
+
+export interface ManagedSessionRecoveredEvent {
+  platformId: number;
+  managedAccountId: number;
+  credentialVersion: number;
+  recovered: boolean;
+  detail?: string;
 }
 
 export interface BrowserProfileResetView {
@@ -147,6 +163,21 @@ export const tauriBridge = {
     const { listen } = await import("@tauri-apps/api/event");
     return await listen<ManagedSessionExpiredEvent>(
       "managed-session-expired",
+      (event) => {
+        callback(event.payload);
+      }
+    );
+  },
+
+  async onManagedSessionRecovered(
+    callback: (payload: ManagedSessionRecoveredEvent) => void
+  ): Promise<() => void> {
+    if (!isTauri()) {
+      throw new Error("该功能仅可在 Vestus 桌面客户端中使用");
+    }
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<ManagedSessionRecoveredEvent>(
+      "managed-session-recovered",
       (event) => {
         callback(event.payload);
       }

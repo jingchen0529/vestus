@@ -9,13 +9,22 @@ import {
   Store,
   Video,
 } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DesktopConfigView,
+  DesktopManagedAccount,
   DesktopPlatform,
   StatusView,
 } from "@/services/tauriBridge";
+
+// 自动登录恢复中的账号不再要求用户联系管理员：系统会自行恢复并重开浏览器。
+const isRecovering = (account?: DesktopManagedAccount | null): boolean =>
+  Boolean(
+    account?.auto_relogin &&
+      ["pending", "running", "retry_wait"].includes(account?.recovery_status || ""),
+  );
 
 interface PlatformLauncherProps {
   status: StatusView;
@@ -52,10 +61,13 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
     invalid: "账号不可用",
   };
 
-  // 统计失效账号数量，用于顶部强提示展示
+  // 统计失效账号数量（自动恢复中的账号不算，它们不需要人工处理）
   const expiredCount = platforms.reduce(
     (sum, platform) =>
-      sum + (platform.managed_accounts || []).filter((account) => account.status === "expired").length,
+      sum +
+      (platform.managed_accounts || []).filter(
+        (account) => account.status === "expired" && !isRecovering(account),
+      ).length,
     0,
   );
 
@@ -179,7 +191,8 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
           return accounts.map((account) => {
             const entryKey = account ? `${platform.id}:${account.id}` : String(platform.id);
             const launching = launchingPlatformKey === entryKey;
-            const isExpired = Boolean(account && account.status === "expired");
+            const recovering = isRecovering(account);
+            const isExpired = Boolean(account && account.status === "expired") && !recovering;
             const unavailable = Boolean(account && account.status !== "active");
             return (
               <button
@@ -217,7 +230,12 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
                     </h3>
                     {account && account.status !== "active" && (
                       <div className="flex items-center gap-1 mt-0.5">
-                        {isExpired ? (
+                        {recovering ? (
+                          <span className="text-xs font-medium text-primary flex items-center gap-1">
+                            <RefreshCw className="h-3 w-3 shrink-0 animate-spin" />
+                            正在自动恢复登录，完成后将自动重新打开
+                          </span>
+                        ) : isExpired ? (
                           <span className="text-xs font-medium text-destructive flex items-center gap-1">
                             <ShieldAlert className="h-3 w-3 shrink-0" />
                             登录状态已失效，请联系管理员或渠道客服
@@ -235,6 +253,11 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground group-hover:text-primary transition-colors shrink-0">
                   {launching ? (
                     <span className="text-xs text-primary animate-pulse">正在打开…</span>
+                  ) : recovering ? (
+                    <Badge variant="outline" className="gap-1 text-[11px] font-normal py-0.5 text-primary border-primary/40">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      <span>自动恢复中</span>
+                    </Badge>
                   ) : isExpired ? (
                     <Badge variant="destructive" className="gap-1 text-[11px] font-normal py-0.5">
                       <ShieldAlert className="h-3 w-3" />

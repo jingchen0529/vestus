@@ -295,6 +295,11 @@ pub(crate) struct ManagedSessionReportReceipt {
     pub(crate) session_status: String,
     pub(crate) credential_version: u64,
     pub(crate) applied: bool,
+    /// 服务端是否会对该账号自动重登；旧版本后端缺省 false。
+    #[serde(default)]
+    pub(crate) auto_relogin: bool,
+    #[serde(default)]
+    pub(crate) recovery_status: String,
 }
 
 #[derive(Default)]

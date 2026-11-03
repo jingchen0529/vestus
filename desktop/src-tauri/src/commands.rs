@@ -32,6 +32,10 @@ use crate::{adapter, upstream::UpstreamProxy};
 /// 同时也是令牌被吊销后收敛代理与浏览器的上限。查询本身只是一条带鉴权的快照
 /// 读取，10s 对服务端的成本可以忽略。
 const SESSION_WATCHDOG_INTERVAL: Duration = Duration::from_secs(10);
+/// 服务端自动登录恢复的等待节奏：3 秒轮询一次，最多等 3 分钟。
+const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const RECOVERY_WAIT_BUDGET: Duration = Duration::from_secs(180);
+const RECOVERY_MAX_NETWORK_ERRORS: u8 = 5;
 const NETWORK_IP_PATH: &str = "/api/network/ip";
 
 /// 开发期覆盖出口检测地址的环境变量。只在 debug 构建生效。
@@ -112,6 +116,26 @@ struct ManagedAccountWire {
     name: String,
     #[serde(default = "default_managed_account_status")]
     status: String,
+    #[serde(rename = "credentialVersion", default)]
+    credential_version: u64,
+    #[serde(rename = "sessionStatus", default = "default_managed_session_status")]
+    session_status: String,
+    #[serde(rename = "autoRelogin", default)]
+    auto_relogin: bool,
+    #[serde(rename = "recoveryStatus", default = "default_managed_recovery_status")]
+    recovery_status: String,
+    #[serde(rename = "recoveryAttempts", default)]
+    recovery_attempts: u32,
+    #[serde(rename = "lastError", default)]
+    last_error: Option<String>,
+}
+
+fn default_managed_session_status() -> String {
+    "valid".into()
+}
+
+fn default_managed_recovery_status() -> String {
+    "idle".into()
 }
 
 fn default_managed_account_status() -> String {
@@ -133,6 +157,12 @@ pub struct DesktopManagedAccountView {
     pub id: i64,
     pub name: String,
     pub status: String,
+    pub credential_version: u64,
+    pub session_status: String,
+    pub auto_relogin: bool,
+    pub recovery_status: String,
+    pub recovery_attempts: u32,
+    pub last_error: Option<String>,
 }
 
 /// Stable snake_case IPC result requested by the desktop frontend.
@@ -249,10 +279,33 @@ fn validate_desktop_config(
                     "invalid_desktop_config",
                 ));
             }
+            let recovery_status = account.recovery_status.trim().to_ascii_lowercase();
+            if !matches!(
+                recovery_status.as_str(),
+                "idle" | "pending" | "running" | "retry_wait" | "failed"
+            ) {
+                return Err(CommandError::new(
+                    "管理员下发的托管账号恢复状态无效",
+                    "invalid_desktop_config",
+                ));
+            }
+            let session_status = account.session_status.trim().to_ascii_lowercase();
+            if !matches!(session_status.as_str(), "valid" | "expired") {
+                return Err(CommandError::new(
+                    "管理员下发的托管账号会话状态无效",
+                    "invalid_desktop_config",
+                ));
+            }
             managed_accounts.push(ManagedAccountView {
                 id: account.id,
                 name: account_name,
                 status,
+                credential_version: account.credential_version,
+                session_status,
+                auto_relogin: account.auto_relogin,
+                recovery_status,
+                recovery_attempts: account.recovery_attempts,
+                last_error: account.last_error,
             });
         }
         platforms.push(DesktopPlatform {
@@ -314,6 +367,12 @@ fn platform_views(platforms: &[DesktopPlatform]) -> Vec<DesktopPlatformView> {
                     id: account.id,
                     name: account.name.clone(),
                     status: account.status.clone(),
+                    credential_version: account.credential_version,
+                    session_status: account.session_status.clone(),
+                    auto_relogin: account.auto_relogin,
+                    recovery_status: account.recovery_status.clone(),
+                    recovery_attempts: account.recovery_attempts,
+                    last_error: account.last_error.clone(),
                 })
                 .collect(),
         })
@@ -651,6 +710,97 @@ fn spawn_session_watchdog<R: Runtime>(
 
 fn auth_command_error(error: crate::auth::DesktopAuthError) -> CommandError {
     CommandError::new(error.message, error.code)
+}
+
+/// Poll the server config until the reported managed account is re-logged-in.
+///
+/// 只读拉取配置（不关闭浏览器、不重建代理），凭据仍只留在 Rust 内存。恢复
+/// 成功或确定失败后发一次 `managed-session-recovered`；前端据此自动重新打开。
+async fn wait_managed_recovery<R: Runtime>(
+    auth: DesktopAuthState,
+    app: AppHandle<R>,
+    user_id: i64,
+    auth_generation: u64,
+    platform_id: i64,
+    identity: managed_cdp::ManagedSessionIdentity,
+) {
+    let deadline = tokio::time::Instant::now() + RECOVERY_WAIT_BUDGET;
+    let mut network_errors = 0u8;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(RECOVERY_POLL_INTERVAL).await;
+        // 登录用户已变化（退出/换号）：旧 watcher 不得再发出恢复通知。
+        if !auth.current_identity().is_ok_and(|(current_user, _, generation)| {
+            current_user == user_id && generation == auth_generation
+        }) {
+            return;
+        }
+        let wire = match auth.fetch_desktop_config::<DesktopConfigWire>().await {
+            Ok(wire) => {
+                network_errors = 0;
+                wire
+            }
+            Err(error) if matches!(error.code.as_str(), "network" | "server") => {
+                network_errors += 1;
+                if network_errors >= RECOVERY_MAX_NETWORK_ERRORS {
+                    break;
+                }
+                continue;
+            }
+            Err(_) => return,
+        };
+        let Some(account) = wire
+            .platforms
+            .iter()
+            .find(|platform| platform.id == platform_id)
+            .and_then(|platform| {
+                platform
+                    .managed_accounts
+                    .iter()
+                    .find(|account| account.id as u64 == identity.managed_account_id)
+            })
+        else {
+            return;
+        };
+        if account.session_status == "valid" && account.credential_version > identity.credential_version
+        {
+            let _ = app.emit(
+                "managed-session-recovered",
+                serde_json::json!({
+                    "platformId": platform_id,
+                    "managedAccountId": identity.managed_account_id,
+                    "credentialVersion": account.credential_version,
+                    "recovered": true,
+                }),
+            );
+            return;
+        }
+        if account.recovery_status == "failed" {
+            let _ = app.emit(
+                "managed-session-recovered",
+                serde_json::json!({
+                    "platformId": platform_id,
+                    "managedAccountId": identity.managed_account_id,
+                    "credentialVersion": identity.credential_version,
+                    "recovered": false,
+                    "detail": account.last_error.clone().unwrap_or_else(|| "自动登录失败".into()),
+                }),
+            );
+            return;
+        }
+    }
+    let _ = app.emit(
+        "managed-session-recovered",
+        serde_json::json!({
+            "platformId": platform_id,
+            "managedAccountId": identity.managed_account_id,
+            "credentialVersion": identity.credential_version,
+            "recovered": false,
+            "detail": "等待自动恢复超时，请稍后手动重新打开",
+        }),
+    );
 }
 
 /// Probe the upstream without publishing a browser-ready local adapter. The
@@ -1096,8 +1246,30 @@ async fn watch_managed_logout<R: Runtime>(
                             "applied": receipt.applied,
                             "reported": true,
                             "browserClosed": closed,
+                            "autoRelogin": receipt.auto_relogin,
                         }),
                     );
+                }
+                // 服务端已受理失效并对该账号开启自动重登：后台等待恢复完成后
+                // 通知前端重新打开托管浏览器。仅此一次上报的 watcher 会等待，
+                // 用户退出登录、配置更换都会让 current_identity 校验终止等待。
+                if receipt.applied
+                    && receipt.auto_relogin
+                    && receipt.session_status == "expired"
+                    && matches!(
+                        receipt.recovery_status.as_str(),
+                        "pending" | "running" | "retry_wait" | ""
+                    )
+                {
+                    wait_managed_recovery(
+                        context.auth.clone(),
+                        context.app.clone(),
+                        context.user_id,
+                        context.auth_generation,
+                        context.platform_id,
+                        context.identity.clone(),
+                    )
+                    .await;
                 }
                 return;
             }
