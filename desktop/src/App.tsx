@@ -98,6 +98,7 @@ function MainLayout() {
     }
     let active = true;
     let unlistenFn: (() => void) | undefined;
+    let unlistenExpiredFn: (() => void) | undefined;
 
     void tauriBridge
       .getStatus()
@@ -131,8 +132,21 @@ function MainLayout() {
               setDesktopConfigError(null);
             });
         } else if (newStatus.error_code === "desktop_config_changed") {
-          setDesktopConfig(null);
-          setDesktopConfigError("管理员已更新全局桌面配置，请重新同步后继续使用");
+          // 看门狗发现租约变化（管理员轮换托管凭据、标记会话失效、修改代理或平台等）。
+          // 尝试静默重同步，用户无需手动刷新；失败才降级为需要人工重新同步。
+          void (async () => {
+            try {
+              await syncDesktopConfig(false);
+              if (active) {
+                info("配置已自动同步", "管理员更新了全局配置或托管账号凭据，已自动生效");
+              }
+            } catch {
+              if (active) {
+                setDesktopConfig(null);
+                setDesktopConfigError("管理员已更新全局桌面配置，请重新同步后继续使用");
+              }
+            }
+          })();
         }
       })
       .then((unlisten) => {
@@ -143,9 +157,35 @@ function MainLayout() {
         // A failed event subscription must not create an unhandled rejection.
       });
 
+    // 服务端回执后再刷新，不能让旧 watcher 的通知把新凭据显示为失效。
+    tauriBridge
+      .onManagedSessionExpired((payload) => {
+        if (!active) return;
+        if (!payload.browserClosed) {
+          error("托管浏览器清理未完成", "请关闭对应浏览器后重试；系统没有确认该会话已完全关闭");
+        } else if (!payload.reported) {
+          error("托管浏览器已关闭", "检测到平台登出，但失效状态上报未完成，请检查网络并联系管理员");
+        } else if (payload.sessionStatus === "expired") {
+          error("托管登录已失效", "平台登出已上报，浏览器已关闭；请联系管理员更新凭据");
+        } else {
+          info("旧托管会话已关闭", "管理员已更新凭据，本次旧会话上报未影响新凭据");
+        }
+        if (payload.reported && payload.applied) {
+          void syncDesktopConfig(false);
+        }
+      })
+      .then((unlisten) => {
+        if (active) unlistenExpiredFn = unlisten;
+        else unlisten();
+      })
+      .catch(() => {
+        // A failed event subscription must not create an unhandled rejection.
+      });
+
     return () => {
       active = false;
       if (unlistenFn) unlistenFn();
+      if (unlistenExpiredFn) unlistenExpiredFn();
     };
   }, [desktopRuntime, authReady, currentUser?.id]);
 

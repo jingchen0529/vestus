@@ -237,11 +237,27 @@ class ManagedBootstrapConsumeRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
+class ManagedSessionExpiredRequest(BaseModel):
+    managed_account_id: int = Field(alias="managedAccountId", strict=True, ge=1, le=2**63 - 1)
+    credential_version: int = Field(alias="credentialVersion", strict=True, ge=1, le=2**31 - 1)
+    session_id: str = Field(alias="sessionId", pattern=r"^[1-9][0-9]*$", max_length=19)
+    device_id: Optional[str] = Field(default=None, alias="deviceId", max_length=64)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @field_validator("session_id")
+    @classmethod
+    def valid_session_id(cls, value: str) -> str:
+        if int(value) > 2**63 - 1:
+            raise ValueError("sessionId is outside the supported range")
+        return value
+
+
 __all__ = [
     "ManagedAccountBindingCreate",
     "ManagedBindingCreate",
     "ManagedBootstrapConsumeRequest",
     "ManagedBootstrapRequest",
+    "ManagedSessionExpiredRequest",
     "ManagedCookie",
     "ManagedPlatformAccountCreate",
     "ManagedPlatformAccountUpdate",

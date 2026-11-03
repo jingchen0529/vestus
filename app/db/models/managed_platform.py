@@ -39,6 +39,9 @@ class ManagedPlatformAccount(Base):
     credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    # 上游会话（cookie）是否仍可用。"expired" 表示客户端上报了平台侧退出登录，
+    # 打开该账号前必须先由管理员重新验证凭据。与 status（管理员启停）正交。
+    session_status: Mapped[str] = mapped_column(String(16), nullable=False, default="valid")
     last_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Identity discovered by a server-side, read-only provider probe.  These
@@ -52,6 +55,11 @@ class ManagedPlatformAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime6, nullable=False, default=utc_now, onupdate=utc_now
     )
+
+    # Explicit rotations advance this version; metadata-only edits do not.
+    # Still compare it on every ORM write so a stale administrator/provider
+    # transaction cannot overwrite a concurrent rotation or expiry report.
+    __mapper_args__ = {"version_id_col": credential_version, "version_id_generator": False}
 
 
 class ManagedPlatformBinding(Base):

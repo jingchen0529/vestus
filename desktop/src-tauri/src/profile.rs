@@ -157,6 +157,38 @@ pub(crate) fn contains_managed_profile_marker(profile_key: &str) -> bool {
     profile_key.contains("::managed-account-") || profile_key.contains("::credential-version-")
 }
 
+/// Only a fully parsed managed key is ephemeral. Ordinary profiles retain their
+/// existing persistence semantics even when a label happens to contain a marker.
+pub(crate) fn is_managed_profile_key(profile_key: &str) -> bool {
+    managed_profile_key_parts(profile_key).1.is_some()
+}
+
+/// Match the complete generated namespace, never a substring or a prefix.
+pub(crate) fn is_managed_environment_name(name: &str) -> bool {
+    let Some((platform, rest)) = name.strip_prefix('p').and_then(|name| name.split_once('-'))
+    else {
+        return false;
+    };
+    let Some(rest) = rest
+        .strip_prefix("proxy-managed-a")
+        .or_else(|| rest.strip_prefix("direct-managed-a"))
+    else {
+        return false;
+    };
+    let Some((account, version)) = rest.split_once("-v") else {
+        return false;
+    };
+    platform
+        .parse::<i64>()
+        .is_ok_and(|id| id > 0 && id.to_string() == platform)
+        && account
+            .parse::<u64>()
+            .is_ok_and(|id| id > 0 && id.to_string() == account)
+        && version
+            .parse::<u64>()
+            .is_ok_and(|id| id.to_string() == version)
+}
+
 /// 一个环境的 user-data-dir。
 pub(crate) fn profile_dir(root: &Path, spec: &ProfileSpec<'_>) -> PathBuf {
     let (account_key, managed_suffix) = managed_profile_key_parts(spec.profile_key);
@@ -193,7 +225,9 @@ pub(crate) fn is_managed_profile_for(
     let Some(version) = name.strip_prefix(&prefix) else {
         return false;
     };
-    !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
+    is_managed_environment_name(name)
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Managed launches pass a server-derived account/version suffix in the local
@@ -208,10 +242,12 @@ fn managed_profile_key_parts(profile_key: &str) -> (&str, Option<String>) {
         return (profile_key, None);
     };
     if account_key.is_empty()
-        || account_id.is_empty()
-        || !account_id.bytes().all(|byte| byte.is_ascii_digit())
-        || version_suffix.is_empty()
-        || !version_suffix.bytes().all(|byte| byte.is_ascii_digit())
+        || !account_id
+            .parse::<u64>()
+            .is_ok_and(|id| id > 0 && id.to_string() == account_id)
+        || !version_suffix
+            .parse::<u64>()
+            .is_ok_and(|id| id.to_string() == version_suffix)
     {
         return (profile_key, None);
     }
@@ -261,6 +297,7 @@ pub(crate) enum ProfileCheckError {
 /// 浏览器及其清理结束。文件句柄关闭（包括进程崩溃）即由系统释放锁。
 #[derive(Debug)]
 pub(crate) struct ProfileLease {
+    dir: PathBuf,
     _profile: LeaseFile,
     _account: LeaseFile,
 }
@@ -288,18 +325,33 @@ fn open_lease_file(
         .and_then(|name| name.to_str())
         .ok_or(ProfileCheckError::Unknown)?;
     let locks = root.join(".locks");
+    ensure_directory_not_link(root).map_err(|_| ProfileCheckError::Unknown)?;
+    ensure_directory_not_link(&locks).map_err(|_| ProfileCheckError::Unknown)?;
     std::fs::create_dir_all(&locks).map_err(|_| ProfileCheckError::Unknown)?;
     let filename = match environment {
         Some(environment) => format!("{account}-{environment}.lock"),
         None => format!("{account}.lock"),
     };
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options
         .open(locks.join(filename))
-        .map_err(|_| ProfileCheckError::Unknown)
+        .map_err(|_| ProfileCheckError::Unknown)?;
+    let metadata = file.metadata().map_err(|_| ProfileCheckError::Unknown)?;
+    if !metadata.is_file() || is_link_or_reparse_point(&metadata) {
+        return Err(ProfileCheckError::Unknown);
+    }
+    Ok(file)
 }
 
 fn lease_error(error: std::io::Error) -> ProfileCheckError {
@@ -324,6 +376,7 @@ pub(crate) fn acquire_profile_lease(profile_dir: &Path) -> Result<ProfileLease, 
     let profile = open_lease_file(account_dir, Some(environment))?;
     fs2::FileExt::try_lock_exclusive(&profile).map_err(lease_error)?;
     Ok(ProfileLease {
+        dir: profile_dir.to_path_buf(),
         _profile: LeaseFile(profile),
         _account: account,
     })
@@ -468,12 +521,13 @@ fn profile_usage_from_ps(
 /// `ps` 把参数用空格拼成一行，而 profile 路径里本身就有空格（macOS 的
 /// `Application Support`），所以不能按空格切，只能找整段参数，并要求它后面紧跟空格
 /// 或行尾——否则 `…/p1-proxy` 会误认 `…/p1-proxy-old` 这样的目录。
-#[cfg(any(test, all(unix, not(target_os = "linux"))))]
+#[cfg(any(test, windows, all(unix, not(target_os = "linux"))))]
 fn command_line_has_argument(command_line: &str, argument: &str) -> bool {
     let command_line = command_line.trim_end();
     command_line.match_indices(argument).any(|(start, _)| {
+        let before = &command_line[..start];
         let rest = &command_line[start + argument.len()..];
-        rest.is_empty() || rest.starts_with(' ')
+        (before.is_empty() || before.ends_with(' ')) && (rest.is_empty() || rest.starts_with(' '))
     })
 }
 
@@ -549,6 +603,394 @@ pub(crate) fn sweep_legacy_sessions(cache_dir: &Path) -> usize {
 fn legacy_session_pid(name: &str) -> Option<u32> {
     let (pid, _) = name.strip_prefix("session-")?.split_once('-')?;
     pid.parse().ok()
+}
+
+/// A cleanup error is never best effort: a managed launch must not reuse any
+/// cookie left by a failed deletion.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ProfileCleanupError {
+    #[error("无法确认托管环境空闲")]
+    Check(ProfileCheckError),
+    #[error("{0}")]
+    Io(String),
+}
+
+impl ProfileLease {
+    /// Delete only the managed directory this exact live lease owns. Callers
+    /// cannot pass a different path or reacquire a lease in a delayed callback.
+    /// The browser lifecycle retains this lease on any failure.
+    pub(crate) fn clear_managed_profile(&self) -> Result<(), ProfileCleanupError> {
+        let dir = &self.dir;
+        if !dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_managed_environment_name)
+        {
+            return Err(ProfileCleanupError::Io("拒绝删除非托管浏览器环境".into()));
+        }
+        // Do not follow a substituted root/account/profile link (including a
+        // Windows junction). remove_dir_all itself does not follow child links.
+        for path in dir.ancestors().take(3) {
+            ensure_directory_not_link(path).map_err(ProfileCleanupError::Io)?;
+        }
+        let busy = managed_profile_in_use(dir).map_err(ProfileCleanupError::Check)?;
+        if busy {
+            return Err(ProfileCleanupError::Check(ProfileCheckError::Busy));
+        }
+        remove_dir_with_retries_result(dir)
+            .map_err(|error| ProfileCleanupError::Io(format!("删不掉 {}：{error}", dir.display())))
+    }
+}
+
+fn ensure_directory_not_link(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !is_link_or_reparse_point(&metadata) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(format!("拒绝跟随链接或非目录路径 {}", path.display())),
+        Err(error) => Err(format!("无法检查目录 {}：{error}", path.display())),
+    }
+}
+
+fn is_link_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn managed_profile_in_use(dir: &Path) -> Result<bool, ProfileCheckError> {
+    if in_use_by_other_process(dir)? {
+        return Ok(true);
+    }
+    // A crashed owner can release its lease before Chromium has created its
+    // SingletonLock. Do not mistake that startup interval for an unused profile.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let processes = std::fs::read_dir("/proc").map_err(|_| ProfileCheckError::Unknown)?;
+        let argument = user_data_dir_argument(dir);
+        for entry in processes {
+            let entry = entry.map_err(|_| ProfileCheckError::Unknown)?;
+            if entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+                .is_none()
+            {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(ProfileCheckError::Unknown),
+            };
+            // Profiles are private to this OS user. Other users' protected
+            // /proc entries must not turn every launch into an unknown result.
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                continue;
+            }
+            match std::fs::read(entry.path().join("cmdline")) {
+                Ok(command)
+                    if command
+                        .split(|byte| *byte == 0)
+                        .any(|arg| arg == argument.as_bytes()) =>
+                {
+                    return Ok(true)
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(ProfileCheckError::Unknown),
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let output = Command::new("/bin/ps")
+            .args(["-axww", "-o", "command="])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|_| ProfileCheckError::Unknown)?;
+        if !output.status.success() || !output.stderr.is_empty() {
+            return Err(ProfileCheckError::Unknown);
+        }
+        let commands =
+            std::str::from_utf8(&output.stdout).map_err(|_| ProfileCheckError::Unknown)?;
+        if commands.trim().is_empty() {
+            return Err(ProfileCheckError::Unknown);
+        }
+        let argument = user_data_dir_argument(dir);
+        Ok(commands
+            .lines()
+            .any(|command| command_line_has_argument(command, &argument)))
+    }
+    #[cfg(windows)]
+    {
+        // Also detect an external/older browser in the interval before it has
+        // opened lockfile. This snapshot cannot exclude a non-cooperating
+        // process starting afterwards; the continuous lease closes that race
+        // for all cooperating Vestus instances.
+        windows_external_profile_owner(dir)
+    }
+}
+
+#[cfg(any(windows, test))]
+const CIM_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(any(windows, test))]
+const CIM_STDOUT_LIMIT: usize = 4 * 1024 * 1024;
+#[cfg(any(windows, test))]
+const CIM_STDERR_LIMIT: usize = 64 * 1024;
+
+// Deliberately static: no profile path/argument in this command line, otherwise
+// the PowerShell query itself could be mistaken for the profile's owner.
+// Protected non-browser processes (e.g. csrss) commonly have no CommandLine.
+// Keep null commands for supported Chromium executable names or unknown names
+// so those fail closed; inspect every readable command regardless of its name.
+// Bundled Windows Chromium is chrome.exe. An unreadable, externally renamed
+// custom browser is not identifiable by this bounded candidate check.
+#[cfg(any(windows, test))]
+const CIM_PROCESS_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try {
+    $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    $processes = @(Get-CimInstance -ClassName Win32_Process -Filter ("SessionId = {0}" -f $session) -Property ProcessId,Name,CommandLine -OperationTimeoutSec 3 -ErrorAction Stop)
+    if ($processes.Count -eq 0) { throw 'Empty process snapshot' }
+    $rows = @($processes | Where-Object { [string]::IsNullOrWhiteSpace($_.Name) -or $_.Name -in @('chrome.exe','chromium.exe','msedge.exe') -or -not [string]::IsNullOrWhiteSpace($_.CommandLine) } | Select-Object -Property ProcessId,CommandLine)
+    if ($rows.Count -eq 0) { throw 'Empty process snapshot' }
+    [Console]::Out.Write((ConvertTo-Json -InputObject $rows -Compress -Depth 3))
+} catch {
+    [Console]::Error.WriteLine('Process snapshot unavailable')
+    exit 1
+}
+"#;
+
+#[cfg(windows)]
+fn windows_external_profile_owner(dir: &Path) -> Result<bool, ProfileCheckError> {
+    use std::os::windows::process::CommandExt as _;
+
+    let executable = system_tool(r"WindowsPowerShell\v1.0\powershell.exe");
+    if !executable.is_absolute() {
+        return Err(ProfileCheckError::Unknown);
+    }
+    let mut command = Command::new(&executable);
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            CIM_PROCESS_SCRIPT,
+        ])
+        .current_dir(executable.parent().ok_or(ProfileCheckError::Unknown)?)
+        .creation_flags(CREATE_NO_WINDOW);
+    let output = bounded_cim_output(&mut command, CIM_QUERY_TIMEOUT)?;
+    profile_usage_from_cim(&output, dir)
+}
+
+/// Drain both pipes concurrently with bounded allocations. Never call output()
+/// or join a reader while the query can be blocked writing its other pipe.
+#[cfg(any(windows, test))]
+fn bounded_cim_output(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> Result<std::process::Output, ProfileCheckError> {
+    use std::process::Stdio;
+    use std::sync::mpsc::{self, TryRecvError};
+    use std::time::Instant;
+
+    let deadline = Instant::now() + timeout;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| ProfileCheckError::Unknown)?;
+    let result = (|| {
+        let stdout = child.stdout.take().ok_or(ProfileCheckError::Unknown)?;
+        let stderr = child.stderr.take().ok_or(ProfileCheckError::Unknown)?;
+        let (tx, rx) = mpsc::channel();
+        let stdout_tx = tx.clone();
+        thread::Builder::new()
+            .name("vestus-cim-stdout".into())
+            .spawn(move || {
+                let _ = stdout_tx.send((true, read_cim_pipe(stdout, CIM_STDOUT_LIMIT)));
+            })
+            .map_err(|_| ProfileCheckError::Unknown)?;
+        thread::Builder::new()
+            .name("vestus-cim-stderr".into())
+            .spawn(move || {
+                let _ = tx.send((false, read_cim_pipe(stderr, CIM_STDERR_LIMIT)));
+            })
+            .map_err(|_| ProfileCheckError::Unknown)?;
+        let (mut stdout, mut stderr, mut status) = (None, None, None);
+        loop {
+            match rx.try_recv() {
+                Ok((is_stdout, bytes)) => {
+                    let bytes = bytes?;
+                    if is_stdout {
+                        stdout = Some(bytes);
+                    } else {
+                        stderr = Some(bytes);
+                    }
+                }
+                Err(TryRecvError::Disconnected) if stdout.is_none() || stderr.is_none() => {
+                    return Err(ProfileCheckError::Unknown);
+                }
+                _ => {}
+            }
+            if status.is_none() {
+                status = child.try_wait().map_err(|_| ProfileCheckError::Unknown)?;
+            }
+            if let Some(status) = status {
+                if stdout.is_some() && stderr.is_some() {
+                    return Ok(std::process::Output {
+                        status,
+                        stdout: stdout.take().expect("stdout checked"),
+                        stderr: stderr.take().expect("stderr checked"),
+                    });
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ProfileCheckError::Unknown);
+            }
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+    })();
+    if result.is_err() {
+        // This is only our read-only query child, never any enumerated PID. Do
+        // not turn a failed kill or inherited pipe into an unbounded wait/join.
+        let _ = child.kill();
+        let _ = thread::Builder::new()
+            .name("vestus-cim-reap".into())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+    }
+    result
+}
+
+#[cfg(any(windows, test))]
+fn read_cim_pipe(reader: impl std::io::Read, limit: usize) -> Result<Vec<u8>, ProfileCheckError> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ProfileCheckError::Unknown)?;
+    if bytes.len() > limit {
+        return Err(ProfileCheckError::Unknown);
+    }
+    Ok(bytes)
+}
+
+#[cfg(any(windows, test))]
+fn profile_usage_from_cim(
+    output: &std::process::Output,
+    dir: &Path,
+) -> Result<bool, ProfileCheckError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "PascalCase", deny_unknown_fields)]
+    struct Process {
+        process_id: u32,
+        command_line: String,
+    }
+    if !output.status.success()
+        || !output.stderr.is_empty()
+        || output.stdout.is_empty()
+        || output.stdout.len() > CIM_STDOUT_LIMIT
+    {
+        return Err(ProfileCheckError::Unknown);
+    }
+    let rows: Vec<Process> =
+        serde_json::from_slice(&output.stdout).map_err(|_| ProfileCheckError::Unknown)?;
+    if rows.is_empty() {
+        return Err(ProfileCheckError::Unknown);
+    }
+    let mut pids = std::collections::HashSet::new();
+    let mut busy = false;
+    let argument = user_data_dir_argument(dir).to_lowercase();
+    let path = dir.to_string_lossy().to_lowercase();
+    let arguments = [
+        argument.clone(),
+        format!("\"{argument}\""),
+        format!("--user-data-dir=\"{path}\""),
+    ];
+    for row in rows {
+        // Never silently drop an inaccessible candidate or a partially read
+        // snapshot, even when another row already matches this profile.
+        if row.process_id == 0
+            || !pids.insert(row.process_id)
+            || row.command_line.trim().is_empty()
+            || row.command_line.contains('\0')
+        {
+            return Err(ProfileCheckError::Unknown);
+        }
+        // Windows command lines retain quotes around arguments with spaces;
+        // reuse the whole-argument matcher for raw and documented quote forms.
+        // ASCII case differences must not hide a Windows filesystem owner.
+        let command = row.command_line.replace('\t', " ").to_lowercase();
+        busy |= arguments
+            .iter()
+            .any(|argument| command_line_has_argument(&command, argument));
+    }
+    Ok(busy)
+}
+
+/// Sweep only exact generated managed namespaces. Each deletion uses the same
+/// account/profile lease and occupancy checks as a cold launch, not a delayed
+/// best-effort delete that can race a new session.
+pub(crate) fn sweep_orphaned_managed_profiles(profiles_root: &Path) -> usize {
+    if ensure_directory_not_link(profiles_root).is_err() {
+        return 0;
+    }
+    let Ok(accounts) = std::fs::read_dir(profiles_root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for account in accounts.flatten() {
+        let account_name = account.file_name();
+        let Some(name) = account_name.to_str() else {
+            continue;
+        };
+        if name.len() != ACCOUNT_DIGEST_CHARS
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !account.file_type().is_ok_and(|kind| kind.is_dir())
+            || ensure_directory_not_link(&account.path()).is_err()
+        {
+            continue;
+        }
+        let Ok(environments) = std::fs::read_dir(account.path()) else {
+            continue;
+        };
+        for environment in environments.flatten() {
+            if !environment.file_type().is_ok_and(|kind| kind.is_dir())
+                || !environment
+                    .file_name()
+                    .to_str()
+                    .is_some_and(is_managed_environment_name)
+            {
+                continue;
+            }
+            let Ok(lease) = acquire_profile_lease(&environment.path()) else {
+                continue;
+            };
+            if lease.clear_managed_profile().is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
 }
 
 #[cfg(target_os = "linux")]
@@ -664,15 +1106,19 @@ fn remove_account_with_check(
 }
 
 fn remove_dir_with_retries(path: &Path) -> bool {
+    remove_dir_with_retries_result(path).is_ok()
+}
+
+fn remove_dir_with_retries_result(path: &Path) -> std::io::Result<()> {
     for attempt in 1..=REMOVE_ATTEMPTS {
         match std::fs::remove_dir_all(path) {
-            Ok(()) => return true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(_) if attempt < REMOVE_ATTEMPTS => thread::sleep(REMOVE_RETRY_DELAY),
-            Err(_) => {}
+            Err(error) => return Err(error),
         }
     }
-    false
+    unreachable!("REMOVE_ATTEMPTS is nonzero")
 }
 
 #[cfg(test)]
@@ -882,6 +1328,135 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn managed_namespace_matching_rejects_partial_or_noncanonical_names() {
+        for name in ["p1-proxy-managed-a9-v1", "p2-direct-managed-a20-v0"] {
+            assert!(is_managed_environment_name(name), "{name}");
+        }
+        for name in [
+            "p1-proxy",
+            "backup-p1-proxy-managed-a9-v1",
+            "p1-proxy-managed-a9-v1.old",
+            "p1-proxy-managed-a9-v1/extra",
+            "p1-proxy-managed-a9-v",
+            "p0-proxy-managed-a9-v1",
+            "p01-proxy-managed-a9-v1",
+            "p1-proxy-managed-a09-v1",
+            "p1-proxy-managed-a9-v01",
+            "p1-proxy-managed-a0-v1",
+            "p1-direct-managed-a9-v-1",
+            "p1-proxy-managed-a9-v18446744073709551616",
+        ] {
+            assert!(!is_managed_environment_name(name), "{name}");
+        }
+        assert!(is_managed_profile_key(
+            "user-7::managed-account-9::credential-version-1"
+        ));
+        assert!(!is_managed_profile_key("ordinary-user-managed-a9-v1"));
+        assert!(!is_managed_profile_key("user-7::managed-account-9"));
+    }
+
+    #[test]
+    fn managed_sweep_respects_cross_process_lease_and_exact_namespace() {
+        let root = scratch("managed-sweep-lease");
+        let active = profile_dir(
+            &root,
+            &spec("user-7::managed-account-9::credential-version-1", 1, false),
+        );
+        let idle = profile_dir(
+            &root,
+            &spec("user-7::managed-account-9::credential-version-2", 1, false),
+        );
+        let account = active.parent().unwrap();
+        let manual = account.join("p1-proxy");
+        let lookalike = account.join("p1-proxy-managed-a9-v2.backup");
+        let wrong_account = root.join("foreign-account/p1-proxy-managed-a9-v2");
+        for dir in [&active, &idle, &manual, &lookalike, &wrong_account] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("Cookies"), b"keep-unless-idle-managed").unwrap();
+        }
+        let mut owner = LeaseChild::spawn(&active, "launch", root.join("lease.ready"));
+        assert_eq!(sweep_orphaned_managed_profiles(&root), 1);
+        assert!(!idle.exists());
+        for dir in [&active, &manual, &lookalike, &wrong_account] {
+            assert_eq!(
+                std::fs::read(dir.join("Cookies")).unwrap(),
+                b"keep-unless-idle-managed"
+            );
+        }
+        owner.finish();
+        assert_eq!(sweep_orphaned_managed_profiles(&root), 1);
+        assert!(!active.exists());
+        assert!(manual.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_sweep_never_traverses_directory_or_lock_symlinks() {
+        let root = scratch("managed-sweep-links");
+        let outside = scratch("managed-sweep-outside");
+        let original = outside.join("p1-proxy-managed-a9-v1");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::write(original.join("Cookies"), b"outside").unwrap();
+        let account = account_dir(&root, API, "user-7");
+        std::os::unix::fs::symlink(&outside, &account).unwrap();
+        assert_eq!(sweep_orphaned_managed_profiles(&root), 0);
+        std::fs::remove_file(&account).unwrap();
+        std::fs::create_dir(&account).unwrap();
+        let managed = account.join("p1-proxy-managed-a9-v1");
+        std::os::unix::fs::symlink(&original, &managed).unwrap();
+        assert_eq!(sweep_orphaned_managed_profiles(&root), 0);
+        let lease = acquire_profile_lease(&managed).unwrap();
+        assert!(matches!(
+            lease.clear_managed_profile(),
+            Err(ProfileCleanupError::Io(_))
+        ));
+        drop(lease);
+        std::fs::remove_file(&managed).unwrap();
+        std::fs::remove_dir_all(root.join(".locks")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".locks")).unwrap();
+        assert!(matches!(
+            acquire_profile_lease(&managed),
+            Err(ProfileCheckError::Unknown)
+        ));
+        assert_eq!(std::fs::read(original.join("Cookies")).unwrap(), b"outside");
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn managed_cleanup_requires_the_owned_namespace_and_known_occupancy() {
+        let root = scratch("managed-cleanup-unknown");
+        let manual = profile_dir(&root, &spec("user-7", 1, false));
+        std::fs::create_dir_all(&manual).unwrap();
+        let lease = acquire_profile_lease(&manual).unwrap();
+        assert!(matches!(
+            lease.clear_managed_profile(),
+            Err(ProfileCleanupError::Io(_))
+        ));
+        drop(lease);
+        let managed = profile_dir(
+            &root,
+            &spec("user-7::managed-account-9::credential-version-1", 1, false),
+        );
+        std::fs::create_dir_all(&managed).unwrap();
+        std::fs::write(managed.join("Cookies"), b"keep").unwrap();
+        #[cfg(unix)]
+        std::fs::write(managed.join("SingletonLock"), b"invalid-not-a-link").unwrap();
+        #[cfg(windows)]
+        std::fs::create_dir(managed.join(WINDOWS_LOCK_FILE)).unwrap();
+        let lease = acquire_profile_lease(&managed).unwrap();
+        assert!(matches!(
+            lease.clear_managed_profile(),
+            Err(ProfileCleanupError::Check(ProfileCheckError::Unknown))
+        ));
+        drop(lease);
+        assert_eq!(sweep_orphaned_managed_profiles(&root), 0);
+        assert_eq!(std::fs::read(managed.join("Cookies")).unwrap(), b"keep");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn spec(profile_key: &str, platform_id: i64, direct_mode: bool) -> ProfileSpec<'_> {
         ProfileSpec {
             api_base: API,
@@ -1054,6 +1629,131 @@ mod tests {
             user_data_dir_argument(Path::new("/tmp/p1-proxy")),
             "--user-data-dir=/tmp/p1-proxy"
         );
+    }
+
+    #[cfg(unix)]
+    fn cim_output(status: i32, stdout: &[u8], stderr: &[u8]) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt as _;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(status << 8),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cim_occupancy_matches_whole_paths_including_windows_quotes() {
+        let dir = Path::new(r"C:\Users\Test\Application Data\p1-proxy-managed-a9-v1");
+        let argument = user_data_dir_argument(dir);
+        for command in [
+            format!("chrome.exe {argument} --no-first-run"),
+            format!("chrome.exe \"{argument}\" --no-first-run"),
+            format!("chrome.exe --user-data-dir=\"{}\"", dir.display()),
+            format!("chrome.exe\t{}", argument.to_uppercase()),
+        ] {
+            let rows = serde_json::json!([{"ProcessId": 42, "CommandLine": command}]);
+            assert_eq!(
+                profile_usage_from_cim(&cim_output(0, rows.to_string().as_bytes(), b""), dir),
+                Ok(true)
+            );
+        }
+        for command in [
+            "unrelated.exe".to_owned(),
+            format!("chrome.exe {argument}-backup"),
+            format!("chrome.exe --not-an-option={argument}"),
+            format!("chrome.exe \"{argument}-backup\""),
+        ] {
+            let rows = serde_json::json!([{"ProcessId": 42, "CommandLine": command}]);
+            assert_eq!(
+                profile_usage_from_cim(&cim_output(0, rows.to_string().as_bytes(), b""), dir),
+                Ok(false)
+            );
+        }
+        assert!(!CIM_PROCESS_SCRIPT.contains("--user-data-dir"));
+        assert!(CIM_PROCESS_SCRIPT.contains("GetCurrentProcess().SessionId"));
+        assert!(CIM_PROCESS_SCRIPT.contains("Get-CimInstance"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cim_occupancy_rejects_failed_empty_or_inaccessible_snapshots() {
+        let dir = Path::new(r"C:\profile");
+        for data in [
+            "",
+            "[]",
+            "null",
+            "{}",
+            "broken",
+            "[{\"ProcessId\":42}]",
+            r#"[{"ProcessId":42,"CommandLine":null}]"#,
+            r#"[{"ProcessId":42,"CommandLine":""}]"#,
+            r#"[{"ProcessId":42,"CommandLine":" \t"}]"#,
+            r#"[{"ProcessId":0,"CommandLine":"chrome.exe"}]"#,
+            r#"[{"ProcessId":4294967296,"CommandLine":"chrome.exe"}]"#,
+            r#"[{"ProcessId":42,"CommandLine":"chrome.exe"},{"ProcessId":42,"CommandLine":"other.exe"}]"#,
+            r#"[{"ProcessId":42,"CommandLine":"chrome.exe","Unexpected":"field"}]"#,
+            r#"[{"ProcessId":42,"CommandLine":"chrome.exe\u0000"}]"#,
+        ] {
+            assert_eq!(
+                profile_usage_from_cim(&cim_output(0, data.as_bytes(), b""), dir),
+                Err(ProfileCheckError::Unknown),
+                "{data}"
+            );
+        }
+        let valid = br#"[{"ProcessId":42,"CommandLine":"unrelated.exe"}]"#;
+        for output in [
+            cim_output(1, valid, b""),
+            cim_output(0, valid, b"denied"),
+            cim_output(0, &[0xff], b""),
+            cim_output(0, &vec![b' '; CIM_STDOUT_LIMIT + 1], b""),
+        ] {
+            assert_eq!(
+                profile_usage_from_cim(&output, dir),
+                Err(ProfileCheckError::Unknown)
+            );
+        }
+        let mixed = serde_json::json!([
+            {"ProcessId":42, "CommandLine":user_data_dir_argument(dir)},
+            {"ProcessId":43, "CommandLine":null},
+        ]);
+        assert_eq!(
+            profile_usage_from_cim(&cim_output(0, mixed.to_string().as_bytes(), b""), dir),
+            Err(ProfileCheckError::Unknown)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cim_query_reader_bounds_output_and_timeout_without_pipe_deadlock() {
+        assert_eq!(read_cim_pipe(&b"1234"[..], 4), Ok(b"1234".to_vec()));
+        assert_eq!(
+            read_cim_pipe(&b"12345"[..], 4),
+            Err(ProfileCheckError::Unknown)
+        );
+        // A sleeping query is killed at the caller's deadline, without joining
+        // readers that could still be waiting on inherited handles.
+        let start = std::time::Instant::now();
+        let result = bounded_cim_output(
+            std::process::Command::new("/bin/sleep").arg("30"),
+            Duration::from_millis(100),
+        );
+        assert!(matches!(result, Err(ProfileCheckError::Unknown)));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // Write more than a pipe buffer to stderr before stdout. Sequential
+        // reading would deadlock; the bounded concurrent reader must succeed.
+        let output = bounded_cim_output(
+            std::process::Command::new("/bin/sh").args(["-c", "i=0; while [ $i -lt 4000 ]; do printf 'stderr-line\\n' >&2; i=$((i+1)); done; printf '[]'"]),
+            CIM_QUERY_TIMEOUT,
+        ).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"[]");
+        assert_eq!(output.stderr.len(), 48000);
+        let oversized = bounded_cim_output(
+            &mut std::process::Command::new("/usr/bin/yes"),
+            CIM_QUERY_TIMEOUT,
+        );
+        assert!(matches!(oversized, Err(ProfileCheckError::Unknown)));
     }
 
     /// 参数必须整段匹配：路径里的空格不能切断它，相邻目录名也不能被误认。

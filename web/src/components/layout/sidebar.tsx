@@ -24,6 +24,7 @@ import {
   Database,
   RefreshCw,
   Globe,
+  Link2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -35,7 +36,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export type NavTab = "dashboard" | "users" | "desktop" | "platforms" | "admins" | "activity" | "logs" | "settings";
+export type NavTab = "dashboard" | "users" | "bindings" | "desktop" | "platforms" | "admins" | "activity" | "logs" | "settings";
+
+export function isSuperAdminTab(tab: NavTab): boolean {
+  return ["admins", "desktop", "settings", "bindings"].includes(tab);
+}
 
 interface SidebarProps {
   currentTab: NavTab;
@@ -45,6 +50,7 @@ interface SidebarProps {
   userStatsTotal?: number;
   platformsTotal?: number;
   proxiesTotal?: number;
+  expiredBindingsCount?: number;
 }
 
 export function Sidebar({
@@ -55,6 +61,7 @@ export function Sidebar({
   userStatsTotal,
   platformsTotal,
   proxiesTotal,
+  expiredBindingsCount,
 }: SidebarProps) {
   const {
     user,
@@ -113,6 +120,21 @@ export function Sidebar({
       badge: userStatsTotal !== undefined ? `${userStatsTotal}` : null,
     },
     {
+      id: "bindings" as NavTab,
+      label: "绑定托管",
+      icon: Link2,
+      requiresSuperAdmin: true,
+      badge:
+        expiredBindingsCount !== undefined && expiredBindingsCount > 0
+          ? `${expiredBindingsCount}`
+          : null,
+      badgeVariant: "destructive" as const,
+      badgeTitle:
+        expiredBindingsCount && expiredBindingsCount > 0
+          ? `${expiredBindingsCount} 个托管会话已失效，点击查看`
+          : undefined,
+    },
+    {
       id: "desktop" as NavTab,
       label: "代理管理",
       icon: Server,
@@ -151,10 +173,10 @@ export function Sidebar({
   ];
 
   const visibleMainNavItems = mainNavItems.filter(
-    (item) => !item.requiresSuperAdmin || isSuperAdmin
+    (item) => !isSuperAdminTab(item.id) || isSuperAdmin
   );
   const visibleBottomNavItems = bottomNavItems.filter(
-    (item) => !item.requiresSuperAdmin || isSuperAdmin
+    (item) => !isSuperAdminTab(item.id) || isSuperAdmin
   );
 
   const renderNavButton = (item: (typeof mainNavItems)[0]) => {
@@ -181,6 +203,12 @@ export function Sidebar({
           )}
         />
 
+        {collapsed && item.id === "bindings" && item.badge && (
+          <Badge variant="destructive" className="absolute right-0 top-0 px-1 py-0 text-[9px]"
+            title={item.badgeTitle}>
+            {item.badge}
+          </Badge>
+        )}
         {!collapsed && (
           <div className="flex flex-1 items-center justify-between truncate">
             <span className="truncate">{item.label}</span>
@@ -193,8 +221,10 @@ export function Sidebar({
                 }
                 className={cn(
                   "ml-auto text-[10px] px-1.5 py-0",
-                  isActive && "border-white/40 text-white"
+                  isActive && "border-white/40 text-white",
+                  item.badgeVariant === "destructive" && !isActive && "animate-pulse"
                 )}
+                title={"badgeTitle" in item ? item.badgeTitle : undefined}
               >
                 {item.badge}
               </Badge>

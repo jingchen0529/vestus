@@ -289,6 +289,14 @@ struct ManagedBootstrapGrant {
     bootstrap_token: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedSessionReportReceipt {
+    pub(crate) session_status: String,
+    pub(crate) credential_version: u64,
+    pub(crate) applied: bool,
+}
+
 #[derive(Default)]
 struct SessionState {
     token: Option<String>,
@@ -596,7 +604,10 @@ impl DesktopAuthState {
             .post(self.managed_endpoint(platform_id, "bootstrap")?)
             .bearer_auth(&token)
             .timeout(MANAGED_REQUEST_TIMEOUT)
-            .json(&managed_bootstrap_body(managed_account_id, device_id.as_deref()))
+            .json(&managed_bootstrap_body(
+                managed_account_id,
+                device_id.as_deref(),
+            ))
             .send()
             .await
             .map_err(network_error)?;
@@ -649,6 +660,72 @@ impl DesktopAuthState {
         decode_success_json(consume_response, "托管登录会话响应格式错误")
             .await
             .map(Some)
+    }
+
+    /// Report against the bootstrap actually installed, never the latest
+    /// credential version or another desktop login's bearer token.
+    pub(crate) async fn report_managed_session_expired(
+        &self,
+        user_id: i64,
+        generation: u64,
+        platform_id: i64,
+        identity: &crate::managed_cdp::ManagedSessionIdentity,
+        device_id: Option<&str>,
+    ) -> AuthResult<ManagedSessionReportReceipt> {
+        let _operation = self.operation.lock().await;
+        let token = self.managed_report_token(user_id, generation)?;
+        let mut payload = serde_json::to_value(identity)
+            .map_err(|_| DesktopAuthError::invalid_response("托管会话标识无效"))?;
+        payload["deviceId"] = serde_json::json!(device_id);
+        let response = self
+            .client()?
+            .post(self.managed_endpoint(platform_id, "session-expired")?)
+            .bearer_auth(&token)
+            .timeout(MANAGED_REQUEST_TIMEOUT)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(network_error)?;
+
+        // Binding rejection (403) must not clear an otherwise valid desktop
+        // login. A late watcher also must not touch the next login's keyring.
+        self.managed_report_token(user_id, generation)?;
+        let receipt: ManagedSessionReportReceipt =
+            decode_success_json(response, "托管会话失效上报响应格式错误").await?;
+        if !matches!(receipt.session_status.as_str(), "valid" | "expired")
+            || receipt.credential_version < identity.credential_version
+            || (receipt.applied
+                && (receipt.session_status != "expired"
+                    || Some(receipt.credential_version)
+                        != identity.credential_version.checked_add(1)))
+        {
+            return Err(DesktopAuthError::invalid_response(
+                "托管会话失效上报回执无效",
+            ));
+        }
+        Ok(receipt)
+    }
+
+    fn managed_report_token(&self, user_id: i64, generation: u64) -> AuthResult<String> {
+        let state = self.session_guard()?;
+        if state.generation != generation
+            || state.user.as_ref().map(|user| user.id) != Some(user_id)
+        {
+            return Err(DesktopAuthError::new(
+                "session_changed",
+                "登录用户已发生变化",
+            ));
+        }
+        if !session_is_current(&state) {
+            return Err(DesktopAuthError::new(
+                "unauthenticated",
+                "桌面登录已失效，请重新登录",
+            ));
+        }
+        Ok(state
+            .token
+            .clone()
+            .expect("current session contains a token"))
     }
 
     /// Bind a validated profile key to the same user that initiated the sync.
@@ -913,7 +990,12 @@ impl DesktopAuthState {
     }
 
     fn managed_endpoint(&self, platform_id: i64, suffix: &str) -> AuthResult<String> {
-        if platform_id <= 0 || !matches!(suffix, "bootstrap" | "bootstrap/consume") {
+        if platform_id <= 0
+            || !matches!(
+                suffix,
+                "bootstrap" | "bootstrap/consume" | "session-expired"
+            )
+        {
             return Err(DesktopAuthError::new(
                 "invalid_request",
                 "托管平台请求参数无效",
@@ -971,7 +1053,10 @@ impl DesktopAuthState {
     }
 }
 
-fn managed_bootstrap_body(managed_account_id: Option<i64>, device_id: Option<&str>) -> serde_json::Value {
+fn managed_bootstrap_body(
+    managed_account_id: Option<i64>,
+    device_id: Option<&str>,
+) -> serde_json::Value {
     let mut body = serde_json::Map::new();
     if let Some(account_id) = managed_account_id {
         body.insert("managedAccountId".into(), serde_json::json!(account_id));
@@ -1532,6 +1617,140 @@ mod tests {
             assert!(
                 state.is_authenticated(),
                 "background reporting must not log the user out"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_report_refuses_another_login_before_sending() {
+        let state = DesktopAuthState::with_credentials(
+            DEFAULT_API_BASE_URL,
+            Arc::new(MemoryCredentialStore::default()),
+        );
+        state
+            .persist_session(valid_test_token(), client_user())
+            .unwrap();
+        let (_, _, original_generation) = state.current_identity().unwrap();
+        let identity = crate::managed_cdp::ManagedSessionIdentity {
+            session_id: "42".into(),
+            managed_account_id: 9,
+            credential_version: 7,
+        };
+        state
+            .persist_session(valid_test_token(), client_user())
+            .unwrap();
+        let error = state
+            .report_managed_session_expired(7, original_generation, 1, &identity, Some("device-a"))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "session_changed");
+        let (_, _, generation) = state.current_identity().unwrap();
+        assert_eq!(
+            state.managed_report_token(8, generation).unwrap_err().code,
+            "session_changed"
+        );
+        assert!(state.is_authenticated());
+    }
+
+    #[tokio::test]
+    async fn managed_report_sends_exact_bootstrap_identity_and_validates_ack() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let identity = crate::managed_cdp::ManagedSessionIdentity {
+            session_id: "42".into(),
+            managed_account_id: 9,
+            credential_version: 7,
+        };
+        for (status, data, succeeds) in [
+            (
+                200,
+                serde_json::json!({"sessionStatus": "expired", "credentialVersion": 8, "applied": true}),
+                true,
+            ),
+            (
+                200,
+                serde_json::json!({"sessionStatus": "valid", "credentialVersion": 10, "applied": false}),
+                true,
+            ),
+            (
+                200,
+                serde_json::json!({"sessionStatus": "valid", "credentialVersion": 7, "applied": true}),
+                false,
+            ),
+            (
+                200,
+                serde_json::json!({"sessionStatus": "expired", "credentialVersion": 6, "applied": false}),
+                false,
+            ),
+            (200, serde_json::json!({}), false),
+            (403, serde_json::Value::Null, false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let body = serde_json::json!({
+                "code": if status == 200 { 0 } else { 40300 },
+                "msg": "test", "data": data, "requestId": "managed-report-test",
+            })
+            .to_string();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let count = stream.read(&mut buf).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buf[..count]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&request[..end]);
+                        let length = header
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let response = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+                String::from_utf8(request).unwrap()
+            });
+            let state = DesktopAuthState::with_credentials(
+                &base,
+                Arc::new(MemoryCredentialStore::default()),
+            );
+            state
+                .persist_session(valid_test_token(), client_user())
+                .unwrap();
+            let (_, _, generation) = state.current_identity().unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                state.report_managed_session_expired(7, generation, 1, &identity, Some("device-a")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_ok(), succeeds, "status={status}");
+            let request = server.await.unwrap();
+            assert!(
+                request.starts_with("POST /api/user/managed-platforms/1/session-expired HTTP/1.1")
+            );
+            let payload: serde_json::Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(
+                payload,
+                serde_json::json!({
+                    "sessionId": "42", "managedAccountId": 9, "credentialVersion": 7, "deviceId": "device-a"
+                })
+            );
+            assert!(
+                state.is_authenticated(),
+                "background binding rejection must not log the user out"
             );
         }
     }

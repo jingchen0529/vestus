@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
+import threading
+import time
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Protocol, Tuple
 from urllib.parse import urlsplit
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.config import ConfigurationError
 from app.core.security import decrypt_platform_value, encrypt_platform_value
@@ -23,6 +31,7 @@ from app.repositories import managed_platforms as managed_repo
 from app.repositories import platforms as platforms_repo
 from app.repositories import users as users_repo
 from app.services.audit import AuditContext, record
+from app.services.managed_identity import IdentityProbeOutcome, probe_remote_identity
 from app.services.errors import (
     BadRequestError,
     ConflictError,
@@ -39,9 +48,28 @@ MANAGED_USER_NOT_FOUND = "用户不存在"
 MANAGED_ACCOUNT_INACTIVE = "托管平台账号已停用或过期"
 MANAGED_GRANT_INVALID = "托管登录票据无效、已过期或已消费"
 MANAGED_GRANT_REPLAY = "一次性托管登录票据已经消费"
+MANAGED_SESSION_INVALID = "托管会话身份无效或尚未消费"
+MANAGED_CREDENTIAL_CONFLICT = "托管账号凭据或状态已变更，请刷新后重试"
+MANAGED_ACCOUNT_SESSION_EXPIRED = "该托管账号的登录会话已在平台侧退出，请联系管理员替换 Cookie"
 BOOTSTRAP_TTL = timedelta(minutes=2)
+# 身份探测结果的可信时长；超过后在发放票据时重新探测一次。
+IDENTITY_PROBE_TTL = timedelta(hours=24)
 # 用户托管账号固定绑定 platform 表中 ID=1 的平台（即方舟）。
 MANAGED_ARK_PLATFORM_ID = 1
+
+
+@contextmanager
+def _managed_transaction(database: Database) -> Iterator[Session]:
+    """Translate the account mapper's optimistic version check at commit too."""
+    try:
+        with database.session() as session:
+            yield session
+    except StaleDataError as exc:
+        raise ConflictError(MANAGED_CREDENTIAL_CONFLICT) from exc
+
+
+def _normalized_device_id(device_id: Optional[str]) -> Optional[str]:
+    return (device_id or "").strip() or None
 
 
 @dataclass(frozen=True)
@@ -155,6 +183,53 @@ def _api_cookie(cookie: Mapping[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _cookie_key(cookie: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    partition = cookie.get("partitionKey", cookie.get("partition_key"))
+    return (
+        str(cookie.get("name", "")),
+        str(cookie.get("domain", "")).lower().lstrip("."),
+        str(cookie.get("path", "/")) or "/",
+        json.dumps(partition, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _cookie_expiry_error(cookie_bundle: List[Dict[str, Any]]) -> Optional[str]:
+    now = utc_now()
+    for cookie in cookie_bundle:
+        raw = cookie.get("expiresAt", cookie.get("expires_at"))
+        if not raw:
+            continue
+        try:
+            expiry = parse_datetime(raw)
+        except (TypeError, ValueError):
+            return "Cookie 包含无效的过期时间"
+        if expiry is not None and expiry <= now:
+            return "Cookie 包含已过期条目"
+    return None
+
+
+def _missing_cookie_count(
+    expected: List[Dict[str, Any]], observed: List[Dict[str, Any]]
+) -> int:
+    expected_keys = {_cookie_key(cookie) for cookie in expected}
+    observed_keys = {_cookie_key(cookie) for cookie in observed}
+    return len(expected_keys - observed_keys)
+
+
+def _same_site_host(value: str, platform_url: str) -> bool:
+    response_host = (urlsplit(value).hostname or "").lower().strip(".")
+    target_host = (urlsplit(platform_url).hostname or "").lower().strip(".")
+    if not response_host or not target_host:
+        return False
+    if response_host == target_host or response_host.endswith(f".{target_host}"):
+        return True
+    target_labels = target_host.split(".")
+    if len(target_labels) <= 2:
+        return False
+    site = ".".join(target_labels[-2:])
+    return response_host == site or response_host.endswith(f".{site}")
+
+
 class PlaywrightManagedLoginProvider:
     """Generic Playwright verifier for a configured managed Chromium binary.
 
@@ -182,15 +257,44 @@ class PlaywrightManagedLoginProvider:
         return str(path)
 
     @staticmethod
+    def _page_text(page: Any) -> Optional[str]:
+        try:
+            return page.locator("body").inner_text(timeout=1000).lower()
+        except Exception:
+            return None
+
+    @staticmethod
     def _looks_like_login(page: Any) -> bool:
         url = str(getattr(page, "url", "") or "").lower()
         if any(marker in url for marker in ("/login", "passport", "sso/account_login")):
             return True
-        try:
-            text = page.locator("body").inner_text(timeout=1000).lower()
-        except Exception:
-            return False
-        return any(marker in text for marker in ("验证码", "安全验证", "二次验证", "captcha", "verify code"))
+        text = PlaywrightManagedLoginProvider._page_text(page)
+        if text is None or not text.strip():
+            # 无法读取页面内容就无法证明已登录，必须 fail-closed。
+            return True
+        logged_out_markers = (
+            "立即登录",
+            "扫码登录",
+            "请登录",
+            "快捷登录",
+            "登录/注册",
+            "注册/登录",
+        )
+        captcha_markers = ("验证码", "安全验证", "二次验证", "captcha", "verify code")
+        if any(marker in text for marker in logged_out_markers + captcha_markers):
+            return True
+        # 只有明确出现工作台/退出等登录态证据才允许通过；未知页面一律转人工处理。
+        authenticated_markers = (
+            "工作台",
+            "退出登录",
+            "退出账号",
+            "workbench",
+            "dashboard",
+            "workspace",
+            "sign out",
+            "log out",
+        )
+        return not any(marker in text for marker in authenticated_markers)
 
     def verify(
         self,
@@ -201,7 +305,6 @@ class PlaywrightManagedLoginProvider:
         password: Optional[str],
         cookie_bundle: List[Dict[str, Any]],
     ) -> ManagedLoginResult:
-        executable_path = self._path()
         if auth_mode == "official_sso":
             raise ManagedProviderUnavailableError(
                 "managed_login_provider_unavailable: official_sso 尚未配置授权提供方"
@@ -210,6 +313,13 @@ class PlaywrightManagedLoginProvider:
             raise ManagedVerificationRequiredError(
                 "needs_manual_verification: 服务端登录缺少账号或密码"
             )
+        if auth_mode == "cookie":
+            if not cookie_bundle:
+                return ManagedLoginResult("invalid", [], "Cookie 校验失败：没有提供 Cookie")
+            expiry_error = _cookie_expiry_error(cookie_bundle)
+            if expiry_error:
+                return ManagedLoginResult("invalid", [], f"Cookie 校验失败：{expiry_error}")
+        executable_path = self._path()
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:  # pragma: no cover - dependency is installed in production
@@ -224,10 +334,26 @@ class PlaywrightManagedLoginProvider:
                 )
                 try:
                     context: Any = browser.new_context()
-                    if auth_mode == "cookie" and cookie_bundle:
+                    if auth_mode == "cookie":
                         context.add_cookies([_playwright_cookie(item) for item in cookie_bundle])
                     page = context.new_page()
-                    page.goto(platform_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+                    auth_failures: List[int] = []
+
+                    def observe_response(response: Any) -> None:
+                        try:
+                            status = int(response.status)
+                            response_url = str(response.url)
+                        except (AttributeError, TypeError, ValueError):
+                            return
+                        if status in {401, 403} and _same_site_host(response_url, platform_url):
+                            auth_failures.append(status)
+
+                    page.on("response", observe_response)
+                    navigation_response = page.goto(
+                        platform_url,
+                        wait_until="domcontentloaded",
+                        timeout=self.timeout_ms,
+                    )
                     if auth_mode == "server_login":
                         password_input = page.locator('input[type="password"]').first
                         if password_input.count() == 0:
@@ -252,16 +378,39 @@ class PlaywrightManagedLoginProvider:
                             )
                         submit.click()
                         page.wait_for_timeout(1_000)
+                    # domcontentloaded 不代表 SPA 已渲染；立即判定会拿到空文本，
+                    # 把未渲染的未登录页误判成已登录。等页面出内容再判。
+                    page.wait_for_timeout(2_000)
+                    navigation_status = getattr(navigation_response, "status", None)
+                    try:
+                        navigation_status = int(navigation_status) if navigation_status is not None else None
+                    except (TypeError, ValueError):
+                        navigation_status = None
+                    if navigation_status in {401, 403} or auth_failures:
+                        detail = "上游返回未授权/禁止访问"
+                        status = "invalid" if auth_mode == "cookie" else "needs_manual_verification"
+                        return ManagedLoginResult(status, [], f"Cookie 校验失败：{detail}")
                     if self._looks_like_login(page):
+                        status = "invalid" if auth_mode == "cookie" else "needs_manual_verification"
                         return ManagedLoginResult(
-                            "needs_manual_verification",
+                            status,
                             [],
-                            "需要人工完成登录、验证码或二次验证",
+                            "Cookie 校验失败：页面没有可确认的有效登录态"
+                            if auth_mode == "cookie"
+                            else "需要人工完成登录、验证码或二次验证",
                         )
-                    cookies = [_api_cookie(item) for item in context.cookies()]
-                    if not cookies:
+                    observed_cookies = context.cookies()
+                    if auth_mode == "cookie" and _missing_cookie_count(cookie_bundle, observed_cookies):
                         return ManagedLoginResult(
-                            "needs_manual_verification", [], "验证后没有获得有效会话 Cookie"
+                            "invalid",
+                            [],
+                            "Cookie 校验失败：有 Cookie 条目已被浏览器或上游清除",
+                        )
+                    cookies = [_api_cookie(item) for item in observed_cookies]
+                    if not cookies:
+                        status = "invalid" if auth_mode == "cookie" else "needs_manual_verification"
+                        return ManagedLoginResult(
+                            status, [], "验证后没有获得有效会话 Cookie"
                         )
                     return ManagedLoginResult("verified", cookies)
                 finally:
@@ -334,6 +483,8 @@ def _account_dict(item: ManagedPlatformAccount) -> Dict[str, Any]:
         "credentialVersion": item.credential_version,
         "expiresAt": iso_datetime(item.expires_at),
         "status": item.status,
+        "sessionStatus": item.session_status,
+        "lastError": item.last_error,
         "lastVerifiedAt": iso_datetime(item.last_verified_at),
         "remoteAccountId": item.remote_account_id,
         "remoteDisplayName": item.remote_display_name,
@@ -374,6 +525,7 @@ def _binding_dict(
         "alias": account.name,
         "authMode": account.auth_mode,
         "status": status,
+        "sessionStatus": account.session_status,
         "expiresAt": iso_datetime(account.expires_at),
         "credentialVersion": account.credential_version,
         "remoteAccountId": account.remote_account_id,
@@ -437,6 +589,136 @@ def _platform_allowed_hosts(platform: Platform) -> List[str]:
     return [hostname]
 
 
+def _identity_probe(
+    platform_url: str, cookie_bundle: List[Dict[str, Any]]
+) -> Optional[IdentityProbeOutcome]:
+    """Module-level indirection so tests can stub the upstream HTTP call."""
+    return probe_remote_identity(platform_url, cookie_bundle)
+
+
+def _probe_cookie_credentials(
+    platform: Platform, cookie_bundle: List[Dict[str, Any]]
+) -> Optional[IdentityProbeOutcome]:
+    """Probe freshly submitted cookie credentials before they are persisted.
+
+    A definitively dead session (upstream ``code != 0``) rejects the write so
+    a broken cookie can never enter the account pool.  Platforms without a
+    probe and network failures return instead of raising: saving credentials
+    must not depend on the probe being reachable.
+    """
+    outcome = _identity_probe(platform.url, cookie_bundle)
+    if outcome is not None and outcome.state == "invalid":
+        raise BadRequestError(f"Cookie 校验失败：{outcome.detail or '上游登录态已失效'}")
+    return outcome
+
+
+def _apply_identity_outcome(
+    item: ManagedPlatformAccount, outcome: Optional[IdentityProbeOutcome]
+) -> None:
+    """Fill the remote identity fields from a successful probe."""
+    if outcome is None or outcome.state != "verified":
+        return
+    now = utc_now()
+    item.remote_account_id = outcome.remote_account_id
+    item.remote_display_name = outcome.remote_display_name
+    item.identity_checked_at = now
+    item.last_verified_at = now
+
+
+# 桌面同步前的会话探测缓存：(account_id, credential_version) -> (monotonic, 状态)。
+# 只缓存确定结论（verified/invalued 归并为 valid/expired）；凭据版本变更自然作废旧键，
+# 有效结论 5 分钟内不重复请求上游，失效结论在管理员更新 Cookie 前不再探测。
+SESSION_PROBE_VALID_TTL = timedelta(minutes=5)
+_session_probe_cache: Dict[Tuple[int, int], Tuple[float, str]] = {}
+_session_probe_cache_lock = threading.Lock()
+
+
+def _session_probe_cache_get(account_id: int, credential_version: int) -> Optional[str]:
+    with _session_probe_cache_lock:
+        entry = _session_probe_cache.get((account_id, int(credential_version)))
+    if entry is None:
+        return None
+    probed_at, status = entry
+    if (
+        status == "valid"
+        and time.monotonic() - probed_at >= SESSION_PROBE_VALID_TTL.total_seconds()
+    ):
+        return None
+    return status
+
+
+def _session_probe_cache_store(account_id: int, credential_version: int, status: str) -> None:
+    if status not in ("valid", "expired"):
+        return
+    with _session_probe_cache_lock:
+        _session_probe_cache[(account_id, int(credential_version))] = (time.monotonic(), status)
+
+
+def refresh_session_statuses(database: Database, user_id: int | str) -> None:
+    """桌面端拉取配置前单向收紧会话状态：valid -> expired，永不自动恢复。
+
+    失效只能由管理员保存新凭据（那时重新探测）或客户端上报触发；探测不可达、
+    平台变更响应结构等情况一律保持现状，绝不据此把有效会话标成失效。
+    每个确定结论按 (账号, 凭据版本) 缓存，避免每次同步都请求上游。
+    """
+    with database.session() as session:
+        if users_repo.get_active(session, user_id) is None:
+            return
+        now = utc_now()
+        rows = (
+            session.query(ManagedPlatformAccount, Platform)
+            .join(
+                ManagedPlatformBinding,
+                ManagedPlatformBinding.managed_account_id == ManagedPlatformAccount.id,
+            )
+            .join(Platform, Platform.id == ManagedPlatformAccount.platform_id)
+            .filter(
+                ManagedPlatformBinding.user_id == int(user_id),
+                ManagedPlatformBinding.status == "active",
+                ManagedPlatformAccount.status == "active",
+                ManagedPlatformAccount.session_status == "valid",
+                ManagedPlatformAccount.auth_mode == "cookie",
+                ManagedPlatformAccount.cookie_bundle.isnot(None),
+                ManagedPlatformBinding.platform_id == Platform.id,
+                Platform.status == "active",
+            )
+            .all()
+        )
+    pending: List[Tuple[int, int, int, str, Optional[List[Dict[str, Any]]]]] = []
+    for account, platform in rows:
+        if account.expires_at is not None and account.expires_at <= now:
+            continue
+        version = int(account.credential_version)
+        cached = _session_probe_cache_get(account.id, version)
+        if cached == "expired":
+            pending.append((account.id, platform.id, version, platform.url, None))
+            continue
+        if cached == "valid":
+            continue
+        pending.append((account.id, platform.id, version, platform.url, list(account.cookie_bundle or [])))
+    for account_id, platform_id, version, platform_url, cookies in pending:
+        if cookies is None:
+            status = "expired"  # 缓存中的确定失效结论。
+        else:
+            outcome = _identity_probe(platform_url, cookies)
+            if outcome is None or outcome.state == "unavailable":
+                continue  # 未知：保持现状，本次不缓存。
+            status = "valid" if outcome.state == "verified" else "expired"
+        _session_probe_cache_store(account_id, version, status)
+        if status != "expired":
+            continue
+        with _managed_transaction(database) as session:
+            managed_repo.expire_account_session(
+                session,
+                account_id=account_id,
+                platform_id=platform_id,
+                user_id=int(user_id),
+                credential_version=version,
+                now=utc_now(),
+                last_error="自动校验：上游会话已失效",
+            )
+
+
 def list_accounts(database: Database) -> List[Dict[str, Any]]:
     with database.session() as session:
         return [_account_dict(item) for item in managed_repo.list_accounts(session)]
@@ -461,6 +743,9 @@ def create_account(
         raise BadRequestError("cookie 模式必须提供 Cookie 包")
     with database.session() as session:
         platform = _require_platform(session, int(values["platform_id"]))
+        identity_outcome = (
+            _probe_cookie_credentials(platform, cookies) if auth_mode == "cookie" else None
+        )
         try:
             item = ManagedPlatformAccount(
                 platform_id=platform.id,
@@ -475,6 +760,7 @@ def create_account(
                 status=values.get("status", "active"),
                 created_by=values.get("created_by"),
             )
+            _apply_identity_outcome(item, identity_outcome)
             session.add(item)
             session.flush()
         except IntegrityError as exc:
@@ -500,8 +786,8 @@ def update_account(
     *,
     audit: Optional[AuditContext] = None,
 ) -> Dict[str, Any]:
-    with database.session() as session:
-        item = managed_repo.get_account(session, account_id)
+    with _managed_transaction(database) as session:
+        item = managed_repo.get_account_for_update(session, account_id)
         if item is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
         credential_changed = False
@@ -567,6 +853,14 @@ def update_account(
             item.remote_account_id = None
             item.remote_display_name = None
             item.identity_checked_at = None
+            # 新凭据就是新会话：清除客户端上报的失效标记。
+            item.session_status = "valid"
+        if credential_changed and item.auth_mode == "cookie":
+            platform = platforms_repo.get(session, item.platform_id)
+            if platform is not None:
+                _apply_identity_outcome(
+                    item, _probe_cookie_credentials(platform, _credential_values(item)[2])
+                )
         try:
             session.flush()
         except IntegrityError as exc:
@@ -588,8 +882,8 @@ def update_account(
 def delete_account(
     database: Database, account_id: int | str, *, audit: Optional[AuditContext] = None
 ) -> None:
-    with database.session() as session:
-        item = managed_repo.get_account(session, account_id)
+    with _managed_transaction(database) as session:
+        item = managed_repo.get_account_for_update(session, account_id)
         if item is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
         item.status = "revoked"
@@ -610,6 +904,57 @@ def delete_account(
             target_id=item.id,
             target_name=item.name,
         )
+
+
+def check_account_identity(
+    database: Database, account_id: int | str, *, audit: Optional[AuditContext] = None
+) -> Dict[str, Any]:
+    """Probe the stored cookie against the platform's user-info endpoint.
+
+    ``verified`` refreshes the remote identity and restores a client-reported
+    expired session (the cookie demonstrably still works); ``invalid`` marks
+    the session expired for the admins; a probe/network failure surfaces as
+    503 without touching stored state.
+    """
+    with _managed_transaction(database) as session:
+        item = managed_repo.get_account_for_update(session, account_id)
+        if item is None:
+            raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+        if item.auth_mode != "cookie":
+            raise BadRequestError("仅 Cookie 模式的托管账号支持在线校验登录态")
+        platform = platforms_repo.get(session, item.platform_id)
+        if platform is None:
+            raise NotFoundError(MANAGED_PLATFORM_NOT_FOUND)
+        outcome = _identity_probe(platform.url, _credential_values(item)[2])
+        if outcome is None:
+            raise BadRequestError("该平台暂不支持在线校验登录态（Cookie 需包含 sessionid）")
+        now = utc_now()
+        if outcome.state == "verified":
+            item.remote_account_id = outcome.remote_account_id
+            item.remote_display_name = outcome.remote_display_name
+            item.identity_checked_at = now
+            item.last_verified_at = now
+            item.session_status = "valid"
+            item.last_error = None
+        elif outcome.state == "invalid":
+            item.session_status = "expired"
+            item.last_error = outcome.detail or "上游登录态已失效"
+        else:
+            raise ManagedProviderUnavailableError(
+                f"managed_identity_probe_unavailable: {outcome.detail or '登录态校验请求失败'}"
+            )
+        result = {"state": outcome.state, "detail": outcome.detail, "account": _account_dict(item)}
+        record(
+            session,
+            audit,
+            "MANAGED_ACCOUNT_IDENTITY_CHECKED",
+            f"校验托管账号 {item.name} 的平台登录态",
+            target_type="managed_platform_account",
+            target_id=item.id,
+            target_name=item.name,
+            details={"state": outcome.state, "platformId": item.platform_id},
+        )
+        return result
 
 
 def bind_account(
@@ -805,6 +1150,11 @@ def create_user_bound_account(
         platform = _require_ark_platform(session)
         raw_name = (values.get("name") or "").strip()
         name = raw_name or _next_user_account_name(session, platform.id, user.id)
+        identity_outcome = (
+            _probe_cookie_credentials(platform, list(cookies or []))
+            if auth_mode == "cookie"
+            else None
+        )
         try:
             account = ManagedPlatformAccount(
                 platform_id=platform.id,
@@ -819,6 +1169,7 @@ def create_user_bound_account(
                 status="active",
                 created_by=audit.actor_id if audit else None,
             )
+            _apply_identity_outcome(account, identity_outcome)
             session.add(account)
             session.flush()
         except IntegrityError as exc:
@@ -854,18 +1205,21 @@ def update_user_bound_account(
     *,
     audit: Optional[AuditContext] = None,
 ) -> Dict[str, Any]:
-    with database.session() as session:
+    with _managed_transaction(database) as session:
         user = users_repo.get_active(session, user_id)
         if user is None:
             raise NotFoundError(MANAGED_USER_NOT_FOUND)
         account = managed_repo.get_account(session, managed_account_id)
         if account is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
-        binding = managed_repo.get_binding_for_account(
+        binding = managed_repo.get_binding_for_account_for_update(
             session, user.id, account.platform_id, account.id
         )
         if binding is None:
             raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
+        account = managed_repo.get_account_for_update(session, managed_account_id)
+        if account is None:
+            raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
         platform = _require_platform(session, account.platform_id)
 
         credential_changed = False
@@ -922,6 +1276,12 @@ def update_user_bound_account(
             account.remote_account_id = None
             account.remote_display_name = None
             account.identity_checked_at = None
+            # 新凭据就是新会话：清除客户端上报的失效标记。
+            account.session_status = "valid"
+        if credential_changed and account.auth_mode == "cookie":
+            _apply_identity_outcome(
+                account, _probe_cookie_credentials(platform, _credential_values(account)[2])
+            )
 
         try:
             session.flush()
@@ -960,7 +1320,7 @@ def upsert_user_account(
     if auth_mode not in {"cookie", "server_login"}:
         raise BadRequestError("authMode must be cookie or server_login")
 
-    with database.session() as session:
+    with _managed_transaction(database) as session:
         user = users_repo.get_active(session, user_id)
         if user is None:
             raise NotFoundError(MANAGED_USER_NOT_FOUND)
@@ -970,10 +1330,20 @@ def upsert_user_account(
             raise ConflictError("该用户已绑定多个托管账号，请使用按账号接口保存")
         pair = None
         if bindings:
-            account = managed_repo.get_account(session, bindings[0].managed_account_id)
+            binding = managed_repo.get_binding_for_account_for_update(
+                session, user.id, platform.id, bindings[0].managed_account_id
+            )
+            if binding is None:
+                raise ConflictError(MANAGED_CREDENTIAL_CONFLICT)
+            account = managed_repo.get_account_for_update(session, binding.managed_account_id)
             if account is not None:
-                pair = (bindings[0], account)
+                pair = (binding, account)
         if pair is None:
+            identity_outcome = (
+                _probe_cookie_credentials(platform, list(cookies or []))
+                if auth_mode == "cookie"
+                else None
+            )
             account = ManagedPlatformAccount(
                 platform_id=platform.id,
                 name=f"user-{user.id}-ark",
@@ -987,6 +1357,7 @@ def upsert_user_account(
                 status="active",
                 created_by=audit.actor_id if audit else None,
             )
+            _apply_identity_outcome(account, identity_outcome)
             session.add(account)
             session.flush()
             binding = ManagedPlatformBinding(
@@ -1009,11 +1380,19 @@ def upsert_user_account(
             account.allowed_hosts = _platform_allowed_hosts(platform)
             account.expires_at = None
             account.status = "active"
+            account.session_status = "valid"
             account.credential_version = int(account.credential_version) + 1
             account.last_verified_at = None
             account.last_error = None
+            account.remote_account_id = None
+            account.remote_display_name = None
+            account.identity_checked_at = None
             binding.status = "active"
             binding.updated_at = utc_now()
+            if auth_mode == "cookie":
+                _apply_identity_outcome(
+                    account, _probe_cookie_credentials(platform, list(cookies or []))
+                )
             session.flush()
         result = _account_detail_dict(account, platform_name=platform.name)
         record(
@@ -1035,7 +1414,7 @@ def delete_user_account(
     *,
     audit: Optional[AuditContext] = None,
 ) -> None:
-    with database.session() as session:
+    with _managed_transaction(database) as session:
         user = users_repo.get_active(session, user_id)
         if user is None:
             raise NotFoundError(MANAGED_USER_NOT_FOUND)
@@ -1047,9 +1426,13 @@ def delete_user_account(
             raise ConflictError("该用户已绑定多个托管账号，请使用托管账号列表接口删除指定账号")
         pair = None
         if bindings:
-            account = managed_repo.get_account(session, bindings[0].managed_account_id)
-            if account is not None:
-                pair = (bindings[0], account)
+            binding = managed_repo.get_binding_for_account_for_update(
+                session, user.id, platform.id, bindings[0].managed_account_id
+            )
+            if binding is not None:
+                account = managed_repo.get_account_for_update(session, binding.managed_account_id)
+                if account is not None:
+                    pair = (binding, account)
         if pair is None:
             raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
         binding, account = pair
@@ -1075,60 +1458,24 @@ def delete_user_account(
         )
 
 
-def verify_account(
+def _mark_cookie_session_invalid(
     database: Database,
-    account_id: int | str,
-    *,
-    provider: Optional[ManagedLoginProvider] = None,
-    audit: Optional[AuditContext] = None,
-) -> Dict[str, Any]:
-    with database.session() as session:
-        item = managed_repo.get_account(session, account_id)
+    account_id: int,
+    expected_state: tuple[int, str, str, Any],
+    detail: str,
+) -> None:
+    with _managed_transaction(database) as session:
+        item = managed_repo.get_account_for_update(session, account_id)
         if item is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
-        platform = _require_platform(session, item.platform_id)
-        username, password, cookies = _credential_values(item)
-        item_name = item.name
-        item_id = item.id
-    provider = provider or get_managed_login_provider()
-    result = provider.verify(
-        platform_url=platform.url,
-        auth_mode=item.auth_mode,
-        username=username,
-        password=password,
-        cookie_bundle=cookies,
-    )
-    if result.status != "verified":
-        raise ManagedVerificationRequiredError(
-            f"needs_manual_verification: {result.detail or '需要人工验证'}"
-        )
-    with database.session() as session:
-        item = managed_repo.get_account(session, item_id)
-        if item is None:
-            raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
-        item.cookie_bundle = list(result.cookie_bundle)
-        item.encrypted_cookie_bundle = None
-        item.credential_version = int(item.credential_version) + 1
-        item.last_verified_at = utc_now()
-        item.last_error = None
-        item.status = "active"
-        item.remote_account_id = result.remote_account_id
-        item.remote_display_name = result.remote_display_name
-        item.identity_checked_at = (
-            utc_now()
-            if result.remote_account_id or result.remote_display_name
-            else None
-        )
-        record(
-            session,
-            audit,
-            "MANAGED_ACCOUNT_VERIFIED",
-            f"验证托管平台账号 {item_name}",
-            target_type="managed_platform_account",
-            target_id=item.id,
-            target_name=item.name,
-        )
-        return {**_account_dict(item), "verification": "verified"}
+        current_state = (item.credential_version, item.status, item.session_status, item.expires_at)
+        if current_state != expected_state:
+            raise ConflictError(MANAGED_CREDENTIAL_CONFLICT)
+        if item.session_status != "expired":
+            item.session_status = "expired"
+            item.credential_version = int(item.credential_version) + 1
+        item.last_error = detail
+
 
 
 def _load_bootstrap_context(
@@ -1156,6 +1503,8 @@ def _load_bootstrap_context(
             raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
         if account.status != "active" or (account.expires_at is not None and account.expires_at <= utc_now()):
             raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
+        if account.session_status == "expired":
+            raise ConflictError(MANAGED_ACCOUNT_SESSION_EXPIRED)
         platform = _require_platform(session, platform_id)
         if platform.status != "active":
             raise ConflictError(MANAGED_PLATFORM_INACTIVE)
@@ -1198,15 +1547,30 @@ def issue_bootstrap(
                 f"needs_manual_verification: {result.detail or '需要人工验证'}"
             )
         cookies = result.cookie_bundle
-        with database.session() as session:
-            fresh = managed_repo.get_account(session, account.id)
+        # Playwright 已确认页面登录态，这里只为补齐远端身份：探测结果仅在
+        # verified 时采用，其余情况以浏览器验证为准。
+        identity_outcome = _identity_probe(platform.url, cookies)
+        with _managed_transaction(database) as session:
+            binding = managed_repo.get_binding_for_account_for_update(
+                session, user_id, platform_id, account.id
+            )
+            if binding is None or binding.status != "active":
+                raise ConflictError(MANAGED_GRANT_INVALID)
+            fresh = managed_repo.get_account_for_update(session, account.id)
             if fresh is None:
                 raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+            if fresh.credential_version != account.credential_version:
+                raise ConflictError(MANAGED_CREDENTIAL_CONFLICT)
+            if fresh.session_status != "valid":
+                raise ConflictError(MANAGED_ACCOUNT_SESSION_EXPIRED)
+            if fresh.status != "active" or (fresh.expires_at is not None and fresh.expires_at <= utc_now()):
+                raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
             fresh.cookie_bundle = list(cookies)
             fresh.encrypted_cookie_bundle = None
             fresh.credential_version = int(fresh.credential_version) + 1
             fresh.last_verified_at = utc_now()
             fresh.last_error = None
+            fresh.session_status = "valid"
             fresh.remote_account_id = result.remote_account_id
             fresh.remote_display_name = result.remote_display_name
             fresh.identity_checked_at = (
@@ -1214,21 +1578,63 @@ def issue_bootstrap(
                 if result.remote_account_id or result.remote_display_name
                 else None
             )
+            _apply_identity_outcome(fresh, identity_outcome)
             account_version = fresh.credential_version
-            allowed_hosts = list(fresh.allowed_hosts or []) or _platform_allowed_hosts(platform)
     else:
         account_version = account.credential_version
-        allowed_hosts = list(account.allowed_hosts or []) or _platform_allowed_hosts(platform)
+        reuse_identity_outcome: Optional[IdentityProbeOutcome] = None
+        if account.auth_mode == "cookie":
+            # 复用已存 Cookie 时兜底探测：身份未知或结果超期才发起。
+            # 明确失效则标记会话过期并拒发票据；探测本身失败不影响发放。
+            identity_fresh = (
+                account.identity_checked_at is not None
+                and (utc_now() - account.identity_checked_at) <= IDENTITY_PROBE_TTL
+            )
+            if not identity_fresh:
+                reuse_identity_outcome = _identity_probe(platform.url, cookies)
+                if (
+                    reuse_identity_outcome is not None
+                    and reuse_identity_outcome.state == "invalid"
+                ):
+                    with _managed_transaction(database) as session:
+                        fresh = managed_repo.get_account_for_update(session, account.id)
+                        if (
+                            fresh is not None
+                            and fresh.credential_version == account.credential_version
+                        ):
+                            fresh.session_status = "expired"
+                            fresh.last_error = reuse_identity_outcome.detail
+                    raise ConflictError(MANAGED_ACCOUNT_SESSION_EXPIRED)
     raw_token = secrets.token_urlsafe(32)
     now = utc_now()
     with database.session() as session:
+        binding = managed_repo.get_binding_for_account_for_update(
+            session, user_id, platform_id, account.id
+        )
+        if binding is None or binding.status != "active":
+            raise ConflictError(MANAGED_GRANT_INVALID)
+        fresh = managed_repo.get_account_for_update(session, account.id)
+        if fresh is None or fresh.platform_id != int(platform_id):
+            raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
+        if fresh.session_status != "valid":
+            raise ConflictError(MANAGED_ACCOUNT_SESSION_EXPIRED)
+        if fresh.status != "active" or (fresh.expires_at is not None and fresh.expires_at <= now):
+            raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
+        if fresh.credential_version != account_version:
+            raise ConflictError(MANAGED_CREDENTIAL_CONFLICT)
+        if reuse_identity_outcome is not None:
+            _apply_identity_outcome(fresh, reuse_identity_outcome)
+        platform = _require_platform(session, int(platform_id))
+        if platform.status != "active":
+            raise ConflictError(MANAGED_PLATFORM_INACTIVE)
+        allowed_hosts = list(fresh.allowed_hosts or []) or _platform_allowed_hosts(platform)
         row = ManagedBrowserSession(
             grant_hash=hashlib.sha256(raw_token.encode("utf-8")).hexdigest(),
             user_id=int(user_id),
             platform_id=int(platform_id),
             managed_account_id=account.id,
             credential_version=account_version,
-            device_id=device_id.strip() if device_id else None,
+            device_id=_normalized_device_id(device_id),
             expires_at=now + BOOTSTRAP_TTL,
         )
         session.add(row)
@@ -1269,7 +1675,7 @@ def consume_bootstrap(
             raise ConflictError(MANAGED_GRANT_INVALID)
         if row.consumed_at is not None:
             raise ConflictError(MANAGED_GRANT_REPLAY)
-        if row.expires_at <= now or (row.device_id is not None and row.device_id != (device_id or "").strip()):
+        if row.expires_at <= now or _normalized_device_id(row.device_id) != _normalized_device_id(device_id):
             raise ConflictError(MANAGED_GRANT_INVALID)
         # A grant is only valid while the user is still actively bound to the
         # same managed account.  Without this check, an administrator could
@@ -1290,10 +1696,12 @@ def consume_bootstrap(
             or binding.status != "active"
         ):
             raise ConflictError(MANAGED_GRANT_INVALID)
-        account = managed_repo.get_account(session, row.managed_account_id)
+        account = managed_repo.get_account_for_update(session, row.managed_account_id)
         if (
             account is None
+            or account.platform_id != row.platform_id
             or account.status != "active"
+            or account.session_status != "valid"
             or (account.expires_at is not None and account.expires_at <= now)
             or account.credential_version != row.credential_version
         ):
@@ -1304,7 +1712,8 @@ def consume_bootstrap(
         _username, _password, cookies = _credential_values(account)
         if not cookies:
             raise ConflictError(MANAGED_GRANT_INVALID)
-        row.consumed_at = now
+        if not managed_repo.consume_session(session, row, utc_now()):
+            raise ConflictError(MANAGED_GRANT_INVALID)
         result = {
             "sessionId": str(row.id),
             "managedAccountId": row.managed_account_id,
@@ -1327,6 +1736,147 @@ def consume_bootstrap(
         return result
 
 
+def report_session_expired(
+    database: Database,
+    user_id: int | str,
+    platform_id: int | str,
+    managed_account_id: int | str,
+    credential_version: int,
+    session_id: str,
+    device_id: Optional[str] = None,
+    *,
+    audit: Optional[AuditContext] = None,
+) -> Dict[str, Any]:
+    """Expire only the exact credential used by this user's consumed session.
+
+    Grant expires_at is a redemption deadline, not a running-session deadline.
+    Authenticate the full report even when it is stale; only then may retries
+    return the current account state without changing it or recording an audit.
+    """
+    with database.session() as session:
+        # Keep the same grant -> binding -> account lock order as consume.
+        row = managed_repo.get_session_by_id_for_update(session, session_id)
+        if (
+            row is None
+            or row.user_id != int(user_id)
+            or row.platform_id != int(platform_id)
+            or row.managed_account_id != int(managed_account_id)
+            or row.credential_version != credential_version
+            or row.consumed_at is None
+            or _normalized_device_id(row.device_id) != _normalized_device_id(device_id)
+        ):
+            raise ConflictError(MANAGED_SESSION_INVALID)
+        binding = managed_repo.get_binding_for_account_for_update(
+            session, row.user_id, row.platform_id, row.managed_account_id
+        )
+        if binding is None:
+            raise NotFoundError(MANAGED_BINDING_NOT_FOUND)
+        if binding.status != "active":
+            raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
+        account = managed_repo.get_account_for_update(session, row.managed_account_id)
+        if account is None or account.platform_id != int(platform_id):
+            raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+        platform = _require_platform(session, row.platform_id)
+        if platform.status != "active":
+            raise ConflictError(MANAGED_PLATFORM_INACTIVE)
+        now = utc_now()
+        if account.status != "active" or (account.expires_at is not None and account.expires_at <= now):
+            raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
+        applied = managed_repo.expire_account_session(
+            session,
+            account_id=account.id,
+            platform_id=row.platform_id,
+            user_id=row.user_id,
+            credential_version=credential_version,
+            now=now,
+            last_error="客户端上报：用户在平台退出登录",
+        )
+        # An explicit locking refresh avoids a stale identity-map/repeatable-read
+        # snapshot if the conditional write lost to another report or rotation.
+        account = managed_repo.get_account_for_update(session, row.managed_account_id)
+        if account is None:
+            raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+        if applied:
+            record(
+                session,
+                audit,
+                "MANAGED_SESSION_EXPIRED",
+                "客户端上报托管账号在平台侧退出登录",
+                target_type="managed_platform_account",
+                target_id=account.id,
+                target_name=account.name,
+                details={
+                    "platformId": row.platform_id,
+                    "userId": row.user_id,
+                    "sessionId": str(row.id),
+                    "credentialVersion": credential_version,
+                    "deviceId": _normalized_device_id(device_id),
+                },
+            )
+        return {
+            "sessionStatus": account.session_status,
+            "credentialVersion": account.credential_version,
+            "applied": applied,
+        }
+
+
+def list_all_bindings(
+    database: Database,
+    *,
+    audit: Optional[AuditContext] = None,
+) -> Dict[str, Any]:
+    """管理端「绑定托管」总览：全部用户的绑定 + 会话状态与失效计数。"""
+    del audit  # 只读列表，不记审计。
+    with database.session() as session:
+        bindings = managed_repo.list_all_bindings(session)
+        accounts = {
+            item.id: item
+            for item in managed_repo.list_accounts(session)
+        }
+        users = {
+            item.id: item for item in users_repo.list_all(session)
+        }
+        platforms: Dict[int, str] = {}
+        items: List[Dict[str, Any]] = []
+        expired_count = 0
+        for binding in bindings:
+            account = accounts.get(binding.managed_account_id)
+            if account is None:
+                continue
+            platform_name = platforms.get(binding.platform_id)
+            if platform_name is None:
+                platform = platforms_repo.get(session, binding.platform_id)
+                platform_name = platform.name if platform else f"平台-{binding.platform_id}"
+                platforms[binding.platform_id] = platform_name
+            user = users.get(binding.user_id)
+            session_status = account.session_status
+            if session_status == "expired":
+                expired_count += 1
+            items.append(
+                {
+                    "bindingId": binding.id,
+                    "userId": binding.user_id,
+                    "username": user.username if user else f"用户-{binding.user_id}",
+                    "userName": user.name if user else None,
+                    "userStatus": user.status if user else None,
+                    "platformId": binding.platform_id,
+                    "platformName": platform_name,
+                    "managedAccountId": account.id,
+                    "name": _account_display_name(account),
+                    "authMode": account.auth_mode,
+                    "status": binding.status,
+                    "accountStatus": account.status,
+                    "sessionStatus": session_status,
+                    "lastError": account.last_error,
+                    "credentialVersion": account.credential_version,
+                    "expiresAt": iso_datetime(account.expires_at),
+                    "lastVerifiedAt": iso_datetime(account.last_verified_at),
+                    "remoteDisplayName": account.remote_display_name,
+                }
+            )
+        return {"items": items, "total": len(items), "expiredCount": expired_count}
+
+
 __all__ = [
     "ManagedLoginProvider",
     "ManagedLoginResult",
@@ -1343,9 +1893,11 @@ __all__ = [
     "get_managed_login_provider",
     "issue_bootstrap",
     "list_accounts",
+    "list_all_bindings",
+    "refresh_session_statuses",
+    "report_session_expired",
     "unbind_account",
     "update_account",
     "update_user_bound_account",
     "upsert_user_account",
-    "verify_account",
 ]

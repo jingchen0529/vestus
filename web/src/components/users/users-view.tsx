@@ -7,6 +7,7 @@ import { ProxyItem } from "@/types/proxy";
 import { AdminUser } from "@/types/admin";
 import {
   CreateUserManagedAccountPayload,
+  ManagedIdentityCheckResponse,
   ManagedPlatformAccount,
   UpdateUserManagedAccountPayload,
   UserManagedAccountBinding,
@@ -74,6 +75,7 @@ interface UsersViewProps {
     managedAccountId: number,
     payload: UpdateUserManagedAccountPayload,
   ) => Promise<void>;
+  onCheckIdentity?: (managedAccountId: number) => Promise<ManagedIdentityCheckResponse>;
 }
 
 export function UsersView({
@@ -104,6 +106,7 @@ export function UsersView({
   onCreateManagedAccount,
   onGetManagedAccountDetail,
   onUpdateManagedAccount,
+  onCheckIdentity,
 }: UsersViewProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<DesktopUser | null>(null);
@@ -191,6 +194,16 @@ export function UsersView({
     if (!onUnbindManagedAccount) return;
     await onUnbindManagedAccount(userId, managedAccountId);
     await refreshManagedBindingsForUser(userId);
+  };
+
+  /** 检查登录态后刷新弹窗内的绑定列表，使身份/会话状态立即生效。 */
+  const handleCheckManagedIdentity = async (managedAccountId: number) => {
+    if (!onCheckIdentity || !managedUser) {
+      throw new Error("当前登录身份无法检查登录态");
+    }
+    const result = await onCheckIdentity(managedAccountId);
+    await refreshManagedBindingsForUser(managedUser.id);
+    return result;
   };
 
   const handleCreateUserManagedAccount = async (
@@ -313,6 +326,7 @@ export function UsersView({
           onCreateAccount={onCreateManagedAccount ? handleCreateUserManagedAccount : undefined}
           onGetAccountDetail={onGetManagedAccountDetail}
           onUpdateAccount={onUpdateManagedAccount ? handleUpdateUserManagedAccount : undefined}
+          onCheckIdentity={onCheckIdentity ? handleCheckManagedIdentity : undefined}
         />
       )}
 

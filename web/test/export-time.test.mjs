@@ -12,6 +12,8 @@ const server = await createServer({
   appType: "custom",
   configFile: false,
   root: webRoot,
+  cacheDir: path.join(webRoot, "node_modules/.vite/export-time-test"),
+  optimizeDeps: { noDiscovery: true, include: [] },
   resolve: {
     alias: {
       "@": path.join(webRoot, "src"),

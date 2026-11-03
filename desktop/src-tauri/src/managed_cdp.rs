@@ -31,6 +31,38 @@ const NAVIGATE_COMMAND_ID: i64 = 2;
 const TARGETS_COMMAND_ID: i64 = 3;
 const ATTACH_COMMAND_ID: i64 = 4;
 const DETACH_COMMAND_ID: i64 = 5;
+const PAGE_ENABLE_COMMAND_ID: i64 = 6;
+const FRAME_TREE_COMMAND_ID: i64 = 7;
+
+/// Immutable identity of the credential actually installed in a browser.
+/// Kept in Rust only; neither credentials nor navigation URLs enter reports.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedSessionIdentity {
+    pub(crate) session_id: String,
+    pub(crate) managed_account_id: u64,
+    pub(crate) credential_version: u64,
+}
+
+impl ManagedSessionIdentity {
+    fn from_bootstrap(wire: &ManagedBootstrapWire) -> Result<Self, ManagedCdpError> {
+        let session_id = wire.session_id.parse::<i64>().ok();
+        if !session_id.is_some_and(|id| id > 0)
+            || !wire.session_id.bytes().all(|byte| byte.is_ascii_digit())
+            || wire.managed_account_id == 0
+            || wire.managed_account_id > i64::MAX as u64
+            || wire.credential_version == 0
+            || wire.credential_version > i64::MAX as u64
+        {
+            return Err(ManagedCdpError::SessionIdentityInvalid);
+        }
+        Ok(Self {
+            session_id: wire.session_id.clone(),
+            managed_account_id: wire.managed_account_id,
+            credential_version: wire.credential_version,
+        })
+    }
+}
 
 /// The server-shaped managed session received by the Rust-only launch path.
 ///
@@ -103,6 +135,7 @@ pub(crate) enum ManagedExpiryWire {
 pub(crate) struct ManagedSession {
     pub(crate) target_url: String,
     pub(crate) allowed_hosts: Vec<String>,
+    pub(crate) identity: Option<ManagedSessionIdentity>,
     cookies: Vec<ManagedCookie>,
 }
 
@@ -123,6 +156,8 @@ struct ManagedCookie {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum ManagedCdpError {
+    #[error("托管会话标识或凭据版本无效")]
+    SessionIdentityInvalid,
     #[error("托管平台地址无效")]
     TargetUrlInvalid,
     #[error("托管平台地址不在服务端允许域名内")]
@@ -205,6 +240,7 @@ pub(crate) fn validate_session(
     Ok(ManagedSession {
         target_url: target.to_string(),
         allowed_hosts,
+        identity: None,
         cookies,
     })
 }
@@ -226,11 +262,14 @@ pub(crate) fn managed_session_from_bootstrap(
     if expected != received {
         return Err(ManagedCdpError::TargetUrlMismatch);
     }
-    validate_session(ManagedSessionWire {
+    let identity = ManagedSessionIdentity::from_bootstrap(&bootstrap)?;
+    let mut session = validate_session(ManagedSessionWire {
         target_url: received,
         allowed_hosts: bootstrap.allowed_hosts,
         cookies: bootstrap.cookie_bundle,
-    })
+    })?;
+    session.identity = Some(identity);
+    Ok(session)
 }
 
 fn normalize_allowed_hosts(hosts: &[String]) -> Result<Vec<String>, ManagedCdpError> {
@@ -577,7 +616,7 @@ pub(crate) async fn inject_session(
         None,
     )
     .await?;
-    let target_id = select_single_target(&targets, session)?;
+    let target_id = select_single_target(&targets, &session.allowed_hosts)?;
     let attach = send_command(
         &mut navigation_socket,
         ATTACH_COMMAND_ID,
@@ -654,9 +693,233 @@ fn session_cookie_values(session: &ManagedSession) -> Vec<Value> {
         .collect()
 }
 
+/// A platform-specific logout signal, not an authentication/security boundary.
+/// Unknown platforms do not inherit a generic substring rule.
+#[derive(Debug, Clone)]
+struct LogoutPolicy {
+    endpoint: Url,
+}
+
+impl LogoutPolicy {
+    fn for_platform(target_url: &str) -> Option<Self> {
+        let target = Url::parse(target_url).ok()?;
+        if target.scheme() != "https"
+            || target.host_str() != Some("agent.oceanengine.com")
+            || target.port_or_known_default() != Some(443)
+        {
+            return None;
+        }
+        Some(Self {
+            endpoint: Url::parse("https://sso.oceanengine.com/account/page/service/sso_logout")
+                .expect("fixed Ark logout endpoint"),
+        })
+    }
+
+    fn matches(&self, value: &str) -> bool {
+        let Ok(url) = Url::parse(value) else {
+            return false;
+        };
+        url.username().is_empty()
+            && url.password().is_none()
+            && url.origin() == self.endpoint.origin()
+            && url.path() == self.endpoint.path()
+    }
+}
+
+struct LogoutDetector {
+    policy: LogoutPolicy,
+    session_id: String,
+    main_frame_id: Option<String>,
+    detected: bool,
+    detached: bool,
+}
+
+impl LogoutDetector {
+    fn observe(&mut self, event: &Value) {
+        if event.get("method").and_then(Value::as_str) == Some("Target.detachedFromTarget")
+            && event.pointer("/params/sessionId").and_then(Value::as_str)
+                == Some(self.session_id.as_str())
+        {
+            self.detached = true;
+            return;
+        }
+        if event.get("sessionId").and_then(Value::as_str) != Some(self.session_id.as_str()) {
+            return;
+        }
+        match event.get("method").and_then(Value::as_str) {
+            Some("Page.frameNavigated") => {
+                if let Some(frame) = event.pointer("/params/frame") {
+                    if frame.get("parentId").is_none() {
+                        self.observe_main_frame(frame);
+                    }
+                }
+            }
+            Some("Page.navigatedWithinDocument") => {
+                if let Some(main_frame_id) = self.main_frame_id.as_deref() {
+                    if event.pointer("/params/frameId").and_then(Value::as_str)
+                        == Some(main_frame_id)
+                    {
+                        self.observe_url(event.pointer("/params/url").and_then(Value::as_str));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn observe_main_frame(&mut self, frame: &Value) {
+        if let Some(id) = frame
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            self.main_frame_id = Some(id.to_string());
+            self.observe_url(frame.get("url").and_then(Value::as_str));
+        }
+    }
+
+    fn observe_url(&mut self, url: Option<&str>) {
+        if url.is_some_and(|url| self.policy.matches(url)) {
+            self.detected = true;
+        }
+    }
+}
+
+/// Owns an independent, already-subscribed CDP connection. Setup completes
+/// before cookie injection/navigation; command replies never discard events.
+/// It contains no cookies and is cancelled when the owning browser exits.
+pub(crate) struct LogoutWatch {
+    socket: ManagedSocket,
+    detector: LogoutDetector,
+}
+
+impl LogoutWatch {
+    pub(crate) async fn wait(mut self) -> Result<bool, ManagedCdpError> {
+        loop {
+            if self.detector.detected {
+                return Ok(true);
+            }
+            if self.detector.detached {
+                return Ok(false);
+            }
+            let Some(frame) = self.socket.next().await else {
+                return Ok(false);
+            };
+            match frame.map_err(|error| ManagedCdpError::Transport(error.to_string()))? {
+                Message::Text(text) => {
+                    let event: Value = serde_json::from_str(&text)
+                        .map_err(|_| ManagedCdpError::InvalidResponse)?;
+                    self.detector.observe(&event);
+                }
+                Message::Close(_) => return Ok(false),
+                _ => {}
+            }
+        }
+    }
+}
+
+pub(crate) async fn prepare_logout_watch(
+    endpoint: &DevToolsEndpoint,
+    session: &ManagedSession,
+) -> Result<Option<LogoutWatch>, ManagedCdpError> {
+    let Some(policy) = LogoutPolicy::for_platform(&session.target_url) else {
+        return Ok(None);
+    };
+    prepare_logout_watch_with_policy(endpoint, &session.allowed_hosts, policy)
+        .await
+        .map(Some)
+}
+
+async fn prepare_logout_watch_with_policy(
+    endpoint: &DevToolsEndpoint,
+    allowed_hosts: &[String],
+    policy: LogoutPolicy,
+) -> Result<LogoutWatch, ManagedCdpError> {
+    let mut socket = connect(endpoint).await?;
+    let target_id = {
+        // DevToolsActivePort can precede the first about:blank frame. Wait
+        // before navigation instead of silently losing the watch for this run.
+        let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+        loop {
+            let targets = send_command(
+                &mut socket,
+                TARGETS_COMMAND_ID,
+                "Target.getTargets",
+                json!({}),
+                None,
+            )
+            .await?;
+            let selection = select_single_target(&targets, allowed_hosts);
+            let starting_page = targets
+                .get("targetInfos")
+                .and_then(Value::as_array)
+                .is_some_and(|targets| {
+                    let pages: Vec<_> = targets
+                        .iter()
+                        .filter(|target| target["type"] == "page")
+                        .collect();
+                    pages.is_empty() || (pages.len() == 1 && pages[0]["url"] == "")
+                });
+            match selection {
+                Ok(target_id) => break target_id,
+                Err(_) if starting_page && tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    };
+    let attach = send_command(
+        &mut socket,
+        ATTACH_COMMAND_ID,
+        "Target.attachToTarget",
+        json!({"targetId": target_id, "flatten": true}),
+        None,
+    )
+    .await?;
+    let attached_session = attach
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or(ManagedCdpError::InvalidResponse)?
+        .to_string();
+    let mut detector = LogoutDetector {
+        policy,
+        session_id: attached_session.clone(),
+        main_frame_id: None,
+        detected: false,
+        detached: false,
+    };
+    send_command_observing(
+        &mut socket,
+        PAGE_ENABLE_COMMAND_ID,
+        "Page.enable",
+        json!({}),
+        Some(&attached_session),
+        |event| detector.observe(event),
+    )
+    .await?;
+    let tree = send_command_observing(
+        &mut socket,
+        FRAME_TREE_COMMAND_ID,
+        "Page.getFrameTree",
+        json!({}),
+        Some(&attached_session),
+        |event| detector.observe(event),
+    )
+    .await?;
+    let frame = tree
+        .pointer("/frameTree/frame")
+        .ok_or(ManagedCdpError::InvalidResponse)?;
+    detector.observe_main_frame(frame);
+    if detector.main_frame_id.is_none() {
+        return Err(ManagedCdpError::InvalidResponse);
+    }
+    Ok(LogoutWatch { socket, detector })
+}
+
 fn select_single_target(
     result: &Value,
-    session: &ManagedSession,
+    allowed_hosts: &[String],
 ) -> Result<String, ManagedCdpError> {
     let targets = result
         .get("targetInfos")
@@ -689,8 +952,7 @@ fn select_single_target(
             .ok_or(ManagedCdpError::TargetHostNotAllowed)?
             .to_ascii_lowercase();
         if !matches!(current.scheme(), "http" | "https")
-            || !session
-                .allowed_hosts
+            || !allowed_hosts
                 .iter()
                 .any(|allowed| host_matches_pattern(&host, allowed))
         {
@@ -725,6 +987,17 @@ async fn send_command(
     params: Value,
     session_id: Option<&str>,
 ) -> Result<Value, ManagedCdpError> {
+    send_command_observing(socket, id, method, params, session_id, |_| {}).await
+}
+
+async fn send_command_observing(
+    socket: &mut ManagedSocket,
+    id: i64,
+    method: &str,
+    params: Value,
+    session_id: Option<&str>,
+    mut observe: impl FnMut(&Value),
+) -> Result<Value, ManagedCdpError> {
     let mut message = json!({"id": id, "method": method, "params": params});
     if let Some(session_id) = session_id {
         message["sessionId"] = Value::String(session_id.to_string());
@@ -742,6 +1015,7 @@ async fn send_command(
             let response: Value =
                 serde_json::from_str(&text).map_err(|_| ManagedCdpError::InvalidResponse)?;
             if response.get("id").and_then(Value::as_i64) != Some(id) {
+                observe(&response);
                 continue;
             }
             if let Some(error) = response.get("error") {
@@ -919,4 +1193,188 @@ mod tests {
             Err(ManagedCdpError::CookieSameSiteInvalid)
         );
     }
+
+    #[test]
+    fn logout_policy_matches_only_the_exact_platform_endpoint() {
+        let policy = LogoutPolicy::for_platform("https://agent.oceanengine.com/").unwrap();
+        assert!(policy.matches(
+            "https://sso.oceanengine.com/account/page/service/sso_logout?aid=1968&csrf=test"
+        ));
+        for url in [
+            "https://example.com/logout",
+            "https://agent.oceanengine.com/?return=logout",
+            "https://agent.oceanengine.com/docs/logout-guide",
+            "https://sso.oceanengine.com.evil.test/account/page/service/sso_logout",
+            "https://sso.oceanengine.com/account/page/service/sso_logout_help",
+            "https://sso.oceanengine.com/?next=/account/page/service/sso_logout",
+            "https://sso.oceanengine.com:444/account/page/service/sso_logout",
+            "https://user@sso.oceanengine.com/account/page/service/sso_logout",
+            "http://sso.oceanengine.com/account/page/service/sso_logout",
+            "about:blank#logout",
+        ] {
+            assert!(!policy.matches(url), "must ignore {url}");
+        }
+        assert!(LogoutPolicy::for_platform("https://other.example/").is_none());
+    }
+
+    fn logout_detector() -> LogoutDetector {
+        LogoutDetector {
+            policy: LogoutPolicy::for_platform("https://agent.oceanengine.com/").unwrap(),
+            session_id: "attached".into(),
+            main_frame_id: Some("main".into()),
+            detected: false,
+            detached: false,
+        }
+    }
+
+    #[test]
+    fn logout_detector_rejects_subframes_and_other_attached_targets() {
+        let url = "https://sso.oceanengine.com/account/page/service/sso_logout";
+        let mut detector = logout_detector();
+        for event in [
+            json!({"method": "Page.frameNavigated", "sessionId": "other",
+                   "params": {"frame": {"id": "main", "url": url}}}),
+            json!({"method": "Page.frameNavigated", "sessionId": "attached",
+                   "params": {"frame": {"id": "child", "parentId": "main", "url": url}}}),
+            json!({"method": "Page.navigatedWithinDocument", "sessionId": "attached",
+                   "params": {"frameId": "child", "url": url}}),
+        ] {
+            detector.observe(&event);
+            assert!(!detector.detected);
+        }
+        detector.observe(
+            &json!({"method": "Page.frameNavigated", "sessionId": "attached",
+                                "params": {"frame": {"id": "main", "url": url}}}),
+        );
+        assert!(detector.detected);
+    }
+
+    #[test]
+    fn logout_detector_tracks_the_main_frame_for_same_document_navigation() {
+        let mut detector = logout_detector();
+        detector.observe(
+            &json!({"method": "Page.frameNavigated", "sessionId": "attached",
+            "params": {"frame": {"id": "new-main", "url": "https://agent.oceanengine.com/"}}}),
+        );
+        let url = "https://sso.oceanengine.com/account/page/service/sso_logout";
+        detector.observe(
+            &json!({"method": "Page.navigatedWithinDocument", "sessionId": "attached",
+                                "params": {"frameId": "main", "url": url}}),
+        );
+        assert!(!detector.detected);
+        detector.observe(
+            &json!({"method": "Page.navigatedWithinDocument", "sessionId": "attached",
+                                "params": {"frameId": "new-main", "url": url}}),
+        );
+        assert!(detector.detected);
+    }
+
+    #[test]
+    fn detached_watch_is_not_a_logout() {
+        let mut detector = logout_detector();
+        detector.observe(&json!({"method": "Target.detachedFromTarget",
+                                "params": {"sessionId": "attached"}}));
+        assert!(detector.detached);
+        assert!(!detector.detected);
+    }
+
+    #[test]
+    fn bootstrap_identity_is_required_and_never_enters_the_cookie_command() {
+        let bootstrap = json!({
+            "sessionId": "42", "managedAccountId": 9, "credentialVersion": 7,
+            "targetUrl": "https://agent.oceanengine.com/workbench",
+            "cookieBundle": session_json()["cookies"].clone(),
+            "allowedHosts": ["oceanengine.com"], "expiresAt": "2026-11-02T12:00:00Z"
+        });
+        let wire = serde_json::from_value(bootstrap.clone()).unwrap();
+        let session =
+            managed_session_from_bootstrap("https://agent.oceanengine.com/workbench".into(), wire)
+                .unwrap();
+        assert_eq!(session.identity.as_ref().unwrap().credential_version, 7);
+        assert_eq!(session.identity.as_ref().unwrap().session_id, "42");
+        let command = network_set_cookies_command(&session).to_string();
+        assert!(!command.contains("credentialVersion"));
+        assert!(!command.contains("sessionId"));
+        for (field, value) in [
+            ("sessionId", json!("not-a-session")),
+            ("sessionId", json!("0")),
+            ("sessionId", json!("+42")),
+            ("managedAccountId", json!(0)),
+            ("credentialVersion", json!(0)),
+        ] {
+            let mut invalid = bootstrap.clone();
+            invalid[field] = value;
+            let wire = serde_json::from_value(invalid).unwrap();
+            assert_eq!(
+                managed_session_from_bootstrap(
+                    "https://agent.oceanengine.com/workbench".into(),
+                    wire
+                ),
+                Err(ManagedCdpError::SessionIdentityInvalid)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn setup_retains_logout_events_before_command_replies() {
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = DevToolsEndpoint {
+            port: listener.local_addr().unwrap().port(),
+            browser_path: "/devtools/browser/setup-test".into(),
+        };
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut targets_read = 0;
+            for method in [
+                "Target.getTargets",
+                "Target.getTargets",
+                "Target.attachToTarget",
+                "Page.enable",
+                "Page.getFrameTree",
+            ] {
+                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
+                    panic!("expected command");
+                };
+                let command: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(command["method"], method);
+                let result = match method {
+                    "Target.getTargets" => {
+                        targets_read += 1;
+                        let url = if targets_read == 1 { "" } else { "about:blank" };
+                        json!({"targetInfos": [{"targetId": "page", "type": "page", "url": url}]})
+                    }
+                    "Target.attachToTarget" => json!({"sessionId": "attached"}),
+                    "Page.getFrameTree" => {
+                        json!({"frameTree": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/"}}})
+                    }
+                    _ => json!({}),
+                };
+                if method == "Page.enable" {
+                    ws.send(Message::Text(json!({"method": "Page.frameNavigated", "sessionId": "attached",
+                        "params": {"frame": {"id": "main", "url": "https://sso.oceanengine.com/account/page/service/sso_logout"}}
+                    }).to_string().into())).await.unwrap();
+                }
+                ws.send(Message::Text(
+                    json!({"id": command["id"], "result": result})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            }
+        });
+        let session = validate_session(serde_json::from_value(session_json()).unwrap()).unwrap();
+        let watch = prepare_logout_watch(&endpoint, &session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(watch.wait().await.unwrap());
+        server.await.unwrap();
+    }
 }
+
+#[cfg(test)]
+#[path = "managed_cdp/tests.rs"]
+mod integration_tests;

@@ -155,6 +155,9 @@ def managed_account_desktop_dict(
     status = binding.status
     if account.status != "active":
         status = account.status
+    elif account.session_status == "expired":
+        # 客户端上报用户在平台侧退出登录：本地会话已作废，须管理员重新验证。
+        status = "expired"
     elif account.expires_at is not None and account.expires_at <= utc_now():
         status = "expired"
     display_name = (
@@ -216,6 +219,7 @@ def desktop_lease_from_snapshot(
                         "managedAccountId": account.id,
                         "bindingStatus": binding.status,
                         "accountStatus": account.status,
+                        "sessionStatus": account.session_status,
                         "credentialVersion": account.credential_version,
                         "expiresAt": iso_datetime(account.expires_at),
                         "updatedAt": account.updated_at.isoformat(timespec="microseconds"),

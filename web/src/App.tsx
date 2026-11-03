@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { LoginCard } from "@/components/auth/login-card";
 import { AdminLayout } from "@/components/layout/admin-layout";
-import { NavTab } from "@/components/layout/sidebar";
+import { isSuperAdminTab, NavTab } from "@/components/layout/sidebar";
 import { DashboardView } from "@/components/dashboard/dashboard-view";
 import { UsersView } from "@/components/users/users-view";
+import { ManagedBindingsView } from "@/components/managed-platforms/managed-bindings-view";
 import { DesktopConfigView } from "@/components/desktop-config/desktop-config-view";
 import { PlatformsView } from "@/components/platforms/platforms-view";
 import { AdminsView } from "@/components/admins/admins-view";
@@ -19,6 +20,8 @@ import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy
 import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
 import {
   CreateUserManagedAccountPayload,
+  ManagedBindingItem,
+  ManagedBindingsResponse,
   ManagedPlatformAccount,
   UpdateUserManagedAccountPayload,
   UserManagedPlatformAccount,
@@ -39,6 +42,7 @@ const VALID_TABS: NavTab[] = [
   "dashboard",
   "admins",
   "users",
+  "bindings",
   "desktop",
   "platforms",
   "activity",
@@ -95,6 +99,9 @@ function getInitialTab(): NavTab {
 
 export function App() {
   const { user, isLoading: authLoading, isSuperAdmin } = useAuth();
+  const managedViewer = user && isSuperAdmin ? user.id : null;
+  const managedViewerRef = useRef(managedViewer);
+  managedViewerRef.current = managedViewer;
 
   // Active Tab with persistence
   const [currentTab, setCurrentTab] = useState<NavTab>(getInitialTab);
@@ -138,7 +145,7 @@ export function App() {
   // Ensure non-superadmin does not stay on super-admin-only tabs
   useEffect(() => {
     if (!authLoading && user && !isSuperAdmin) {
-      if (currentTab === "admins" || currentTab === "desktop" || currentTab === "settings") {
+      if (isSuperAdminTab(currentTab)) {
         handleTabChange("dashboard");
       }
     }
@@ -153,6 +160,16 @@ export function App() {
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [platforms, setPlatforms] = useState<PlatformItem[]>([]);
   const [managedAccounts, setManagedAccounts] = useState<ManagedPlatformAccount[]>([]);
+  const [managedBindings, setManagedBindings] = useState<ManagedBindingsResponse>({
+    items: [],
+    total: 0,
+    expiredCount: 0,
+  });
+
+  useEffect(() => {
+    setManagedAccounts([]);
+    setManagedBindings({ items: [], total: 0, expiredCount: 0 });
+  }, [managedViewer]);
 
   // Admins state
   const [admins, setAdmins] = useState<AdminUser[]>([]);
@@ -234,13 +251,28 @@ export function App() {
   }, []);
 
   const loadManagedAccounts = useCallback(async () => {
-    if (!isSuperAdmin) return;
+    if (managedViewer === null) return;
     try {
-      setManagedAccounts(await api.listManagedPlatformAccounts());
+      const data = await api.listManagedPlatformAccounts();
+      if (managedViewerRef.current === managedViewer) setManagedAccounts(data);
     } catch (err: any) {
-      toast.error("加载托管账号失败", { description: err.message });
+      if (managedViewerRef.current === managedViewer) {
+        toast.error("加载托管账号失败", { description: err.message });
+      }
     }
-  }, [isSuperAdmin]);
+  }, [managedViewer]);
+
+  const loadManagedBindings = useCallback(async () => {
+    if (managedViewer === null) return;
+    try {
+      const data = await api.listManagedBindings();
+      if (managedViewerRef.current === managedViewer) setManagedBindings(data);
+    } catch (err: any) {
+      if (managedViewerRef.current === managedViewer) {
+        toast.error("加载绑定托管列表失败", { description: err.message });
+      }
+    }
+  }, [managedViewer]);
 
   const loadAdmins = useCallback(async (searchQuery?: unknown, statusQuery?: unknown) => {
     if (!isSuperAdmin) return;
@@ -301,6 +333,7 @@ export function App() {
         loadProxies(),
         loadPlatforms(),
         loadManagedAccounts(),
+        loadManagedBindings(),
         loadAdmins(),
         loadLogs(),
         loadSessions(),
@@ -308,7 +341,7 @@ export function App() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadManagedAccounts, loadAdmins, loadLogs, loadSessions]);
+  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadManagedAccounts, loadManagedBindings, loadAdmins, loadLogs, loadSessions]);
 
   // Initial Load on login
   useEffect(() => {
@@ -470,7 +503,7 @@ export function App() {
     payload: CreateUserManagedAccountPayload,
   ) => {
     await api.createUserManagedAccount(userId, payload);
-    await Promise.all([loadUsers(), loadManagedAccounts()]);
+    await Promise.all([loadUsers(), loadManagedAccounts(), loadManagedBindings()]);
   };
 
   const handleUpdateUserManagedAccount = async (
@@ -479,17 +512,35 @@ export function App() {
     payload: UpdateUserManagedAccountPayload,
   ) => {
     await api.updateUserManagedAccount(userId, managedAccountId, payload);
-    await Promise.all([loadUsers(), loadManagedAccounts()]);
+    await Promise.all([loadUsers(), loadManagedAccounts(), loadManagedBindings()]);
   };
 
   const handleBindUserManagedAccount = async (userId: number, managedAccountId: number) => {
     await api.bindUserManagedAccount(userId, managedAccountId);
-    await Promise.all([loadUsers(), loadManagedAccounts()]);
+    await Promise.all([loadUsers(), loadManagedAccounts(), loadManagedBindings()]);
   };
+
+  /** 「检查登录态」：实时校验账号 Cookie 的平台登录态并刷新远端身份。 */
+  const handleCheckManagedAccountIdentity = useCallback(
+    (managedAccountId: number) => api.checkManagedAccountIdentity(managedAccountId),
+    [],
+  );
 
   const handleUnbindUserManagedAccount = async (userId: number, managedAccountId: number) => {
     await api.unbindUserManagedAccount(userId, managedAccountId);
-    await Promise.all([loadUsers(), loadManagedAccounts()]);
+    await Promise.all([loadUsers(), loadManagedAccounts(), loadManagedBindings()]);
+  };
+
+
+  /** 「绑定托管」页：解除用户的某个托管账号绑定。 */
+  const handleUnbindForBindings = async (userId: number, managedAccountId: number, accountName: string) => {
+    try {
+      await api.unbindUserManagedAccount(userId, managedAccountId);
+      toast.success(`已解绑托管账号 ${accountName}`);
+      await Promise.all([loadManagedBindings(), loadManagedAccounts(), loadUsers()]);
+    } catch (error) {
+      toast.error("解绑托管账号失败", { description: error instanceof Error ? error.message : "请稍后重试" });
+    }
   };
 
   // Admin Mutators
@@ -560,6 +611,7 @@ export function App() {
         userStatsTotal={userStats?.total}
         platformsTotal={platforms.length}
         proxiesTotal={proxies.length}
+        expiredBindingsCount={isSuperAdmin ? managedBindings.expiredCount : undefined}
       >
         {/* Tab 1: Dashboard Overview */}
         {currentTab === "dashboard" && (
@@ -597,7 +649,7 @@ export function App() {
             canAssignVpn={isSuperAdmin}
             canManageManagedAccount={isSuperAdmin}
             cookieDefaultDomain={defaultCookieDomain(platforms.find((platform) => platform.id === 1)?.url)}
-            availableManagedAccounts={managedAccounts}
+            availableManagedAccounts={isSuperAdmin ? managedAccounts : []}
             onGetManagedAccount={isSuperAdmin ? handleGetUserManagedAccount : undefined}
             onGetManagedAccounts={isSuperAdmin ? handleGetUserManagedAccounts : undefined}
             onGetManagedAccountDetail={isSuperAdmin ? handleGetUserManagedAccountDetail : undefined}
@@ -607,6 +659,27 @@ export function App() {
             onDeleteManagedAccount={isSuperAdmin ? handleDeleteUserManagedAccount : undefined}
             onBindManagedAccount={isSuperAdmin ? handleBindUserManagedAccount : undefined}
             onUnbindManagedAccount={isSuperAdmin ? handleUnbindUserManagedAccount : undefined}
+            onCheckIdentity={isSuperAdmin ? handleCheckManagedAccountIdentity : undefined}
+          />
+        )}
+
+        {/* Tab: Managed Bindings Overview */}
+        {currentTab === "bindings" && isSuperAdmin && (
+          <ManagedBindingsView
+            bindings={managedBindings.items as ManagedBindingItem[]}
+            total={managedBindings.total}
+            expiredCount={managedBindings.expiredCount}
+            isRefreshing={isRefreshing}
+            onRefresh={() => loadManagedBindings()}
+            onUnbind={handleUnbindForBindings}
+            users={users}
+            availableAccounts={managedAccounts}
+            cookieDefaultDomain={defaultCookieDomain(platforms.find((platform) => platform.id === 1)?.url)}
+            onCreateAccount={handleCreateUserManagedAccount}
+            onBindAccount={handleBindUserManagedAccount}
+            onGetAccountDetail={handleGetUserManagedAccountDetail}
+            onUpdateAccount={handleUpdateUserManagedAccount}
+            onCheckIdentity={isSuperAdmin ? handleCheckManagedAccountIdentity : undefined}
           />
         )}
 

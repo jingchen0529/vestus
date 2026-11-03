@@ -28,7 +28,10 @@ use crate::rt;
 use crate::state::{AppState, Session, StatusView};
 use crate::{adapter, upstream::UpstreamProxy};
 
-const SESSION_WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
+/// 租约轮询节奏。管理员改配置/轮换托管凭据后，桌面端最迟这个间隔自动生效；
+/// 同时也是令牌被吊销后收敛代理与浏览器的上限。查询本身只是一条带鉴权的快照
+/// 读取，10s 对服务端的成本可以忽略。
+const SESSION_WATCHDOG_INTERVAL: Duration = Duration::from_secs(10);
 const NETWORK_IP_PATH: &str = "/api/network/ip";
 
 /// 开发期覆盖出口检测地址的环境变量。只在 debug 构建生效。
@@ -237,7 +240,10 @@ fn validate_desktop_config(
             }
             let account_name = validate_label(&account.name, "托管账号名称", 255)?;
             let status = account.status.trim().to_ascii_lowercase();
-            if !matches!(status.as_str(), "active" | "expired" | "revoked" | "invalid") {
+            if !matches!(
+                status.as_str(),
+                "active" | "expired" | "revoked" | "invalid"
+            ) {
                 return Err(CommandError::new(
                     "管理员下发的托管账号状态无效",
                     "invalid_desktop_config",
@@ -346,10 +352,7 @@ fn validate_http_url(value: &str, label: &str) -> CmdResult<String> {
     Ok(parsed.to_string())
 }
 
-fn validate_bootstrap_account_id(
-    requested: Option<i64>,
-    returned: u64,
-) -> CmdResult<i64> {
+fn validate_bootstrap_account_id(requested: Option<i64>, returned: u64) -> CmdResult<i64> {
     let returned = i64::try_from(returned)
         .map_err(|_| CommandError::new("托管账号 ID 无效", "managed_session_invalid"))?;
     if let Some(requested) = requested {
@@ -623,8 +626,9 @@ fn spawn_session_watchdog<R: Runtime>(
                 Err(error) if error.code == "session_changed" => break,
                 Err(error)
                     if matches!(error.code.as_str(), "network" | "server")
-                        && transient_failures < 1 =>
+                        && transient_failures < 2 =>
                 {
+                    // 间隔缩短后允许连续两次网络抖动，避免一次断网就把会话拆掉。
                     transient_failures += 1;
                 }
                 Err(_) => {
@@ -739,11 +743,12 @@ pub async fn open_browser<R: Runtime>(
     // The bootstrap payload is consumed only after the normal desktop auth
     // and platform allowlist checks above have succeeded.
     let requested_managed_account_id = managed_account_id;
+    let device_id = device::wire_device_id();
     let managed_session = auth
         .fetch_managed_session::<managed_cdp::ManagedBootstrapWire>(
             platform_id,
             managed_account_id,
-            device::wire_device_id(),
+            device_id.clone(),
         )
         .await
         .map_err(auth_command_error)?
@@ -752,8 +757,10 @@ pub async fn open_browser<R: Runtime>(
                 "{profile_key}::managed-account-{}::credential-version-{}",
                 wire.managed_account_id, wire.credential_version
             );
-            let managed_account_id =
-                validate_bootstrap_account_id(requested_managed_account_id, wire.managed_account_id)?;
+            let managed_account_id = validate_bootstrap_account_id(
+                requested_managed_account_id,
+                wire.managed_account_id,
+            )?;
             let session = managed_cdp::managed_session_from_bootstrap(target.as_str().into(), wire)
                 .map_err(|error| {
                     CommandError::new(
@@ -764,10 +771,11 @@ pub async fn open_browser<R: Runtime>(
             Ok::<_, CommandError>((profile_key, managed_account_id, session))
         })
         .transpose()?;
-    let (browser_profile_key, resolved_managed_account_id, managed_session) = managed_session.map_or_else(
-        || (profile_key.clone(), None, None),
-        |(key, managed_account_id, session)| (key, Some(managed_account_id), Some(session)),
-    );
+    let (browser_profile_key, resolved_managed_account_id, managed_session) = managed_session
+        .map_or_else(
+            || (profile_key.clone(), None, None),
+            |(key, managed_account_id, session)| (key, Some(managed_account_id), Some(session)),
+        );
     if requested_managed_account_id.is_some() && resolved_managed_account_id.is_none() {
         return Err(CommandError::new(
             "指定的托管账号不可用，请重新同步配置",
@@ -837,27 +845,10 @@ pub async fn open_browser<R: Runtime>(
     if let Some(browser_id) = browsers.running_browser(profile.dir()) {
         // 已有浏览器只能激活已存在的平台标签。端点不可用、标签不存在或激活失败时
         // 直接失败；不创建第二个标签，也不转交到另一个窗口。
+        // 托管复用也不再次注入：watcher 始终对应该进程最初使用的 bootstrap 身份。
         let endpoint = browsers.session_endpoint(browser_id).ok_or_else(|| {
             CommandError::new("平台页面尚未就绪，请稍后重试", "browser_page_unavailable")
         })?;
-        if let Some(session) = managed_session.as_ref() {
-            if let Err(error) = managed_cdp::inject_session(&endpoint, session).await {
-                browsers.close_browser(browser_id).await;
-                state.mark_browser_closed_for(browser_id);
-                emit_status(&app, &state);
-                return Err(CommandError::new(
-                    format!("托管登录会话已失效：{error}"),
-                    "managed_session_invalid",
-                ));
-            }
-            return Ok(BrowserHandleView {
-                browser_id,
-                reused: true,
-                tab_action: Some("activated".into()),
-                direct_mode,
-                managed: managed_session.is_some(),
-            });
-        }
         cdp::open_or_activate_page(&endpoint, target.as_str())
             .await
             .map_err(|error| {
@@ -872,7 +863,7 @@ pub async fn open_browser<R: Runtime>(
             reused: true,
             tab_action: Some("activated".into()),
             direct_mode,
-            managed: false,
+            managed: managed_session.is_some(),
         });
     }
 
@@ -901,6 +892,28 @@ pub async fn open_browser<R: Runtime>(
     };
     let managed_session_for_ready = managed_session.clone();
     let managed_launch = managed_session.is_some();
+    let logout_context = managed_session
+        .as_ref()
+        .map(|session| ManagedLogoutContext {
+            browsers: browsers.inner().clone(),
+            auth: auth.inner().clone(),
+            app: app.clone(),
+            browser_id,
+            platform_id,
+            user_id,
+            auth_generation,
+            device_id,
+            identity: session
+                .identity
+                .clone()
+                .expect("consumed bootstrap has an identity"),
+        });
+    let (watch_exit_tx, watch_exit_rx) = if managed_launch {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let (ready_tx, mut ready_rx) = if managed_launch {
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         (Some(tx), Some(rx))
@@ -916,9 +929,22 @@ pub async fn open_browser<R: Runtime>(
         disable_sandbox,
         move |endpoint| {
             let injection = if let Some(session) = managed_session_for_ready {
-                rt::runtime()
-                    .block_on(managed_cdp::inject_session(&endpoint, &session))
-                    .map_err(|error| error.to_string())
+                rt::runtime().block_on(async {
+                    // Subscribe before navigation. A separate connection owns
+                    // events even while the injection connection awaits replies.
+                    match managed_cdp::prepare_logout_watch(&endpoint, &session).await {
+                        Ok(Some(watch)) => {
+                            if let (Some(context), Some(exited)) = (logout_context, watch_exit_rx) {
+                                rt::runtime().spawn(watch_managed_logout(context, watch, exited));
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("托管登出监听未启用：{error}"),
+                    }
+                    managed_cdp::inject_session(&endpoint, &session)
+                        .await
+                        .map_err(|error| error.to_string())
+                })
             } else {
                 Ok(())
             };
@@ -931,6 +957,11 @@ pub async fn open_browser<R: Runtime>(
             activity_collector.start(activity_key, endpoint, activity_owner);
         },
         move || {
+            if let Some(tx) = watch_exit_tx {
+                let _ = tx.send(());
+            }
+            // The browser manager owns cleanup and the lease; a late exit
+            // callback must never reacquire the path and delete a new profile.
             state_for_exit.mark_browser_closed_for(browser_id);
             let _ = app_for_exit.emit("status-changed", state_for_exit.snapshot());
         },
@@ -945,7 +976,7 @@ pub async fn open_browser<R: Runtime>(
         match ready {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(message))) => {
-                browsers.close_browser(browser_id).await;
+                kill_managed_browser(browsers.inner().clone(), browser_id).await?;
                 state.mark_browser_closed_for(browser_id);
                 emit_status(&app, &state);
                 return Err(CommandError::new(
@@ -954,7 +985,7 @@ pub async fn open_browser<R: Runtime>(
                 ));
             }
             Ok(Err(_)) | Err(_) => {
-                browsers.close_browser(browser_id).await;
+                kill_managed_browser(browsers.inner().clone(), browser_id).await?;
                 state.mark_browser_closed_for(browser_id);
                 emit_status(&app, &state);
                 return Err(CommandError::new(
@@ -975,12 +1006,140 @@ pub async fn open_browser<R: Runtime>(
     })
 }
 
+async fn kill_managed_browser(browsers: BrowserSessionManager, browser_id: u64) -> CmdResult<()> {
+    rt::runtime()
+        .spawn_blocking(move || browsers.kill_browser(browser_id))
+        .await
+        .map_err(|error| CommandError::new(format!("浏览器关闭任务失败：{error}"), "internal"))?
+        .map_err(browser_command_error)?;
+    Ok(())
+}
+
+struct ManagedLogoutContext<R: Runtime> {
+    browsers: BrowserSessionManager,
+    auth: DesktopAuthState,
+    app: AppHandle<R>,
+    browser_id: u64,
+    platform_id: i64,
+    user_id: i64,
+    auth_generation: u64,
+    device_id: Option<String>,
+    identity: managed_cdp::ManagedSessionIdentity,
+}
+
+/// Best-effort platform signal, not an authentication boundary. Never turn a
+/// disconnected watcher into an expired account; reports are bound to the
+/// consumed bootstrap and are independently checked by the server.
+async fn watch_managed_logout<R: Runtime>(
+    context: ManagedLogoutContext<R>,
+    watch: managed_cdp::LogoutWatch,
+    exited: tokio::sync::oneshot::Receiver<()>,
+) {
+    let detected = tokio::select! {
+        biased;
+        result = watch.wait() => result,
+        _ = exited => return,
+    };
+    match detected {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            eprintln!("托管登出监听已断开：{error}");
+            return;
+        }
+    }
+    let browsers = context.browsers.clone();
+    let browser_id = context.browser_id;
+    let closed = match rt::runtime()
+        .spawn_blocking(move || browsers.kill_browser(browser_id))
+        .await
+    {
+        Ok(Ok(closed)) => closed,
+        Ok(Err(error)) => {
+            eprintln!("托管会话强杀或清理失败：{error}");
+            false
+        }
+        Err(error) => {
+            eprintln!("托管会话关闭任务失败：{error}");
+            false
+        }
+    };
+    for attempt in 0..3 {
+        match context
+            .auth
+            .report_managed_session_expired(
+                context.user_id,
+                context.auth_generation,
+                context.platform_id,
+                &context.identity,
+                context.device_id.as_deref(),
+            )
+            .await
+        {
+            Ok(receipt) => {
+                // Emit only after the write/ignore receipt, so React cannot
+                // refresh the old valid state before the report commits.
+                if context
+                    .auth
+                    .current_identity()
+                    .is_ok_and(|(user_id, _, generation)| {
+                        user_id == context.user_id && generation == context.auth_generation
+                    })
+                {
+                    let _ = context.app.emit(
+                        "managed-session-expired",
+                        serde_json::json!({
+                            "platformId": context.platform_id,
+                            "managedAccountId": context.identity.managed_account_id,
+                            "credentialVersion": context.identity.credential_version,
+                            "sessionStatus": receipt.session_status,
+                            "applied": receipt.applied,
+                            "reported": true,
+                            "browserClosed": closed,
+                        }),
+                    );
+                }
+                return;
+            }
+            Err(error) if matches!(error.code.as_str(), "network" | "server") && attempt < 2 => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(error) => {
+                eprintln!("托管会话失效上报未完成：{}", error.code);
+                if context
+                    .auth
+                    .current_identity()
+                    .is_ok_and(|(user_id, _, generation)| {
+                        user_id == context.user_id && generation == context.auth_generation
+                    })
+                {
+                    let _ = context.app.emit(
+                        "managed-session-expired",
+                        serde_json::json!({
+                            "platformId": context.platform_id,
+                            "managedAccountId": context.identity.managed_account_id,
+                            "credentialVersion": context.identity.credential_version,
+                            "sessionStatus": "unknown",
+                            "applied": false,
+                            "reported": false,
+                            "browserClosed": closed,
+                        }),
+                    );
+                }
+                return;
+            }
+        }
+    }
+}
+
 /// 浏览器层的错误翻给前端。被别的进程占着单独给一个代码，前端据此提示用户去关那个
 /// 浏览器，而不是让他反复重试。
 fn browser_command_error(error: BrowserError) -> CommandError {
     let code = match error {
         BrowserError::ProfileBusy => "profile_busy",
         BrowserError::ProfileCheckFailed => "profile_check_failed",
+        BrowserError::ProfileCleanup(_) => "profile_cleanup_failed",
+        BrowserError::ProcessTermination(_) => "browser_termination_failed",
         _ => "browser_start",
     };
     CommandError::new(error.to_string(), code)

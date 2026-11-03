@@ -12,7 +12,9 @@ const server = await createServer({
   appType: "custom",
   configFile: false,
   root: webRoot,
+  cacheDir: path.join(webRoot, "node_modules/.vite/admin-flows-test"),
   plugins: [react()],
+  optimizeDeps: { noDiscovery: true, include: [] },
   resolve: {
     alias: {
       "@": path.join(webRoot, "src"),
@@ -108,7 +110,6 @@ test("托管平台账号 API 使用专用管理路径", async () => {
       authMode: "cookie",
       cookieBundle: [{ name: "sessionid", value: "secret", domain: ".example.test" }],
     });
-    await api.verifyManagedPlatformAccount(7);
     await api.bindManagedPlatformAccount(7, 9);
     await api.unbindManagedPlatformAccount(7, 9);
   } finally {
@@ -120,7 +121,6 @@ test("托管平台账号 API 使用专用管理路径", async () => {
     [
       ["/api/admin/managed-platform-accounts", "GET"],
       ["/api/admin/managed-platform-accounts", "POST"],
-      ["/api/admin/managed-platform-accounts/7/verify", "POST"],
       ["/api/admin/managed-platform-accounts/7/bindings", "POST"],
       ["/api/admin/managed-platform-accounts/7/bindings/9", "DELETE"],
     ],

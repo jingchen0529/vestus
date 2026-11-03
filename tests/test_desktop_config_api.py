@@ -576,7 +576,15 @@ def test_global_desktop_config_permissions_encryption_and_lease(api: Any) -> Non
     finally:
         event.remove(module.db.engine, "before_cursor_execute", record_snapshot_statement)
     assert atomic_snapshot is not None
-    assert len([item for item in snapshot_statements if item.lstrip().upper().startswith("SELECT")]) == 1
+    # 同步前的托管会话探测会先做独立的只读查询；这里的原子性约束是
+    # 「配置快照本身必须是一条语句」，探测读不进快照事务。
+    snapshot_selects = [
+        item
+        for item in snapshot_statements
+        if item.lstrip().upper().startswith("SELECT")
+        and "ORDER BY platform.sort_order" in item
+    ]
+    assert len(snapshot_selects) == 1
 
     desktop_response = client.get("/api/user/desktop-config", headers=_bearer(user_token))
     assert desktop_response.status_code == 200, desktop_response.text

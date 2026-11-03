@@ -404,7 +404,7 @@ fn real_chromium_persistence_matrix() {
                 .process
                 .clone()
         };
-        stop_process(&process);
+        stop_process(&process).expect("terminate owned Chromium process tree");
         f.stopped().await;
         drop(page);
         let mut page = f.launch(&exe, baseline.clone()).await;

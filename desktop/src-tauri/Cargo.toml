@@ -55,7 +55,19 @@ getrandom = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 
+[target.'cfg(unix)'.dependencies]
+# waitid(WNOWAIT) keeps the owned process-group leader reserved until its tree exits.
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# An assigned Job Object owns the exact Chromium tree, including after the parent exits.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+  "Win32_System_Diagnostics_ToolHelp",
+] }
 # 直接读注册表 MachineGuid：比 spawn reg query 稳，也不受系统语言影响
 winreg = "0.55"

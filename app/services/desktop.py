@@ -85,6 +85,14 @@ def get_user_desktop_config_with_lease(
     """Serialize desktop configuration and lease from one SQL snapshot."""
 
     numeric_user_id = int(user_id)
+    # 拉取即探测：把已在平台侧失效的会话在快照前标成 expired，桌面端列表
+    # 直接展示失效并拒绝启动。探测失败只保留原状态，绝不阻塞配置下发。
+    try:
+        from app.services.managed_platforms import refresh_session_statuses
+
+        refresh_session_statuses(database, numeric_user_id)
+    except Exception:
+        logger.exception("managed session probe failed; serving current statuses")
     with database.session() as session:
         snapshot = desktop_repo.load_user_snapshot(session, numeric_user_id)
         if snapshot is None:

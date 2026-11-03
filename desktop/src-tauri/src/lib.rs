@@ -58,13 +58,22 @@ pub fn run() {
             }
             // 旧版本的临时 profile 只会在崩溃后残留（审计 F-13）。放到后台线程清：
             // 目录可能很大，不能拖慢启动。
-            if let Ok(cache_dir) = app.path().app_cache_dir() {
-                let _ = std::thread::Builder::new()
-                    .name("vestus-profile-sweep".into())
-                    .spawn(move || {
+            // 托管环境同理：会话结束时本该就地删除，崩溃或强杀的残留也在这里收走。
+            let handle = app.handle().clone();
+            let cache_dir = app.path().app_cache_dir().ok();
+            let _ = std::thread::Builder::new()
+                .name("vestus-profile-sweep".into())
+                .spawn(move || {
+                    if let Some(cache_dir) = cache_dir {
                         profile::sweep_legacy_sessions(&cache_dir);
-                    });
-            }
+                    }
+                    // Managed cleanup must not depend on the legacy cache path
+                    // resolving. Each sweep candidate takes the same lease as
+                    // launch before occupancy checks or deletion.
+                    if let Some(root) = browser::BrowserSessionManager::profiles_root(&handle) {
+                        profile::sweep_orphaned_managed_profiles(&root);
+                    }
+                });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

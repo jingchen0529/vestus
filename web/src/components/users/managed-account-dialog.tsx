@@ -32,6 +32,7 @@ import {
   CreateUserManagedAccountPayload,
   ManagedAccountStatus,
   ManagedAuthMode,
+  ManagedIdentityCheckResponse,
   ManagedPlatformAccount,
   UpdateUserManagedAccountPayload,
   UserManagedAccountBinding,
@@ -41,11 +42,13 @@ import {
 } from "@/types/managed-platform";
 import { parseCookieInput } from "@/lib/cookie-parser";
 import {
+  ClipboardPaste,
   Edit2,
   KeyRound,
   Link2,
   Loader2,
   Plus,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -103,6 +106,7 @@ export interface ManagedAccountBindingListProps {
   availableAccounts?: ManagedPlatformAccount[];
   onEdit?: (binding: UserManagedAccountBinding) => void;
   onUnbind?: (binding: UserManagedAccountBinding) => void;
+  onCheckIdentity?: (managedAccountId: number) => Promise<ManagedIdentityCheckResponse>;
   busyAccountId?: number | null;
   disabled?: boolean;
 }
@@ -112,14 +116,37 @@ export function ManagedAccountBindingList({
   availableAccounts = [],
   onEdit,
   onUnbind,
+  onCheckIdentity,
   busyAccountId = null,
   disabled = false,
 }: ManagedAccountBindingListProps) {
+  const [checkingId, setCheckingId] = useState<number | null>(null);
   const accountMap = useMemo(
     () => new Map(availableAccounts.map((acc) => [acc.id, acc])),
     [availableAccounts],
   );
-  const showActions = Boolean(onEdit || onUnbind);
+  const showActions = Boolean(onEdit || onUnbind || onCheckIdentity);
+
+  const handleCheckIdentity = async (item: UserManagedAccountBinding) => {
+    if (!onCheckIdentity) return;
+    setCheckingId(item.managedAccountId);
+    try {
+      const result = await onCheckIdentity(item.managedAccountId);
+      if (result.state === "verified") {
+        toast.success(`登录态有效：${result.account.remoteDisplayName || "身份已刷新"}`);
+      } else {
+        toast.error("登录态已失效，会话已标记过期", {
+          description: result.detail || "上游返回未登录，请替换 Cookie",
+        });
+      }
+    } catch (error) {
+      toast.error("检查登录态失败", {
+        description: error instanceof Error ? error.message : "请稍后重试",
+      });
+    } finally {
+      setCheckingId(null);
+    }
+  };
 
   if (bindings.length === 0) {
     return (
@@ -170,6 +197,14 @@ export function ManagedAccountBindingList({
                       <div className="font-semibold text-foreground truncate">
                         {item.name}
                       </div>
+                      {item.remoteDisplayName && item.remoteDisplayName !== item.name ? (
+                        <div
+                          className="text-[11px] text-muted-foreground truncate"
+                          title={`平台身份：${item.remoteDisplayName}`}
+                        >
+                          {item.remoteDisplayName}
+                        </div>
+                      ) : null}
                       <div className="text-[11px] text-muted-foreground font-mono truncate">
                         {resolvedAlias && resolvedAlias !== item.name
                           ? `别名: ${resolvedAlias}`
@@ -191,11 +226,34 @@ export function ManagedAccountBindingList({
                   </Badge>
                 </TableCell>
                 <TableCell className="py-3 whitespace-nowrap">
-                  {renderBindingStatusBadge(item.status)}
+                  <div className="flex items-center gap-1.5">
+                    {renderBindingStatusBadge(item.status)}
+                    {item.sessionStatus === "expired" && (
+                      <Badge variant="destructive" className="text-[10px]">
+                        会话已失效
+                      </Badge>
+                    )}
+                  </div>
                 </TableCell>
                 {showActions && (
                   <TableCell className="py-3 pr-4 text-right whitespace-nowrap">
                     <div className="flex justify-end gap-1.5">
+                      {onCheckIdentity && resolvedAuthMode === "cookie" && (
+                        <Button
+                          type="button"
+                          variant="table-action"
+                          size="xs"
+                          onClick={() => void handleCheckIdentity(item)}
+                          disabled={isRowBusy || checkingId === item.managedAccountId}
+                        >
+                          <ShieldCheck
+                            className={`h-3.5 w-3.5 text-primary ${checkingId === item.managedAccountId ? "animate-pulse" : ""}`}
+                          />
+                          <span>
+                            {checkingId === item.managedAccountId ? "检查中…" : "检查登录态"}
+                          </span>
+                        </Button>
+                      )}
                       {onEdit && (
                         <Button
                           type="button"
@@ -260,6 +318,7 @@ interface ManagedAccountDialogProps {
     managedAccountId: number,
     payload: UpdateUserManagedAccountPayload,
   ) => Promise<void>;
+  onCheckIdentity?: (managedAccountId: number) => Promise<ManagedIdentityCheckResponse>;
 }
 
 type FormMode = "create" | "edit";
@@ -298,6 +357,7 @@ export function ManagedAccountDialog({
   onCreateAccount,
   onGetAccountDetail,
   onUpdateAccount,
+  onCheckIdentity,
 }: ManagedAccountDialogProps) {
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<FormMode>("create");
@@ -440,6 +500,28 @@ export function ManagedAccountDialog({
     } finally {
       setBindingId(null);
     }
+  };
+
+  const handlePasteCookie = async () => {
+    try {
+      if (!navigator?.clipboard?.readText) {
+        toast.error("当前浏览器环境不支持读取剪贴板，请手动粘贴");
+        return;
+      }
+      const text = await navigator.clipboard.readText();
+      if (!text || !text.trim()) {
+        toast.error("剪贴板内容为空");
+        return;
+      }
+      setCookieJson(text.trim());
+      toast.success("已粘贴剪贴板内容");
+    } catch {
+      toast.error("读取剪贴板失败，请允许权限或手动粘贴");
+    }
+  };
+
+  const handleClearCookie = () => {
+    setCookieJson("");
   };
 
   const submitForm = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -652,6 +734,7 @@ export function ManagedAccountDialog({
                           void unbindExisting(item.managedAccountId, item.name)
                       : undefined
                   }
+                  onCheckIdentity={onCheckIdentity}
                   busyAccountId={bindingId}
                   disabled={listBusy}
                 />
@@ -719,7 +802,7 @@ export function ManagedAccountDialog({
                       onChange={(event) => setAccountName(event.target.value)}
                       autoComplete="off"
                       placeholder="例如：张三-方舟主号"
-                      className="bg-card border-border/80"
+                      className="bg-muted/40 hover:bg-muted/60 focus:bg-background border-border/80 transition-colors"
                       disabled={formBusy}
                     />
                     <p className="text-[11px] text-muted-foreground">
@@ -788,7 +871,33 @@ export function ManagedAccountDialog({
                   </div>
                 ) : (
                   <div className="space-y-1.5">
-                    <Label htmlFor="user-managed-cookie">Cookie</Label>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="user-managed-cookie">Cookie 凭据</Label>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          className="h-6 px-2.5 text-[11px] gap-1 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 hover:text-primary transition-all font-medium"
+                          onClick={handlePasteCookie}
+                          disabled={formBusy}
+                        >
+                          <ClipboardPaste className="h-3 w-3" />
+                          <span>粘贴</span>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          className="h-6 px-2.5 text-[11px] gap-1 bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20 hover:text-destructive transition-all font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                          onClick={handleClearCookie}
+                          disabled={formBusy || !cookieJson}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          <span>清空</span>
+                        </Button>
+                      </div>
+                    </div>
                     <Textarea
                       id="user-managed-cookie"
                       value={cookieJson}
@@ -798,7 +907,7 @@ export function ManagedAccountDialog({
                           ? "留空保持不变；粘贴新 Cookie 以更新"
                           : "登录方舟后，在浏览器开发者工具里复制整段 Cookie 直接粘贴到这里；也支持 JSON 数组格式"
                       }
-                      className="min-h-[220px] resize-none rounded-lg bg-card border-border/80 px-3.5 py-3 font-mono text-[11px] leading-relaxed"
+                      className="min-h-[220px] resize-none rounded-lg bg-muted/40 hover:bg-muted/60 focus:bg-background border-border/80 px-3.5 py-3 font-mono text-[11px] leading-relaxed transition-colors"
                       disabled={formBusy}
                     />
                     <p className="text-[11px] text-muted-foreground">

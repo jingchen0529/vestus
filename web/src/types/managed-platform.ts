@@ -5,6 +5,9 @@ export type UserManagedAuthMode = "cookie" | "server_login";
 
 export type ManagedAccountStatus = "active" | "expired" | "revoked" | "invalid";
 
+/** 上游登录会话（cookie）是否仍可用；expired 表示客户端上报了平台侧退出登录。 */
+export type ManagedSessionStatus = "valid" | "expired";
+
 /**
  * Cookie attributes accepted by the administrator API.
  *
@@ -35,6 +38,8 @@ export interface ManagedPlatformAccount {
   credentialVersion: number;
   expiresAt?: string | null;
   status: ManagedAccountStatus;
+  sessionStatus?: ManagedSessionStatus;
+  lastError?: string | null;
   lastVerifiedAt?: string | null;
   createdBy?: number | null;
   createdAt?: string;
@@ -86,6 +91,7 @@ export interface UserManagedAccountBinding {
   alias?: string | null;
   authMode?: ManagedAuthMode | null;
   status: ManagedAccountStatus | "active";
+  sessionStatus?: ManagedSessionStatus;
   expiresAt?: string | null;
   credentialVersion?: number;
   remoteAccountId?: string | null;
@@ -112,6 +118,42 @@ export interface UserManagedPlatformAccount {
   allowedHosts?: string[];
   status?: ManagedAccountStatus;
   credentialVersion?: number;
+}
+
+/** 「绑定托管」总览页的一行：用户 × 托管账号绑定及其会话状态。 */
+export interface ManagedBindingItem {
+  bindingId: number;
+  userId: number;
+  username: string;
+  userName?: string | null;
+  userStatus?: string | null;
+  platformId: number;
+  platformName: string;
+  managedAccountId: number;
+  name: string;
+  authMode: ManagedAuthMode;
+  status: "active" | "revoked";
+  accountStatus: ManagedAccountStatus;
+  sessionStatus: ManagedSessionStatus;
+  lastError?: string | null;
+  credentialVersion: number;
+  expiresAt?: string | null;
+  lastVerifiedAt?: string | null;
+  remoteDisplayName?: string | null;
+  identityCheckedAt?: string | null;
+}
+
+export interface ManagedBindingsResponse {
+  items: ManagedBindingItem[];
+  total: number;
+  expiredCount: number;
+}
+
+/** 「检查登录态」接口返回：探测结论 + 刷新后的账号信息。 */
+export interface ManagedIdentityCheckResponse {
+  state: "verified" | "invalid";
+  detail: string;
+  account: ManagedPlatformAccount;
 }
 
 export interface UserManagedPlatformAccountPayload {

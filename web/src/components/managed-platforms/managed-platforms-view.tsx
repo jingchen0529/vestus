@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
 import {
   CheckCircle2,
+  ClipboardPaste,
   Edit2,
   KeyRound,
   Link2,
@@ -8,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -34,6 +36,7 @@ import {
   ManagedAccountStatus,
   ManagedAuthMode,
   ManagedCookieInput,
+  ManagedIdentityCheckResponse,
   ManagedPlatformAccount,
   UpdateManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
@@ -111,6 +114,28 @@ function ManagedAccountDialog({
     setAllowedHosts(account?.allowedHosts.join("\n") || "");
     setExpiresAt(account?.expiresAt ? account.expiresAt.slice(0, 10) : "");
   }, [account, open, platforms]);
+
+  const handlePasteCookie = async () => {
+    try {
+      if (!navigator?.clipboard?.readText) {
+        toast.error("当前浏览器环境不支持读取剪贴板，请手动粘贴");
+        return;
+      }
+      const text = await navigator.clipboard.readText();
+      if (!text || !text.trim()) {
+        toast.error("剪贴板内容为空");
+        return;
+      }
+      setCookieJson(text.trim());
+      toast.success("已粘贴剪贴板内容");
+    } catch {
+      toast.error("读取剪贴板失败，请允许权限或手动粘贴");
+    }
+  };
+
+  const handleClearCookie = () => {
+    setCookieJson("");
+  };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -251,7 +276,33 @@ function ManagedAccountDialog({
 
           {authMode === "cookie" && (
             <div className="space-y-1.5">
-              <Label htmlFor="managed-cookie">Cookie JSON</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="managed-cookie">Cookie JSON</Label>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="h-6 px-2.5 text-[11px] gap-1 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 hover:text-primary transition-all font-medium"
+                    onClick={handlePasteCookie}
+                    disabled={loading}
+                  >
+                    <ClipboardPaste className="h-3 w-3" />
+                    <span>粘贴</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="h-6 px-2.5 text-[11px] gap-1 bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20 hover:text-destructive transition-all font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={handleClearCookie}
+                    disabled={loading || !cookieJson}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    <span>清空</span>
+                  </Button>
+                </div>
+              </div>
               <Textarea id="managed-cookie" value={cookieJson} onChange={(event) => setCookieJson(event.target.value)} placeholder={editing ? "留空保持不变；粘贴完整 Cookie 数组" : '[{"name":"sessionid","value":"…","domain":".example.com","path":"/","secure":true,"httpOnly":true,"sameSite":"Lax"}]'} className="min-h-[112px] font-mono text-[11px]" disabled={loading} />
               <p className="text-[11px] text-muted-foreground">必须保留 domain、path、secure、httpOnly、sameSite 等属性，页面不会保存或展示 Cookie 值。</p>
             </div>
@@ -350,8 +401,8 @@ export interface ManagedPlatformsViewProps {
   isRefreshing?: boolean;
   onCreateAccount: (payload: CreateManagedPlatformAccountPayload) => Promise<void>;
   onUpdateAccount: (id: number, payload: UpdateManagedPlatformAccountPayload) => Promise<void>;
-  onVerifyAccount: (id: number) => Promise<void>;
   onBindAccount: (id: number, userId: number) => Promise<void>;
+  onCheckIdentity?: (id: number) => Promise<ManagedIdentityCheckResponse>;
   onDeleteAccount?: (account: ManagedPlatformAccount) => Promise<void>;
 }
 
@@ -363,21 +414,26 @@ export function ManagedPlatformsView({
   isRefreshing = false,
   onCreateAccount,
   onUpdateAccount,
-  onVerifyAccount,
   onBindAccount,
+  onCheckIdentity,
   onDeleteAccount,
 }: ManagedPlatformsViewProps) {
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<ManagedAccountStatus | "ALL">("ALL");
+  const [statusFilter, setStatusFilter] = useState<ManagedAccountStatus | "SESSION_EXPIRED" | "ALL">("ALL");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ManagedPlatformAccount | null>(null);
   const [binding, setBinding] = useState<ManagedPlatformAccount | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [checkingId, setCheckingId] = useState<number | null>(null);
   const platformNames = useMemo(() => new Map(platforms.map((item) => [item.id, item.name])), [platforms]);
   const filteredAccounts = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return accounts.filter((account) => {
-      const matchesStatus = statusFilter === "ALL" || account.status === statusFilter;
+      const matchesStatus =
+        statusFilter === "ALL" ||
+        (statusFilter === "SESSION_EXPIRED"
+          ? account.sessionStatus === "expired"
+          : account.status === statusFilter);
       const matchesSearch = !needle || account.name.toLowerCase().includes(needle) || String(account.id).includes(needle) || (platformNames.get(account.platformId) || "").toLowerCase().includes(needle);
       return matchesStatus && matchesSearch;
     });
@@ -389,17 +445,6 @@ export function ManagedPlatformsView({
     setDialogOpen(true);
   };
 
-  const handleVerify = async (account: ManagedPlatformAccount) => {
-    setBusyId(account.id);
-    try {
-      await onVerifyAccount(account.id);
-      toast.success(`托管账号 ${account.name} 已提交验证`);
-    } catch (error) {
-      toast.error("验证托管账号失败", { description: error instanceof Error ? error.message : "请稍后重试" });
-    } finally {
-      setBusyId(null);
-    }
-  };
 
   const handleDelete = async (account: ManagedPlatformAccount) => {
     if (!onDeleteAccount || !window.confirm(`确认撤销托管账号“${account.name}”？`)) return;
@@ -411,6 +456,28 @@ export function ManagedPlatformsView({
       toast.error("撤销托管账号失败", { description: error instanceof Error ? error.message : "请稍后重试" });
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleCheckIdentity = async (account: ManagedPlatformAccount) => {
+    if (!onCheckIdentity) return;
+    setCheckingId(account.id);
+    try {
+      const result = await onCheckIdentity(account.id);
+      if (result.state === "verified") {
+        toast.success(`登录态有效：${result.account.remoteDisplayName || "身份已刷新"}`);
+      } else {
+        toast.error("登录态已失效，会话已标记过期", {
+          description: result.detail || "上游返回未登录，请替换 Cookie",
+        });
+      }
+      onRefresh();
+    } catch (error) {
+      toast.error("检查登录态失败", {
+        description: error instanceof Error ? error.message : "请稍后重试",
+      });
+    } finally {
+      setCheckingId(null);
     }
   };
 
@@ -489,13 +556,14 @@ export function ManagedPlatformsView({
             <div className="w-36 shrink-0">
               <Select
                 value={statusFilter}
-                onValueChange={(value: ManagedAccountStatus | "ALL") => setStatusFilter(value)}
+                onValueChange={(value: ManagedAccountStatus | "SESSION_EXPIRED" | "ALL") => setStatusFilter(value)}
               >
                 <SelectTrigger size="sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ALL" className="text-xs">全部状态</SelectItem>
+                  <SelectItem value="SESSION_EXPIRED" className="text-xs">会话已失效</SelectItem>
                   {Object.entries(STATUS_LABELS).map(([value, label]) => (
                     <SelectItem key={value} value={value} className="text-xs">
                       {label}
@@ -551,7 +619,16 @@ export function ManagedPlatformsView({
                         </div>
                         <div>
                           <div className="font-semibold text-foreground">{account.name}</div>
-                          <div className="text-[10px] text-muted-foreground">密钥已托管，不回显</div>
+                          <div
+                            className="text-[10px] text-muted-foreground"
+                            title={
+                              account.identityCheckedAt
+                                ? `身份检测时间 ${formatDate(account.identityCheckedAt)}`
+                                : undefined
+                            }
+                          >
+                            {account.remoteDisplayName || "密钥已托管，不回显"}
+                          </div>
                         </div>
                       </div>
                     </TableCell>
@@ -574,20 +651,36 @@ export function ManagedPlatformsView({
                     <TableCell className="whitespace-nowrap text-muted-foreground font-mono">
                       {formatDate(account.lastVerifiedAt)}
                     </TableCell>
-                    <TableCell>{statusBadge(account.status)}</TableCell>
+                    <TableCell>
+                      <div
+                        className="flex items-center gap-1.5"
+                        title={account.lastError || undefined}
+                      >
+                        {statusBadge(account.status)}
+                        {account.sessionStatus === "expired" && (
+                          <Badge variant="destructive" className="gap-1 text-[10px]">
+                            <ShieldAlert className="h-3 w-3" />
+                            会话已失效
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="text-right whitespace-nowrap">
                       <div className="flex justify-end gap-1.5">
-                        <Button
-                          variant="table-action"
-                          size="xs"
-                          onClick={() => handleVerify(account)}
-                          disabled={busyId === account.id}
-                        >
-                          <RefreshCw
-                            className={`h-3.5 w-3.5 text-muted-foreground ${busyId === account.id ? "animate-spin" : ""}`}
-                          />
-                          <span>验证</span>
-                        </Button>
+                        {onCheckIdentity && account.authMode === "cookie" && (
+                          <Button
+                            variant="table-action"
+                            size="xs"
+                            onClick={() => void handleCheckIdentity(account)}
+                            disabled={checkingId === account.id || busyId === account.id}
+                            className="hover:text-primary hover:bg-primary/10 hover:border-primary/30"
+                          >
+                            <ShieldCheck
+                              className={`h-3.5 w-3.5 text-primary ${checkingId === account.id ? "animate-pulse" : ""}`}
+                            />
+                            <span>{checkingId === account.id ? "检查中…" : "检查登录态"}</span>
+                          </Button>
+                        )}
                         <Button
                           variant="table-action"
                           size="xs"

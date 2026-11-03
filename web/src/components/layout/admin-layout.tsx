@@ -10,6 +10,7 @@ interface AdminLayoutProps {
   userStatsTotal?: number;
   platformsTotal?: number;
   proxiesTotal?: number;
+  expiredBindingsCount?: number;
   children: React.ReactNode;
 }
 
@@ -21,6 +22,7 @@ export function AdminLayout({
   userStatsTotal,
   platformsTotal,
   proxiesTotal,
+  expiredBindingsCount,
   children,
 }: AdminLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -36,6 +38,7 @@ export function AdminLayout({
         userStatsTotal={userStatsTotal}
         platformsTotal={platformsTotal}
         proxiesTotal={proxiesTotal}
+        expiredBindingsCount={expiredBindingsCount}
       />
 
       {/* Main Container */}

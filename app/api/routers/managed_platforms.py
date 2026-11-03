@@ -19,6 +19,7 @@ from app.schemas.managed_platforms import (
     ManagedPlatformUserAccountCreate,
     ManagedPlatformUserAccountUpdate,
     ManagedPlatformUserConfig,
+    ManagedSessionExpiredRequest,
 )
 from app.services import managed_platforms as managed_service
 
@@ -74,6 +75,16 @@ def update_managed_account(
     )
 
 
+@router.get("/api/admin/managed-bindings", tags=["managed-platforms"])
+def list_all_managed_bindings(
+    request: Request,
+    auth: Dict[str, Any] = Depends(super_admin_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    """全部用户的托管绑定总览，含会话失效状态与计数。"""
+    return managed_service.list_all_bindings(db)
+
+
 @router.delete("/api/admin/managed-platform-accounts/{account_id}", tags=["managed-platforms"])
 def revoke_managed_account(
     account_id: int,
@@ -84,18 +95,22 @@ def revoke_managed_account(
     managed_service.delete_account(db, account_id, audit=audit_context(request, auth))
 
 
-@router.post("/api/admin/managed-platform-accounts/{account_id}/verify", tags=["managed-platforms"])
-def verify_managed_account(
+@router.post(
+    "/api/admin/managed-platform-accounts/{account_id}/identity-check",
+    tags=["managed-platforms"],
+)
+def check_managed_account_identity(
     account_id: int,
     request: Request,
     auth: Dict[str, Any] = Depends(super_admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return managed_service.verify_account(
-        db,
-        account_id,
-        audit=audit_context(request, auth),
+    """实时校验账号 Cookie 的平台登录态并刷新远端身份信息。"""
+    return managed_service.check_account_identity(
+        db, account_id, audit=audit_context(request, auth)
     )
+
+
 
 
 @router.post(
@@ -308,6 +323,32 @@ def consume_managed_bootstrap(
         auth["id"],
         platform_id,
         payload.bootstrap_token,
+        payload.device_id,
+        audit=audit_context(request, auth),
+    )
+
+
+@router.post(
+    "/api/user/managed-platforms/{platform_id}/session-expired",
+    tags=["managed-platforms"],
+)
+def report_managed_session_expired(
+    platform_id: int,
+    payload: ManagedSessionExpiredRequest,
+    request: Request,
+    response: Response,
+    auth: Dict[str, Any] = Depends(user_auth),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    """桌面端检测到用户在平台页面退出登录后上报，本地托管会话随之作废。"""
+    response.headers["Cache-Control"] = "no-store"
+    return managed_service.report_session_expired(
+        db,
+        auth["id"],
+        platform_id,
+        payload.managed_account_id,
+        payload.credential_version,
+        payload.session_id,
         payload.device_id,
         audit=audit_context(request, auth),
     )

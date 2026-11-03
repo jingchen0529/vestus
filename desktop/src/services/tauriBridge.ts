@@ -50,6 +50,16 @@ export interface BrowserHandleView {
   managed: boolean;
 }
 
+export interface ManagedSessionExpiredEvent {
+  platformId: number;
+  managedAccountId: number;
+  credentialVersion: number;
+  sessionStatus: "valid" | "expired" | "unknown";
+  applied: boolean;
+  reported: boolean;
+  browserClosed: boolean;
+}
+
 export interface BrowserProfileResetView {
   /** 删掉的平台环境个数（代理与直连分开计）。 */
   removed: number;
@@ -126,6 +136,21 @@ export const tauriBridge = {
     return await listen<StatusView>("status-changed", (event) => {
       callback(event.payload);
     });
+  },
+
+  async onManagedSessionExpired(
+    callback: (payload: ManagedSessionExpiredEvent) => void
+  ): Promise<() => void> {
+    if (!isTauri()) {
+      throw new Error("该功能仅可在 Vestus 桌面客户端中使用");
+    }
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<ManagedSessionExpiredEvent>(
+      "managed-session-expired",
+      (event) => {
+        callback(event.payload);
+      }
+    );
   },
 
   async checkGithubRelease(repo?: string): Promise<{

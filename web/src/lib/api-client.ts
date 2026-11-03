@@ -27,6 +27,8 @@ import { UserLogResponse, UserLogItem } from "@/types/log";
 import {
   CreateManagedPlatformAccountPayload,
   CreateUserManagedAccountPayload,
+  ManagedBindingsResponse,
+  ManagedIdentityCheckResponse,
   ManagedPlatformAccount,
   ManagedPlatformBinding,
   UpdateManagedPlatformAccountPayload,
@@ -397,13 +399,18 @@ export const api = {
     });
   },
 
-  async verifyManagedPlatformAccount(
-    id: number,
-  ): Promise<ManagedPlatformAccount & { verification?: "verified" }> {
-    return request<ManagedPlatformAccount & { verification?: "verified" }>(
-      `/api/admin/managed-platform-accounts/${id}/verify`,
+  /** 实时校验账号 Cookie 的平台登录态并刷新远端身份信息。 */
+  async checkManagedAccountIdentity(id: number): Promise<ManagedIdentityCheckResponse> {
+    return request<ManagedIdentityCheckResponse>(
+      `/api/admin/managed-platform-accounts/${id}/identity-check`,
       { method: "POST" },
     );
+  },
+
+
+  /** 「绑定托管」总览：全部用户的绑定及会话状态（含失效计数）。 */
+  async listManagedBindings(): Promise<ManagedBindingsResponse> {
+    return request<ManagedBindingsResponse>("/api/admin/managed-bindings");
   },
 
   async bindManagedPlatformAccount(
