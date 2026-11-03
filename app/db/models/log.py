@@ -22,7 +22,8 @@ class UserLog(Base):
     actor_username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     actor_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    target_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # 64 与 action 对齐：托管功能引入了 managed_platform_account 这类长表名。
+    target_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     target_id: Mapped[Optional[int]] = mapped_column(IdType, nullable=True)
     target_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     summary: Mapped[str] = mapped_column(String(500), nullable=False)
