@@ -41,6 +41,7 @@ import {
   UserManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
 import { parseCookieInput } from "@/lib/cookie-parser";
+import { isManagedRecovering, managedRecoveryLabel } from "@/lib/managed-recovery";
 import {
   ClipboardPaste,
   Edit2,
@@ -48,6 +49,8 @@ import {
   Link2,
   Loader2,
   Plus,
+  RefreshCw,
+  ShieldAlert,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
@@ -229,11 +232,21 @@ export function ManagedAccountBindingList({
                 <TableCell className="py-3 whitespace-nowrap">
                   <div className="flex items-center gap-1.5">
                     {renderBindingStatusBadge(item.status)}
-                    {item.sessionStatus === "expired" && (
-                      <Badge variant="destructive" className="text-[10px]">
+                    {isManagedRecovering(item) ? (
+                      <Badge variant="warning" className="gap-1 text-[10px]" title={item.lastError || undefined}>
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                        {managedRecoveryLabel(item)}
+                      </Badge>
+                    ) : item.recoveryStatus === "failed" ? (
+                      <Badge variant="destructive" className="text-[10px]" title={item.lastError || undefined}>
+                        自动恢复失败
+                      </Badge>
+                    ) : item.sessionStatus === "expired" ? (
+                      <Badge variant="destructive" className="gap-1 text-[10px]" title={item.lastError || undefined}>
+                        <ShieldAlert className="h-3 w-3" />
                         会话已失效
                       </Badge>
-                    )}
+                    ) : null}
                   </div>
                 </TableCell>
                 {showActions && (
@@ -369,6 +382,7 @@ export function ManagedAccountDialog({
   const [authMode, setAuthMode] = useState<UserManagedAuthMode>("cookie");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [hasPassword, setHasPassword] = useState(false);
   const [cookieJson, setCookieJson] = useState("");
 
   const [saving, setSaving] = useState(false);
@@ -421,6 +435,7 @@ export function ManagedAccountDialog({
     setAuthMode("cookie");
     setUsername("");
     setPassword("");
+    setHasPassword(false);
     setCookieJson("");
     setFormOpen(true);
   };
@@ -435,6 +450,7 @@ export function ManagedAccountDialog({
     );
     setUsername("");
     setPassword("");
+    setHasPassword(false);
     setCookieJson("");
     setFormOpen(true);
 
@@ -445,7 +461,9 @@ export function ManagedAccountDialog({
         setAccountName(detail.name || binding.alias || binding.name);
         setAuthMode(detail.authMode || "cookie");
         setUsername(detail.username || "");
-        setPassword(detail.password || "");
+        // 已保存的密码不回显：留空提交即保持原凭据。
+        setPassword("");
+        setHasPassword(Boolean(detail.hasPassword) || Boolean(detail.password));
         setCookieJson(
           detail.cookieBundle && detail.cookieBundle.length > 0
             ? JSON.stringify(detail.cookieBundle, null, 2)
@@ -463,7 +481,8 @@ export function ManagedAccountDialog({
     } else if (account) {
       setAuthMode(account.authMode || "cookie");
       setUsername(account.username || "");
-      setPassword(account.password || "");
+      setPassword("");
+      setHasPassword(Boolean(account.password));
       setCookieJson(
         account.cookieBundle ? JSON.stringify(account.cookieBundle, null, 2) : "",
       );
@@ -585,6 +604,12 @@ export function ManagedAccountDialog({
         toast.error("请输入账号名称");
         return;
       }
+      if (authMode === "server_login") {
+        if (!parsedPayload.username || (!hasPassword && !parsedPayload.password)) {
+          toast.error("请填写方舟账号和密码");
+          return;
+        }
+      }
       setSaving(true);
       try {
         if (onUpdateAccount) {
@@ -595,6 +620,7 @@ export function ManagedAccountDialog({
           if (authMode === "server_login") {
             if (parsedPayload.username) updatePayload.username = parsedPayload.username;
             if (parsedPayload.password) updatePayload.password = parsedPayload.password;
+            updatePayload.autoRelogin = true;
           } else if (parsedPayload.cookieBundle) {
             updatePayload.cookieBundle = parsedPayload.cookieBundle;
           }
@@ -858,12 +884,16 @@ export function ManagedAccountDialog({
                       <Label htmlFor="user-managed-password">方舟密码</Label>
                       <Input
                         id="user-managed-password"
-                        type="text"
+                        type="password"
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
-                        autoComplete="off"
+                        autoComplete="new-password"
                         placeholder={
-                          formMode === "edit" ? "留空保持不变" : "请输入密码"
+                          formMode === "edit"
+                            ? hasPassword
+                              ? "密码已保存，不修改请留空"
+                              : "留空保持不变"
+                            : "请输入密码"
                         }
                         className="bg-card border-border/80"
                         disabled={formBusy}

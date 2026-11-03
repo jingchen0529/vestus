@@ -44,8 +44,8 @@ import { formatDate } from "@/lib/utils";
 import { toast } from "sonner";
 
 const AUTH_MODE_LABELS: Record<ManagedAuthMode, string> = {
-  cookie: "导入 Cookie",
-  server_login: "服务端登录",
+  cookie: "Cookie",
+  server_login: "账号密码",
   official_sso: "官方授权",
 };
 
@@ -170,11 +170,11 @@ function ManagedAccountDialog({
       }
     }
     if (authMode === "server_login" && !editing && (!payload.username || !payload.password)) {
-      toast.error("服务端登录模式必须填写账号和密码");
+      toast.error("账号密码模式必须填写账号和密码");
       return;
     }
     if (authMode === "cookie" && !editing && !payload.cookieBundle) {
-      toast.error("导入 Cookie 模式必须填写 Cookie JSON");
+      toast.error("Cookie 模式必须填写 Cookie JSON");
       return;
     }
 
@@ -254,8 +254,8 @@ function ManagedAccountDialog({
             <Select value={authMode} onValueChange={(value: ManagedAuthMode) => setAuthMode(value)} disabled={loading}>
               <SelectTrigger id="managed-auth-mode" className="h-9 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="cookie" className="text-xs">导入 Cookie（推荐先验证）</SelectItem>
-                <SelectItem value="server_login" className="text-xs">服务端登录（需要 Worker）</SelectItem>
+                <SelectItem value="cookie" className="text-xs">Cookie</SelectItem>
+                <SelectItem value="server_login" className="text-xs">账号密码</SelectItem>
                 <SelectItem value="official_sso" className="text-xs">官方授权 / SSO</SelectItem>
               </SelectContent>
             </Select>

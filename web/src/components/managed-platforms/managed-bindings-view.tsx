@@ -39,8 +39,8 @@ import { toast } from "sonner";
 import { ManagedBindingDialog } from "./managed-binding-dialog";
 
 const AUTH_MODE_LABELS: Record<ManagedAuthMode, string> = {
-  cookie: "导入 Cookie",
-  server_login: "服务端登录",
+  cookie: "Cookie",
+  server_login: "账号密码",
   official_sso: "官方授权",
 };
 

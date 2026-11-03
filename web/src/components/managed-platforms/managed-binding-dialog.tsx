@@ -485,7 +485,7 @@ export function ManagedBindingDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="cookie" className="text-xs">
-                      导入 Cookie
+                      Cookie
                     </SelectItem>
                     <SelectItem value="server_login" className="text-xs">
                       账号密码
