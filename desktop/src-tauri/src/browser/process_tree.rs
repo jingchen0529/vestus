@@ -77,27 +77,28 @@ impl OwnedProcess {
         if group <= 1 {
             return Err(io::Error::other("invalid owned Chromium process group"));
         }
-        // macOS can return EPERM when a process group contains only zombies.
-        // Verify that condition before signaling, rather than treating EPERM as
-        // success (which would unlock a genuinely inaccessible live process).
+        // macOS returns EPERM from kill(-pgid, SIGKILL) once every member is a
+        // zombie or already inside kernel exit1() (P_LPEXIT). Because a dying
+        // helper in P_LPEXIT can still appear as non-Z in ps for a few
+        // milliseconds before becoming SZOMB, keep polling until the deadline
+        // rather than failing on the first EPERM snapshot.
         if self.has_exited()? && !group_has_live_members(group)? {
             self.child.wait()?;
             self.finished = true;
             return Ok(());
         }
-        // SAFETY: this group was created before exec for this child, whose pid
-        // remains reserved. Negative pid addresses only that exact group.
-        if unsafe { libc::kill(-group, libc::SIGKILL) } != 0 {
-            let error = io::Error::last_os_error();
-            if !matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM))
-                || !self.has_exited()?
-                || group_has_live_members(group)?
-            {
-                return Err(error);
-            }
-        }
         let deadline = Instant::now() + TERMINATION_TIMEOUT;
+        let mut last_kill_error: Option<io::Error> = None;
         loop {
+            // SAFETY: this group was created before exec for this child, whose
+            // pid remains reserved. Negative pid addresses only that exact group.
+            if unsafe { libc::kill(-group, libc::SIGKILL) } != 0 {
+                let error = io::Error::last_os_error();
+                if !matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM)) {
+                    return Err(error);
+                }
+                last_kill_error = Some(error);
+            }
             // A terminated descendant may remain a zombie until the system
             // reaps it. Zombies cannot execute or hold profile files, so they
             // are safe; a mere parent wait/kill(-pgid, 0) cannot establish this.
@@ -107,10 +108,12 @@ impl OwnedProcess {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "owned Chromium process group did not finish exiting",
-                ));
+                return Err(last_kill_error.unwrap_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "owned Chromium process group did not finish exiting",
+                    )
+                }));
             }
             thread::sleep(POLL);
         }
