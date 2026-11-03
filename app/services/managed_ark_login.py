@@ -94,6 +94,15 @@ def login_ark(
         if not checked:
             agreement.click(timeout=remaining())
         submit = form.get_by_role("button", name="登录", exact=True)
+        # 平台前端校验不通过时按钮保持 disabled，并把原因写在 title 里
+        # （例如「密码应为6-20位字符」）。等待 enabled 永远不会成功，先读出
+        # 校验文案直接给管理员一个可行动的结论。
+        if not submit.is_enabled(timeout=2_000):
+            reason = str(submit.get_attribute("title") or "").strip()
+            return ArkLoginResult(
+                "invalid_credentials",
+                detail=f"平台登录校验未通过：{reason or '账号或密码格式不符合要求'}",
+            )
         # Native Playwright click waits for the disabled button to become enabled.
         submit.click(timeout=remaining())
         page.wait_for_function(
