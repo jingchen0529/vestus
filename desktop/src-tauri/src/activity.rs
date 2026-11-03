@@ -330,14 +330,20 @@ impl ActivityCollector {
         });
     }
 
-    pub(crate) fn start(&self, key: SessionKey, endpoint: DevToolsEndpoint, owner: ActivityOwner) {
+    pub(crate) fn start(
+        &self,
+        key: SessionKey,
+        endpoint: DevToolsEndpoint,
+        owner: ActivityOwner,
+        managed_guard: bool,
+    ) {
         let Some(outbox) = self.outbox.get().cloned() else {
             eprintln!("activity collection unavailable: durable queue was not initialized");
             return;
         };
         let (sender, mut receiver) = mpsc::unbounded_channel();
         rt::runtime().spawn(async move {
-            if let Err(error) = cdp::collect(endpoint, sender).await {
+            if let Err(error) = cdp::collect(endpoint, sender, managed_guard).await {
                 // 浏览器退出（正常关闭或托管强杀）都会以传输中断结束采集：
                 // SIGKILL 不留关闭握手，连接直接被重置。这是预期停机，不是故障；
                 // 只有连不上调试端口这种罕见情况才值得留一行线索。

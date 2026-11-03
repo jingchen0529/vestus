@@ -130,6 +130,19 @@ fn process_is_running(pid: u32) -> bool {
 }
 
 #[test]
+fn monitor_liveness_distinguishes_running_closing_and_closed_browsers() {
+    let f = Fixture::new("monitor-liveness");
+    assert!(!f.manager.is_running(1));
+    let executable = f.script("exec sleep 30");
+    f.launch(1, &executable, &f.managed()).unwrap();
+    assert!(f.manager.is_running(1));
+    assert!(f.manager.closing_session(1).is_some());
+    assert!(!f.manager.is_running(1));
+    f.manager.kill_browser(1).unwrap();
+    assert!(!f.manager.is_running(1));
+}
+
+#[test]
 fn cold_managed_launch_discards_old_cookies_but_manual_profiles_keep_them() {
     let f = Fixture::new("cold");
     let executable = f.script("exec sleep 30");

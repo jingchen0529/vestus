@@ -329,6 +329,17 @@ impl BrowserSessionManager {
             .and_then(|session| session.endpoint.lock().expect("调试端点锁已中毒").clone())
     }
 
+    /// A monitor disconnect during an intentional close is not a guard failure.
+    /// Unknown process status is kept live so a failed guard still forces cleanup.
+    pub(crate) fn is_running(&self, session_id: u64) -> bool {
+        let session = self.inner.sessions.lock().expect("浏览器会话锁已中毒")
+            .get(&session_id).cloned();
+        session.is_some_and(|session| {
+            !session.closing.load(Ordering::Acquire)
+                && !matches!(process_exit_status(&session.process), Ok(true))
+        })
+    }
+
     /// Start one Chromium process on a persistent profile.
     ///
     /// `on_ready` fires once the DevTools endpoint is readable; `on_exit` fires

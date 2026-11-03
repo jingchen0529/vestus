@@ -76,6 +76,15 @@ export interface ManagedSessionRecoveredEvent {
   detail?: string;
 }
 
+export interface ManagedSessionGuardFailedEvent {
+  platformId: number;
+  managedAccountId: number;
+  credentialVersion: number;
+  browserId: number;
+  reason: "monitor_disconnected" | "monitor_failed";
+  browserClosed: boolean;
+}
+
 export interface BrowserProfileResetView {
   /** 删掉的平台环境个数（代理与直连分开计）。 */
   removed: number;
@@ -178,6 +187,21 @@ export const tauriBridge = {
     const { listen } = await import("@tauri-apps/api/event");
     return await listen<ManagedSessionRecoveredEvent>(
       "managed-session-recovered",
+      (event) => {
+        callback(event.payload);
+      }
+    );
+  },
+
+  async onManagedSessionGuardFailed(
+    callback: (payload: ManagedSessionGuardFailedEvent) => void
+  ): Promise<() => void> {
+    if (!isTauri()) {
+      throw new Error("该功能仅可在 Vestus 桌面客户端中使用");
+    }
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<ManagedSessionGuardFailedEvent>(
+      "managed-session-guard-failed",
       (event) => {
         callback(event.payload);
       }

@@ -297,11 +297,12 @@ async fn connect(endpoint: &DevToolsEndpoint) -> Result<WebSocketStream<TcpStrea
 pub async fn collect(
     endpoint: DevToolsEndpoint,
     sink: UnboundedSender<PageReport>,
+    managed_guard: bool,
 ) -> Result<(), CdpError> {
     let socket = connect(&endpoint).await?;
 
     let (mut writer, mut reader) = socket.split();
-    let mut collector = Collector::default();
+    let mut collector = Collector { managed_guard, ..Collector::default() };
     for command in collector.opening_commands() {
         writer
             .send(Message::Text(command.into()))
@@ -681,6 +682,8 @@ struct Handled {
 /// 协议状态机。刻意不碰 IO，于是整套分支都能在没有浏览器的情况下测。
 #[derive(Debug, Default)]
 struct Collector {
+    /// 托管防护独占暂停/放行，采集连接不得抢先恢复尚未装好防护的页面。
+    managed_guard: bool,
     next_id: i64,
     /// `Target.getTargets` 的请求 id，用来认出那一条回执。
     get_targets_id: i64,
@@ -707,9 +710,8 @@ impl Collector {
             "Target.setAutoAttach",
             json!({
                 "autoAttach": true,
-                // 让新 target 停在第一行脚本之前，于是注入脚本一定装在页面
-                // 自己的脚本前面。放行由 Runtime.runIfWaitingForDebugger 负责。
-                "waitForDebuggerOnStart": true,
+                // 普通环境由采集器暂停；托管环境必须等独立防护装好后放行。
+                "waitForDebuggerOnStart": !self.managed_guard,
                 // flatten 把子 session 复用同一条 WebSocket，靠 sessionId 区分。
                 "flatten": true,
             }),
@@ -730,7 +732,7 @@ impl Collector {
 
     /// 给一个刚附上的 page session 装采集，并放行它。
     fn install(&mut self, session_id: &str) -> Vec<String> {
-        vec![
+        let mut commands = vec![
             self.command(Some(session_id), "Page.enable", json!({})),
             self.command(Some(session_id), "Runtime.enable", json!({})),
             self.command(
@@ -741,15 +743,18 @@ impl Collector {
             self.command(
                 Some(session_id),
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": COLLECTOR_SCRIPT }),
+                json!({ "source": COLLECTOR_SCRIPT, "runImmediately": self.managed_guard }),
             ),
-            // 必须最后发：放行之前所有订阅都得就位，否则首个文档会漏采。
-            self.command(
+        ];
+        if !self.managed_guard {
+            // 托管页面只由防护连接放行，采集安装稍晚也不能绕开这道屏障。
+            commands.push(self.command(
                 Some(session_id),
                 "Runtime.runIfWaitingForDebugger",
                 json!({}),
-            ),
-        ]
+            ));
+        }
+        commands
     }
 
     /// 放行一个我们不采集的 target，然后断开它。
@@ -767,18 +772,20 @@ impl Collector {
     /// * 关闭浏览器时 Chromium 会等这些暂停的进程恢复，于是关不掉，只能被
     ///   [`crate::browser`] 强杀，profile 也就删不干净。
     fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {
-        vec![
-            self.command(
+        let mut commands = Vec::new();
+        if !self.managed_guard {
+            commands.push(self.command(
                 Some(session_id),
                 "Runtime.runIfWaitingForDebugger",
                 json!({}),
-            ),
-            self.command(
-                None,
-                "Target.detachFromTarget",
-                json!({ "sessionId": session_id }),
-            ),
-        ]
+            ));
+        }
+        commands.push(self.command(
+            None,
+            "Target.detachFromTarget",
+            json!({ "sessionId": session_id }),
+        ));
+        commands
     }
 
     /// 处理一条来自浏览器的消息。无法解析或不关心的消息一律安静丢掉。
@@ -1022,6 +1029,28 @@ mod tests {
         // browser 级命令不能带 sessionId
         assert!(first.get("sessionId").is_none());
         assert_eq!(method_of(&commands[1]), "Target.getTargets");
+    }
+
+    #[test]
+    fn managed_collector_never_resumes_guarded_targets() {
+        let mut collector = Collector { managed_guard: true, ..Collector::default() };
+        let opening = collector.opening_commands();
+        let auto: Value = serde_json::from_str(&opening[0]).unwrap();
+        assert_eq!(auto["params"]["waitForDebuggerOnStart"], false);
+        for event in [
+            attached("S1", "page", "about:blank"),
+            attached("duplicate", "page", "about:blank"),
+            attached("worker", "service_worker", "https://example.test/sw.js"),
+        ] {
+            let handled = collector.handle(&event);
+            for command in handled.commands {
+                assert_ne!(method_of(&command), "Runtime.runIfWaitingForDebugger");
+                if method_of(&command) == "Page.addScriptToEvaluateOnNewDocument" {
+                    let value: Value = serde_json::from_str(&command).unwrap();
+                    assert_eq!(value["params"]["runImmediately"], true);
+                }
+            }
+        }
     }
 
     /// 放行必须是最后一条：`runIfWaitingForDebugger` 之前 addBinding 和注入脚本

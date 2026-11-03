@@ -100,6 +100,7 @@ function MainLayout() {
     let unlistenFn: (() => void) | undefined;
     let unlistenExpiredFn: (() => void) | undefined;
     let unlistenRecoveredFn: (() => void) | undefined;
+    let unlistenGuardFailedFn: (() => void) | undefined;
 
     void tauriBridge
       .getStatus()
@@ -226,11 +227,30 @@ function MainLayout() {
         // A failed event subscription must not create an unhandled rejection.
       });
 
+    // 安全监控中断不代表凭据失效；这里只提示，浏览器退出状态由 status-changed 更新。
+    tauriBridge
+      .onManagedSessionGuardFailed((payload) => {
+        if (!active) return;
+        if (payload.browserClosed) {
+          error("托管浏览器已关闭", "安全监控中断，请重新打开平台；托管账号凭据未被标记为失效");
+        } else {
+          error("托管浏览器关闭未确认", "安全监控中断，请手动关闭对应浏览器后重试");
+        }
+      })
+      .then((unlisten) => {
+        if (active) unlistenGuardFailedFn = unlisten;
+        else unlisten();
+      })
+      .catch(() => {
+        // A failed event subscription must not create an unhandled rejection.
+      });
+
     return () => {
       active = false;
       if (unlistenFn) unlistenFn();
       if (unlistenExpiredFn) unlistenExpiredFn();
       if (unlistenRecoveredFn) unlistenRecoveredFn();
+      if (unlistenGuardFailedFn) unlistenGuardFailedFn();
     };
   }, [desktopRuntime, authReady, currentUser?.id]);
 

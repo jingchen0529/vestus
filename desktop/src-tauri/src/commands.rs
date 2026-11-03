@@ -1065,7 +1065,7 @@ pub async fn open_browser<R: Runtime>(
         (None, None)
     };
     let (ready_tx, mut ready_rx) = if managed_launch {
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<CmdResult<()>>();
         (Some(tx), Some(rx))
     } else {
         (None, None)
@@ -1078,22 +1078,34 @@ pub async fn open_browser<R: Runtime>(
         initial_url,
         disable_sandbox,
         move |endpoint| {
+            let mut managed_guard = false;
             let injection = if let Some(session) = managed_session_for_ready {
                 rt::runtime().block_on(async {
-                    // Subscribe before navigation. A separate connection owns
-                    // events even while the injection connection awaits replies.
+                    // The guard must be ready before any managed credentials or
+                    // navigation. A local setup failure must not expire them.
                     match managed_cdp::prepare_logout_watch(&endpoint, &session).await {
                         Ok(Some(watch)) => {
-                            if let (Some(context), Some(exited)) = (logout_context, watch_exit_rx) {
-                                rt::runtime().spawn(watch_managed_logout(context, watch, exited));
-                            }
+                            let (Some(context), Some(exited)) = (logout_context, watch_exit_rx) else {
+                                return Err(CommandError::new(
+                                    "托管安全监控初始化失败，请重新打开平台",
+                                    "managed_guard_unavailable",
+                                ));
+                            };
+                            managed_guard = true;
+                            rt::runtime().spawn(watch_managed_logout(context, watch, exited));
                         }
                         Ok(None) => {}
-                        Err(error) => eprintln!("托管登出监听未启用：{error}"),
+                        Err(_) => return Err(CommandError::new(
+                            "托管安全监控无法启用，请重新打开平台",
+                            "managed_guard_unavailable",
+                        )),
                     }
                     managed_cdp::inject_session(&endpoint, &session)
                         .await
-                        .map_err(|error| error.to_string())
+                        .map_err(|_| CommandError::new(
+                            "托管登录会话注入失败，请重新打开平台或联系管理员",
+                            "managed_session_invalid",
+                        ))
                 })
             } else {
                 Ok(())
@@ -1104,7 +1116,7 @@ pub async fn open_browser<R: Runtime>(
             if injection.is_err() {
                 return;
             }
-            activity_collector.start(activity_key, endpoint, activity_owner);
+            activity_collector.start(activity_key, endpoint, activity_owner, managed_guard);
         },
         move || {
             if let Some(tx) = watch_exit_tx {
@@ -1125,14 +1137,11 @@ pub async fn open_browser<R: Runtime>(
         let ready = tokio::time::timeout(Duration::from_secs(35), rx).await;
         match ready {
             Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(message))) => {
+            Ok(Ok(Err(error))) => {
                 kill_managed_browser(browsers.inner().clone(), browser_id).await?;
                 state.mark_browser_closed_for(browser_id);
                 emit_status(&app, &state);
-                return Err(CommandError::new(
-                    format!("托管登录会话注入失败：{message}"),
-                    "managed_session_invalid",
-                ));
+                return Err(error);
             }
             Ok(Err(_)) | Err(_) => {
                 kill_managed_browser(browsers.inner().clone(), browser_id).await?;
@@ -1177,26 +1186,52 @@ struct ManagedLogoutContext<R: Runtime> {
     identity: managed_cdp::ManagedSessionIdentity,
 }
 
-/// Best-effort platform signal, not an authentication boundary. Never turn a
-/// disconnected watcher into an expired account; reports are bound to the
-/// consumed bootstrap and are independently checked by the server.
+/// Local guard failures close only this browser; they never invalidate a
+/// credential. Platform signals still report the consumed bootstrap identity.
 async fn watch_managed_logout<R: Runtime>(
     context: ManagedLogoutContext<R>,
     watch: managed_cdp::LogoutWatch,
-    exited: tokio::sync::oneshot::Receiver<()>,
+    mut exited: tokio::sync::oneshot::Receiver<()>,
 ) {
     let detected = tokio::select! {
         biased;
+        _ = &mut exited => return,
         result = watch.wait() => result,
-        _ = exited => return,
     };
-    match detected {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(error) => {
-            eprintln!("托管登出监听已断开：{error}");
+    if !matches!(detected, Ok(true)) {
+        // Chromium can close the socket just before its process-exit callback.
+        // This grace is for lifecycle completion only, never for an open login
+        // page; a still-running unguarded process is forcibly closed below.
+        if matches!(detected, Ok(false) | Err(managed_cdp::ManagedCdpError::Transport(_)))
+            && tokio::time::timeout(Duration::from_millis(200), &mut exited).await.is_ok() {
             return;
         }
+        let browsers = context.browsers.clone();
+        let browser_id = context.browser_id;
+        let running = rt::runtime().spawn_blocking(move || browsers.is_running(browser_id))
+            .await.unwrap_or(true);
+        if !running {
+            return;
+        }
+        let reason = if matches!(detected, Ok(false)) {
+            "monitor_disconnected"
+        } else {
+            "monitor_failed"
+        };
+        let closed = kill_managed_browser(context.browsers.clone(), context.browser_id).await.is_ok();
+        if context.auth.current_identity().is_ok_and(|(user_id, _, generation)| {
+            user_id == context.user_id && generation == context.auth_generation
+        }) {
+            let _ = context.app.emit("managed-session-guard-failed", serde_json::json!({
+                "platformId": context.platform_id,
+                "managedAccountId": context.identity.managed_account_id,
+                "credentialVersion": context.identity.credential_version,
+                "browserId": context.browser_id,
+                "reason": reason,
+                "browserClosed": closed,
+            }));
+        }
+        return;
     }
     let browsers = context.browsers.clone();
     let browser_id = context.browser_id;
