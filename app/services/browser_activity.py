@@ -34,8 +34,8 @@ from app.repositories import browser_activity as activity_repo
 from app.repositories import platforms as platforms_repo
 from app.repositories import users as users_repo
 from app.schemas.browser_activity import BrowserActivityReport, BrowserActivityReportV2, BrowserPageReport
-from app.schemas.serializers import browser_page_visit_dict, browser_session_dict
 from app.services.errors import ConflictError, ForbiddenFieldError, NotFoundError
+from app.services.serializers import browser_page_visit_dict, browser_session_dict
 
 MISSING_SESSION_DETAIL = "浏览器会话记录不存在"
 

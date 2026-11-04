@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import user_auth
 from app.api.envelope import EnvelopeRoute
 from app.db.base import iso_datetime, utc_now
-from app.schemas.serializers import user_dict
+from app.services.serializers import user_dict
 
 router = APIRouter(route_class=EnvelopeRoute)
 

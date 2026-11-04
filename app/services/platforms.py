@@ -20,9 +20,9 @@ from app.db.models import Platform, UploadedFile
 from app.db.session import Database
 from app.repositories import platforms as platforms_repo
 from app.repositories import uploads as uploads_repo
-from app.schemas.serializers import platform_dict
 from app.services.audit import AuditContext, record
 from app.services.errors import ConflictError, NotFoundError
+from app.services.serializers import platform_dict
 from app.services.uploads import validated_image_reference
 
 DUPLICATE_NAME_DETAIL = "平台名称已存在"

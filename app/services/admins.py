@@ -18,7 +18,6 @@ from app.db.models import Admin
 from app.db.session import Database
 from app.repositories import admins as admins_repo
 from app.repositories import users as users_repo
-from app.schemas.serializers import admin_dict
 from app.services.audit import AuditContext, record
 from app.services.errors import (
     BadRequestError,
@@ -26,6 +25,7 @@ from app.services.errors import (
     LastSuperAdminError,
     NotFoundError,
 )
+from app.services.serializers import admin_dict
 
 DUPLICATE_USERNAME_DETAIL = "管理员账号名已存在"
 MISSING_ADMIN_DETAIL = "管理员不存在"

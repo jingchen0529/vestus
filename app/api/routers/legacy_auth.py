@@ -16,8 +16,8 @@ from app.api.envelope import EnvelopeRoute
 from app.api.login import perform_login, perform_logout
 from app.db.session import Database
 from app.schemas.auth import LoginRequest
-from app.schemas.serializers import admin_dict, user_dict
 from app.services import auth as auth_service
+from app.services.serializers import admin_dict, user_dict
 
 router = APIRouter(route_class=EnvelopeRoute)
 

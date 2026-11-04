@@ -25,9 +25,9 @@ from app.db.base import utc_now
 from app.db.models import Proxy
 from app.db.session import Database, lock_global_proxy_activation
 from app.repositories import proxies as proxies_repo
-from app.schemas.serializers import proxy_dict
 from app.services.audit import AuditContext, record
 from app.services.errors import BadRequestError, ConflictError, NotFoundError
+from app.services.serializers import proxy_dict
 
 DUPLICATE_NAME_DETAIL = "代理名称已存在"
 MISSING_PROXY_DETAIL = "代理不存在"

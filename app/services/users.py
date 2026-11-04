@@ -23,11 +23,11 @@ from app.db.models import Admin, Proxy, User
 from app.db.session import Database
 from app.repositories import proxies as proxies_repo
 from app.repositories import users as users_repo
-from app.schemas.serializers import user_dict
 from app.services.admins import MISSING_ADMIN_DETAIL
 from app.services.audit import AuditContext, record
 from app.services.errors import ConflictError, ForbiddenFieldError, NotFoundError
 from app.services.proxies import MISSING_PROXY_DETAIL
+from app.services.serializers import user_dict
 
 DUPLICATE_USERNAME_DETAIL = "用户账号名已存在"
 MISSING_USER_DETAIL = "用户不存在"

@@ -15,8 +15,8 @@ from app.core.config import get_settings
 from app.db.session import Database
 from app.repositories import settings as settings_repo
 from app.repositories import uploads as uploads_repo
-from app.schemas.serializers import safe_image_reference
 from app.services.audit import AuditContext, record
+from app.services.serializers import safe_image_reference
 from app.services.uploads import validated_image_reference
 
 DEFAULT_ADMIN_TITLE = "Vestus Admin"

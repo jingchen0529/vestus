@@ -30,7 +30,6 @@ from app.db.models import Admin, User
 from app.db.session import Database
 from app.repositories import admins as admins_repo
 from app.repositories import users as users_repo
-from app.schemas.serializers import admin_dict, user_dict
 from app.services.audit import AuditContext, record
 from app.services.errors import (
     AccountUnavailableError,
@@ -38,6 +37,7 @@ from app.services.errors import (
     BadRequestError,
     ServiceError,
 )
+from app.services.serializers import admin_dict, user_dict
 from app.services.users import apply_changes
 
 INVALID_CREDENTIALS_DETAIL = "账号或密码错误"

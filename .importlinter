@@ -5,6 +5,14 @@
 #
 # Read the layer list top-down as "may import anything below it".  A violation
 # means a module reached upwards -- for example a repository importing a service.
+#
+# The layers spell the MVP split: ``app.api`` is the View (HTTP in/out),
+# ``app.services`` the Presenter (business rules plus ORM->DTO shaping, which is
+# why ``app.services.serializers`` lives there), ``app.repositories`` and
+# ``app.db`` the Model.  ``app.schemas`` is deliberately OUT of the vertical
+# chain: DTOs are shared contracts that View and Presenter may both use, so the
+# layers contract cannot express their rules -- the three ``dto-...`` contracts
+# below do instead.
 
 [importlinter]
 root_package = app
@@ -17,7 +25,6 @@ layers =
     app.main
     app.api
     app.services
-    app.schemas
     app.repositories
     app.db
     app.core
@@ -47,3 +54,40 @@ source_modules =
 forbidden_modules =
     fastapi
     starlette
+
+[importlinter:contract:dto-reaches-nowhere]
+name = DTOs never import api, services or repositories
+type = forbidden
+# Schemas are pure Pydantic data contracts.  They may use ``app.core`` helpers
+# and the bottom-of-graph utilities in ``app.db.base`` (``parse_datetime`` and
+# friends), but they must not know any orchestration layer.
+allow_indirect_imports = True
+source_modules =
+    app.schemas
+forbidden_modules =
+    app.api
+    app.services
+    app.repositories
+
+[importlinter:contract:dto-does-not-know-orm-entities]
+name = DTOs never import ORM models
+type = forbidden
+# ORM->JSON shaping lives in ``app.services.serializers``; the schema modules
+# themselves stay entity-blind so swapping the persistence layer would not
+# touch a single request/response contract.
+allow_indirect_imports = True
+source_modules =
+    app.schemas
+forbidden_modules =
+    app.db.models
+
+[importlinter:contract:repositories-dont-know-dto]
+name = Repositories return ORM entities, never DTOs
+type = forbidden
+# Querying returns model instances; turning them into dicts is the service
+# layer's job (via ``app.services.serializers``).
+allow_indirect_imports = True
+source_modules =
+    app.repositories
+forbidden_modules =
+    app.schemas

@@ -18,13 +18,13 @@ from typing import Any, Dict, List, Optional
 from app.db.models import Proxy
 from app.db.session import Database
 from app.repositories import desktop as desktop_repo
-from app.schemas.serializers import (
+from app.services.errors import CredentialUnreadableError
+from app.services.serializers import (
     desktop_lease_from_snapshot,
     desktop_proxy_dict,
     managed_account_desktop_dict,
     platform_dict,
 )
-from app.services.errors import CredentialUnreadableError
 
 logger = logging.getLogger(__name__)
 

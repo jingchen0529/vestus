@@ -2,7 +2,7 @@
 
 :func:`validated_image_reference` needs a ``Session`` -- it proves the reference
 points at a real, inline-safe upload -- so it lives here rather than in
-:mod:`app.schemas.serializers`, which stays pure.  Branding and platform icons
+:mod:`app.services.serializers`, which stays pure.  Branding and platform icons
 both go through it.
 """
 
@@ -16,8 +16,8 @@ from app.core.uploads import is_inline_safe, normalize_upload_reference
 from app.db.models import UploadedFile
 from app.db.session import Database
 from app.repositories import uploads as uploads_repo
-from app.schemas.serializers import uploaded_file_dict
 from app.services.errors import BadRequestError
+from app.services.serializers import uploaded_file_dict
 
 
 def validated_image_reference(

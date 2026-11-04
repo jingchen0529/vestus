@@ -19,8 +19,8 @@ from sqlalchemy.orm import Session
 from app.db.session import Database
 from app.repositories import logs as logs_repo
 from app.repositories import users as users_repo
-from app.schemas.serializers import log_dict
 from app.services.errors import NotFoundError
+from app.services.serializers import log_dict
 
 MISSING_LOG_DETAIL = "日志不存在"
 
