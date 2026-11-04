@@ -80,7 +80,7 @@ jobs:
         working-directory: web
 
   desktop-shell:
-    name: Desktop shell gates (node --test / surfaces / tsc / vite build)
+    name: Desktop shell gates (node --test / tsc / vite build / surfaces)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,12 +99,14 @@ jobs:
         run: npm test
         working-directory: desktop
 
-      - name: Shell/kernel seam boundary check
-        run: npm run check:surfaces
-        working-directory: desktop
-
+      # check:surfaces 会扫描 desktop/dist/assets/ 的产物断言，必须先构建；
+      # 干净 checkout 上没有 dist，直接跑会 ENOENT 崩溃。
       - name: Type check and build (tsc && vite build)
         run: npm run build
+        working-directory: desktop
+
+      - name: Shell/kernel seam boundary check
+        run: npm run check:surfaces
         working-directory: desktop
 
   desktop-rust:

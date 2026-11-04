@@ -186,7 +186,10 @@ def _enveloped_operations(app: FastAPI) -> Set[Tuple[str, str]]:
     operations: Set[Tuple[str, str]] = set()
     for route in app.routes:
         if isinstance(route, EnvelopeRoute):
-            operations.update((route.path, method.lower()) for method in route.methods)
+            # Starlette 把 methods 类型标成 Optional；缺省时视作只读路由。
+            operations.update(
+                (route.path, method.lower()) for method in (route.methods or set())
+            )
     return operations
 
 
