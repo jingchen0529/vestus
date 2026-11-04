@@ -88,3 +88,11 @@ desktop/src-tauri/src/page.rs
 
 # Disposable Chromium persistence test reports.
 desktop/test-results/
+
+# Local tool caches: stay on disk, never in git.
+.mimosa/
+.import_linter_cache/
+.zcode/
+
+# Reverse-engineering scratch notes and traffic captures, local reference only.
+js_reverse_cache/
