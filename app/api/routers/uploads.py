@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 # Starlette's form parser produces ``starlette.datastructures.UploadFile``, not
 # FastAPI's subclass, so the isinstance guard below has to name that class.
 from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartException
 
 from app.api.deps import admin_auth, get_db
 from app.api.envelope import EnvelopeRoute
@@ -44,23 +45,34 @@ async def upload_file(
     auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    async with request.form(max_files=1, max_fields=0) as form:
-        files = form.getlist("file")
-        if len(files) != 1 or not isinstance(files[0], UploadFile):
-            raise HTTPException(status_code=422, detail="必须提供唯一的 file 文件字段")
-        file = files[0]
-        original_name = Path((file.filename or "file").replace("\\", "/")).name[:255] or "file"
-        content_type = (
-            file.content_type or "application/octet-stream"
-        ).strip()[:255] or "application/octet-stream"
-        try:
-            stored = await run_in_threadpool(store_upload, file)
-        except EmptyUploadError as exc:
-            raise HTTPException(status_code=400, detail="上传文件不能为空") from exc
-        except UploadTooLargeError as exc:
-            raise HTTPException(status_code=413, detail="上传文件超过大小限制") from exc
-        except OSError as exc:
-            raise HTTPException(status_code=507, detail="文件存储空间不可用") from exc
+    # 422 = 根本没有可用的 file 字段；400 = 多余字段/多个文件。
+    # 契约在代码里执行而不是依赖 form() 的 max_fields/max_files：Starlette 1.10
+    # 起 max_fields=0 会在解析层抛 MultiPartException 变成 400，并让内部英文
+    # 信息泄漏给客户端，与旧版行为不同。max_files=1 保留，解析层的提前截断对
+    # 超大重复文件仍有意义；MultiPartException 在这里统一转成带中文信息的 400。
+    try:
+        async with request.form(max_files=1) as form:
+            files = form.getlist("file")
+            if len(files) != 1 or not isinstance(files[0], UploadFile):
+                raise HTTPException(status_code=422, detail="必须提供唯一的 file 文件字段")
+            extra_fields = [name for name in form if name != "file"]
+            if extra_fields:
+                raise HTTPException(status_code=400, detail="上传请求不允许携带 file 之外的表单字段")
+            file = files[0]
+            original_name = Path((file.filename or "file").replace("\\", "/")).name[:255] or "file"
+            content_type = (
+                file.content_type or "application/octet-stream"
+            ).strip()[:255] or "application/octet-stream"
+            try:
+                stored = await run_in_threadpool(store_upload, file)
+            except EmptyUploadError as exc:
+                raise HTTPException(status_code=400, detail="上传文件不能为空") from exc
+            except UploadTooLargeError as exc:
+                raise HTTPException(status_code=413, detail="上传文件超过大小限制") from exc
+            except OSError as exc:
+                raise HTTPException(status_code=507, detail="文件存储空间不可用") from exc
+    except MultiPartException as exc:
+        raise HTTPException(status_code=400, detail="上传表单不合法：只能包含一个 file 文件字段") from exc
 
     try:
         item = await run_in_threadpool(
