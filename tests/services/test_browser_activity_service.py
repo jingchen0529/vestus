@@ -13,7 +13,7 @@ from typing import Any, Dict
 import pytest
 
 from app.core.security import hash_password
-from app.db.models import Admin, BrowserSession, User
+from app.db.models import Admin, BrowserSession
 from app.db.session import Database
 from app.schemas.browser_activity import BrowserActivityReportV2
 from app.services import browser_activity as activity_service

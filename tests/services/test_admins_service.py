@@ -8,8 +8,6 @@ instead of leaving dangling bindings.
 
 from __future__ import annotations
 
-from typing import Any, Dict
-
 import pytest
 
 from app.db.models import Admin, User, UserLog
