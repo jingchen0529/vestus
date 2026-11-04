@@ -9,8 +9,11 @@ name: CI
 # - web:node --test 套件 + tsc 类型检查 + vite 构建(双入口 MPA 一起出)。
 # - desktop 壳:node --test 套件(含壳内核缝纪律 check-surface-boundaries
 #   与 tauri-csp-config)、表面检查、tsc + vite 构建。
-#   刻意不做的事:不装 Rust 工具链、不跑 tauri 打包、不下载随包 Chromium——
-#   这些重活在 release.yml 的四平台矩阵里,CI 只验证源代码层。
+#
+# Rust 内核一个 job:cargo fmt --check + cargo test --lib(278 个单测)。
+# 工具链钉在本地开发同版本,避免 rustfmt 版本漂移让 --check 误报。
+# 刻意不做的事:不跑 tauri 打包、不下载随包 Chromium——这些重活在
+# release.yml 的四平台矩阵里,CI 只验证源代码层的编译与测试。
 
 on:
   push:
@@ -103,3 +106,45 @@ jobs:
       - name: Type check and build (tsc && vite build)
         run: npm run build
         working-directory: desktop
+
+  desktop-rust:
+    name: Desktop Rust gates (fmt / cargo test)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与 release.yml 的 Linux 打包同一套系统依赖:tauri 在 Linux 上需要
+      # webkit2gtk/gtk 开发头文件才能编译,cargo test 也一样。
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev librsvg2-dev libxdo-dev \
+            libgtk-3-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
+            || sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
+
+      - name: Install Rust toolchain (pinned to the local version)
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt
+          rustup default 1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # lib.rs 的 generate_context! 编译期读取 tauri.conf.json 的 frontendDist,
+      # 所以要先构建壳;release.yml 同样是先构建前端再编 Rust。
+      - name: Build the shell for generate_context
+        run: npm ci && npm run build
+        working-directory: desktop
+
+      - name: Format check (cargo fmt --check)
+        run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+
+      - name: Tests (cargo test --lib)
+        run: cargo test --lib --manifest-path desktop/src-tauri/Cargo.toml
