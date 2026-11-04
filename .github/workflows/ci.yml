@@ -4,6 +4,13 @@ name: CI
 # 1. ruff 静态检查  2. mypy 类型检查  3. import-linter 分层契约  4. pytest
 # 测试用例自建 SQLite(conftest 里 monkeypatch VESTUS_DATABASE_URL),
 # 不需要 MySQL service 容器。
+#
+# 前端两端各一个 job:
+# - web:node --test 套件 + tsc 类型检查 + vite 构建(双入口 MPA 一起出)。
+# - desktop 壳:node --test 套件(含壳内核缝纪律 check-surface-boundaries
+#   与 tauri-csp-config)、表面检查、tsc + vite 构建。
+#   刻意不做的事:不装 Rust 工具链、不跑 tauri 打包、不下载随包 Chromium——
+#   这些重活在 release.yml 的四平台矩阵里,CI 只验证源代码层。
 
 on:
   push:
@@ -43,3 +50,56 @@ jobs:
 
       - name: Tests (pytest)
         run: python -m pytest
+
+  web:
+    name: Web gates (node --test / tsc / vite build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: npm install -g pnpm@^11
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+
+      - name: Tests (node --test)
+        run: pnpm test
+        working-directory: web
+
+      - name: Type check and build (tsc && vite build)
+        run: pnpm build
+        working-directory: web
+
+  desktop-shell:
+    name: Desktop shell gates (node --test / surfaces / tsc / vite build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: desktop
+
+      # 81 个用例:壳内核缝纪律(check-surface-boundaries)、CSP 配置、
+      # 托管会话事件解析、主题色、auth/services 纯函数。
+      - name: Tests (node --test)
+        run: npm test
+        working-directory: desktop
+
+      - name: Shell/kernel seam boundary check
+        run: npm run check:surfaces
+        working-directory: desktop
+
+      - name: Type check and build (tsc && vite build)
+        run: npm run build
+        working-directory: desktop
