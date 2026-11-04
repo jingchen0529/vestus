@@ -2,7 +2,6 @@ import React, { useEffect, useState } from "react";
 import { Lock, User, Eye, EyeOff, ArrowRight, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { authService, UserAccount } from "@/services/authService";
 import { useToast } from "@/components/ui/toast";
 import { sanitizeNoWhitespace, preventSpaceKeyDown } from "./authInputHelpers";
@@ -109,120 +108,125 @@ export const LoginCard: React.FC<LoginCardProps> = ({
   const displayLogo = logoUrl || defaultLogo;
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-background text-foreground p-4 relative overflow-hidden transition-colors">
-      {/* Draggable window header region */}
-      <div data-tauri-drag-region className="absolute top-0 left-0 right-0 h-10 z-50 select-none cursor-default" />
+    <div className="relative flex min-h-screen w-full items-center justify-center overflow-y-auto bg-background px-5 py-4 text-foreground">
+      {/* 拖拽区：窗口无边框，顶部整条可拖 */}
+      <div data-tauri-drag-region className="absolute inset-x-0 top-0 z-50 h-9 cursor-default select-none" />
 
-      {/* Background Decorative Gradients */}
-      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-blue-600/10 dark:bg-blue-600/15 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] bg-indigo-600/10 dark:bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute top-[40%] left-[60%] w-[350px] h-[350px] bg-emerald-600/5 dark:bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+      {/* 背景：无着色，只有极淡的中性网格与噪点 */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute inset-0 bg-grid opacity-40 [mask-image:radial-gradient(ellipse_62%_52%_at_50%_44%,black,transparent_100%)]" />
+        <div className="absolute inset-0 bg-noise opacity-70" />
+      </div>
 
-      <div className="w-full max-w-[360px] relative z-10">
-        <Card className="border-border bg-card/95 backdrop-blur-xl shadow-xl rounded-2xl">
-          <CardHeader className="pb-3 pt-6 flex flex-col items-center justify-center text-center">
-            <div className="flex flex-col items-center justify-center gap-3 w-full">
-              <img
-                src={displayLogo}
-                alt={productName || "Logo"}
-                className="w-12 h-12 object-contain rounded-2xl border border-border/60 bg-background shadow-xs shrink-0"
-              />
-              <div className="min-w-0 max-w-full">
-                <CardTitle className="text-base font-semibold text-foreground text-center truncate">
-                  {productName || "Vestus"}
-                </CardTitle>
+      {/* 居中单卡 */}
+      <div className="relative z-10 my-auto w-full max-w-[344px]">
+        <div className="rounded-[16px] border border-border/70 bg-card p-5 shadow-lift">
+          {/* 品牌 */}
+          <div className="flex flex-col items-center text-center">
+            <img
+              src={displayLogo}
+              alt={productName || "Logo"}
+              className="h-10 w-10 rounded-[11px] border border-border/70 bg-background object-contain p-1 shadow-xs"
+            />
+            <h1 className="mt-2.5 text-[15px] font-semibold leading-tight tracking-[-0.02em] text-foreground">
+              {productName || "Vestus"}
+            </h1>
+            <p className="mt-1 text-[10.5px] text-muted-foreground">
+              全局代理浏览器 · 桌面客户端
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="mt-5 space-y-2.5">
+            {errMsg && (
+              <div className="flex items-start gap-2 rounded-[9px] border border-destructive/25 bg-destructive/[0.06] px-2.5 py-2">
+                <span className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full bg-destructive" />
+                <span className="text-[11px] leading-relaxed text-destructive">{errMsg}</span>
               </div>
-            </div>
-          </CardHeader>
+            )}
 
-          <form onSubmit={handleSubmit}>
-            <CardContent className="space-y-4 pb-6 px-6">
-              {errMsg && (
-                <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-300 text-xs flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-rose-500 dark:bg-rose-400 shrink-0" />
-                  <span className="truncate">{errMsg}</span>
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-foreground/80 flex items-center justify-between">
-                  <span>登录账号</span>
-                </label>
-                <Input
-                  type="text"
-                  placeholder="请输入登录账号"
-                  value={username}
-                  onChange={(e) => setUsername(sanitizeNoWhitespace(e.target.value))}
-                  onKeyDown={preventSpaceKeyDown}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  autoComplete="username"
-                  icon={<User className="w-4 h-4 text-muted-foreground/70" />}
-                  className="h-10 text-sm rounded-xl"
-                  autoFocus={!username}
-                  disabled={loading}
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-foreground/80 flex items-center justify-between">
-                  <span>登录密码</span>
-                </label>
-                <Input
-                  type={showPassword ? "text" : "password"}
-                  placeholder="请输入登录密码"
-                  value={password}
-                  onChange={(e) => setPassword(sanitizeNoWhitespace(e.target.value))}
-                  onKeyDown={preventSpaceKeyDown}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  autoComplete="current-password"
-                  icon={<Lock className="w-4 h-4 text-muted-foreground/70" />}
-                  className="h-10 text-sm rounded-xl"
-                  rightElement={
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded focus:outline-none"
-                      title={showPassword ? "隐藏密码" : "显示密码"}
-                    >
-                      {showPassword ? (
-                        <EyeOff className="w-4 h-4 text-muted-foreground/70" />
-                      ) : (
-                        <Eye className="w-4 h-4 text-muted-foreground/70" />
-                      )}
-                    </button>
-                  }
-                  autoFocus={Boolean(username) && !password}
-                  disabled={loading}
-                />
-              </div>
-
-              <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-foreground/80 hover:text-foreground transition-colors w-fit">
-                <input
-                  type="checkbox"
-                  checked={rememberUsername}
-                  onChange={(e) => setRememberUsername(e.target.checked)}
-                  disabled={loading}
-                  className="w-3.5 h-3.5 rounded border-border accent-blue-600 cursor-pointer"
-                />
-                记住登录信息
-              </label>
-
-              <Button
-                type="submit"
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium shadow-md shadow-blue-500/25 h-10 text-sm rounded-xl mt-2 transition-all active:scale-[0.99]"
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium text-muted-foreground">登录账号</label>
+              <Input
+                type="text"
+                placeholder="请输入登录账号"
+                value={username}
+                onChange={(e) => setUsername(sanitizeNoWhitespace(e.target.value))}
+                onKeyDown={preventSpaceKeyDown}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoComplete="username"
+                icon={<User className="h-[15px] w-[15px]" />}
+                className="h-10 rounded-[9px] bg-card font-mono text-[13px]"
+                autoFocus={!username}
                 disabled={loading}
-              >
-                {loading ? "正在验证身份…" : "立即登录系统"}
-                <ArrowRight className="w-4 h-4 ml-1.5" />
-              </Button>
-            </CardContent>
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium text-muted-foreground">登录密码</label>
+              <Input
+                type={showPassword ? "text" : "password"}
+                placeholder="请输入登录密码"
+                value={password}
+                onChange={(e) => setPassword(sanitizeNoWhitespace(e.target.value))}
+                onKeyDown={preventSpaceKeyDown}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoComplete="current-password"
+                icon={<Lock className="h-[15px] w-[15px]" />}
+                className="h-10 rounded-[9px] bg-card"
+                rightElement={
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground focus:outline-none"
+                    title={showPassword ? "隐藏密码" : "显示密码"}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-[15px] w-[15px]" />
+                    ) : (
+                      <Eye className="h-[15px] w-[15px]" />
+                    )}
+                  </button>
+                }
+                autoFocus={Boolean(username) && !password}
+                disabled={loading}
+              />
+            </div>
+
+            <label className="flex w-fit cursor-pointer select-none items-center gap-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+              <input
+                type="checkbox"
+                checked={rememberUsername}
+                onChange={(e) => setRememberUsername(e.target.checked)}
+                disabled={loading}
+                className="h-3.5 w-3.5 cursor-pointer rounded-[4px] border-border accent-[hsl(var(--primary))]"
+              />
+              记住登录信息
+            </label>
+
+            <Button
+              type="submit"
+              className="h-10 w-full gap-1.5 rounded-[9px] text-[13px] font-medium shadow-soft transition-all hover:shadow-lift active:scale-[0.995]"
+              disabled={loading}
+            >
+              {loading ? "正在验证身份…" : "进入"}
+              {!loading && <ArrowRight className="h-[15px] w-[15px]" />}
+            </Button>
           </form>
-        </Card>
+
+          <div className="mt-3.5 flex items-center justify-center gap-1.5 text-[10px] text-muted-foreground/70">
+            <ShieldCheck className="h-3 w-3 shrink-0" />
+            <span>凭据仅在本机与服务器之间传输，不写入日志</span>
+          </div>
+        </div>
+
+        <p className="mt-2 hidden text-center text-[10px] text-muted-foreground/60 [@media(min-height:520px)]:block">
+          账号由管理员统一开通，忘记密码请联系管理员
+        </p>
       </div>
     </div>
   );

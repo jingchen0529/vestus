@@ -4,26 +4,27 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-45 ring-offset-background active:scale-[0.98]",
+  "inline-flex items-center justify-center whitespace-nowrap rounded-lg text-[12.5px] font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-45 ring-offset-background active:scale-[0.98]",
   {
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:shadow-md hover:shadow-primary/20",
+          "bg-primary text-primary-foreground shadow-xs hover:bg-primary/92 hover:shadow-soft",
         destructive:
-          "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 hover:shadow-md hover:shadow-destructive/20",
+          "bg-destructive text-destructive-foreground shadow-xs hover:bg-destructive/92",
         outline:
-          "border border-border bg-card/60 hover:bg-accent hover:text-accent-foreground",
+          "border border-border/80 bg-card hover:bg-accent hover:text-accent-foreground",
         secondary:
-          "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
-        ghost: "hover:bg-accent hover:text-accent-foreground",
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        ghost: "hover:bg-foreground/[0.05] hover:text-foreground",
         link: "text-primary underline-offset-4 hover:underline",
         success:
-          "bg-emerald-600 text-white shadow-sm hover:bg-emerald-500 hover:shadow-md hover:shadow-emerald-500/20",
+          "bg-success text-success-foreground shadow-xs hover:bg-success/92",
         warning:
-          "bg-amber-600 text-white shadow-sm hover:bg-amber-500 hover:shadow-md hover:shadow-amber-500/20",
+          "bg-warning text-warning-foreground shadow-xs hover:bg-warning/92",
+        /* 保留旧变体名，避免调用点报错：不再用渐变，走主色 */
         gradient:
-          "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md hover:from-blue-500 hover:to-indigo-500 hover:shadow-lg hover:shadow-blue-500/25",
+          "bg-primary text-primary-foreground shadow-soft hover:bg-primary/92",
       },
       size: {
         default: "h-9 px-4 py-2",

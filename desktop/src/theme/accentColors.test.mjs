@@ -18,23 +18,23 @@ test("resolves the selected accent for the active light or dark theme", () => {
   });
 });
 
-test("falls back to classic blue when persisted accent data is invalid", () => {
+test("falls back to the default teal when persisted accent data is invalid", () => {
   assert.deepEqual(resolveAccentColor("not-a-color", "light"), {
-    accentColor: "blue",
-    primary: "221.2 83.2% 53.3%",
+    accentColor: "teal",
+    primary: "168 68% 26%",
     foreground: "0 0% 100%",
-    ring: "221.2 83.2% 53.3%",
+    ring: "168 68% 26%",
   });
   assert.deepEqual(resolveAccentColor("toString", "dark"), {
-    accentColor: "blue",
-    primary: "217.2 91.2% 59.8%",
-    foreground: "222.2 47.4% 11.2%",
-    ring: "224.3 76.3% 48%",
+    accentColor: "teal",
+    primary: "168 55% 48%",
+    foreground: "220 18% 8%",
+    ring: "168 55% 48%",
   });
 });
 
 test("keeps text on every primary color at accessible contrast", () => {
-  const colors = ["blue", "indigo", "purple", "emerald", "amber", "rose", "cyan"];
+  const colors = ["teal", "blue", "indigo", "purple", "emerald", "amber", "rose", "cyan"];
 
   for (const theme of ["light", "dark"]) {
     for (const color of colors) {

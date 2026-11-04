@@ -147,7 +147,7 @@ export function LogsView({
               disabled={isExportingCsv || isRefreshing}
             >
               <FileSpreadsheet
-                className={`h-3.5 w-3.5 text-emerald-600 ${isExportingCsv ? "animate-spin" : ""}`}
+                className={`h-3.5 w-3.5 text-success ${isExportingCsv ? "animate-spin" : ""}`}
               />
               <span>{isExportingCsv ? "正在导出..." : "导出 CSV"}</span>
             </Button>
@@ -159,7 +159,7 @@ export function LogsView({
               disabled={isExportingJson || isRefreshing}
             >
               <FileJson
-                className={`h-3.5 w-3.5 text-blue-600 ${isExportingJson ? "animate-spin" : ""}`}
+                className={`h-3.5 w-3.5 text-primary ${isExportingJson ? "animate-spin" : ""}`}
               />
               <span>{isExportingJson ? "正在导出..." : "导出 JSON"}</span>
             </Button>

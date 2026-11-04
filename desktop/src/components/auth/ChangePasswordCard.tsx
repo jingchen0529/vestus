@@ -57,14 +57,17 @@ export const ChangePasswordCard: React.FC<ChangePasswordCardProps> = ({
   return (
     <div className="min-h-screen w-full bg-background text-foreground p-4 flex items-center justify-center relative transition-colors">
       {/* Draggable window header region */}
-      <div data-tauri-drag-region className="absolute top-0 left-0 right-0 h-10 z-10 select-none cursor-default" />
+      <div
+        data-tauri-drag-region
+        className="absolute top-0 left-0 right-0 h-10 z-10 select-none cursor-default"
+      />
       <div className="absolute top-4 right-4 z-20">
         <ThemeToggle variant="compact" />
       </div>
 
       <Card className="w-full max-w-[350px] border-border bg-card/95 shadow-xl backdrop-blur-xl">
         <CardHeader className="pb-3 pt-5 text-center flex flex-col items-center">
-          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl border ">
             <ShieldCheck className="h-5 w-5" />
           </div>
           <CardTitle className="text-sm font-semibold text-foreground">请修改初始密码</CardTitle>
@@ -74,11 +77,7 @@ export const ChangePasswordCard: React.FC<ChangePasswordCardProps> = ({
         </CardHeader>
         <form onSubmit={submit}>
           <CardContent className="space-y-3 pb-5">
-            {message && (
-              <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-xs text-rose-600 dark:text-rose-300">
-                {message}
-              </div>
-            )}
+            {message && <div className="rounded-lg border p-2.5 text-xs ">{message}</div>}
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-muted-foreground">当前密码</label>
               <Input
@@ -123,7 +122,7 @@ export const ChangePasswordCard: React.FC<ChangePasswordCardProps> = ({
             </div>
             <Button
               type="submit"
-              className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-medium shadow-md shadow-amber-500/20 h-8.5 text-xs mt-1"
+              className="w-full bg-gradient-to-r to-orange-600 hover:to-orange-500 text-white font-medium shadow-md h-8.5 text-xs mt-1"
               disabled={submitting}
             >
               {submitting ? "正在保存…" : "确认修改并登录"}

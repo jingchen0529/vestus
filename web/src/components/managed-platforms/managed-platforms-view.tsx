@@ -217,16 +217,13 @@ function ManagedAccountDialog({
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="sm:max-w-[620px]">
         <DialogHeader>
-          <div className="flex items-center gap-2 text-primary">
-            <LockKeyhole className="h-5 w-5" />
-            <DialogTitle>{editing ? "编辑托管平台账号" : "新增托管平台账号"}</DialogTitle>
-          </div>
+          <DialogTitle>{editing ? "编辑托管平台账号" : "新增托管平台账号"}</DialogTitle>
           <DialogDescription className="text-xs">
             后台只保存加密凭据，密码和 Cookie 不会回显；留空密钥字段表示保留已有凭据。
           </DialogDescription>
         </DialogHeader>
 
-        <form className="space-y-4 py-2" onSubmit={handleSubmit}>
+        <form className="space-y-4" onSubmit={handleSubmit}>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="managed-platform" required={!editing}>业务平台</Label>
@@ -508,12 +505,12 @@ export function ManagedPlatformsView({
           <CardContent className="flex items-center justify-between p-4">
             <div className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">可分发</span>
-              <div className="text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400">
+              <div className="text-2xl font-bold tracking-tight text-success">
                 {activeCount}
                 <span className="ml-1 text-xs font-normal text-muted-foreground">个</span>
               </div>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-success/10 text-success">
               <CheckCircle2 className="h-5 w-5" />
             </div>
           </CardContent>

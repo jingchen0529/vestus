@@ -22,11 +22,11 @@ const buttonVariants = cva(
         link:
           "text-primary underline-offset-4 hover:underline",
         success:
-          "bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 active:scale-[0.98]",
+          "bg-success text-white shadow-sm hover:bg-success active:scale-[0.98]",
         warning:
-          "bg-amber-500 text-white shadow-sm hover:bg-amber-600 active:scale-[0.98]",
+          "bg-warning text-white shadow-sm hover:bg-warning active:scale-[0.98]",
         "table-action":
-          "border border-border/50 bg-background/70 text-muted-foreground hover:text-foreground hover:bg-muted/70 hover:border-border/80 shadow-none font-normal",
+          "border-0 bg-transparent text-muted-foreground hover:text-foreground hover:bg-foreground/[0.05] shadow-none font-normal",
       },
       size: {
         default: "h-9 px-4 py-2",

@@ -196,10 +196,8 @@ export function AdminsView({
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <div className="flex items-center gap-2 text-destructive mb-1">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-destructive/10">
-                <AlertTriangle className="h-5 w-5" />
-              </div>
-              <DialogTitle className="text-base font-bold">确认删除管理员账号？</DialogTitle>
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <DialogTitle>确认删除管理员账号？</DialogTitle>
             </div>
             <DialogDescription className="text-xs text-muted-foreground pt-1.5 leading-relaxed">
               您确定要删除管理员账号{" "}

@@ -5,6 +5,7 @@ import { api } from "@/lib/api-client";
 export type Theme = "dark" | "light" | "system";
 
 export type AccentColor =
+  | "teal"
   | "blue"
   | "indigo"
   | "purple"
@@ -24,6 +25,15 @@ export interface AccentColorPreset {
 }
 
 export const ACCENT_COLOR_PRESETS: Record<AccentColor, AccentColorPreset> = {
+  teal: {
+    id: "teal",
+    label: "深青",
+    colorHex: "#16705c",
+    primaryLight: "168 68% 26%",
+    primaryDark: "168 55% 48%",
+    ringLight: "168 68% 26%",
+    ringDark: "168 55% 48%",
+  },
   blue: {
     id: "blue",
     label: "经典蓝",
@@ -159,7 +169,7 @@ type ThemeProviderState = {
 const initialState: ThemeProviderState = {
   theme: "system",
   setTheme: () => null,
-  accentColor: "blue",
+  accentColor: "teal",
   setAccentColor: () => null,
   adminTitle: "Vestus 管理后台",
   setAdminTitle: () => null,
@@ -172,7 +182,7 @@ const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 export function ThemeProvider({
   children,
   defaultTheme = "light",
-  defaultAccent = "blue",
+  defaultAccent = "teal",
   storageKey = "vestus-admin-ui-theme",
   accentStorageKey = "vestus-admin-ui-accent",
   titleStorageKey = "vestus-admin-ui-title",

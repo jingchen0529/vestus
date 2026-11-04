@@ -2,17 +2,15 @@ import React, { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
   DialogDescription,
-  DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DesktopUser } from "@/types/user";
 import { generateRandomPassword } from "@/lib/utils";
-import { Sparkles, Copy, Check, KeyRound, AlertTriangle } from "lucide-react";
+import { Sparkles, Copy, Check, Eye, EyeOff, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 interface UserResetPasswordDialogProps {
@@ -21,6 +19,9 @@ interface UserResetPasswordDialogProps {
   user: DesktopUser | null;
   onSubmitReset: (id: number, password: string) => Promise<void>;
 }
+
+const ICON_BTN =
+  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50";
 
 export function UserResetPasswordDialog({
   open,
@@ -31,6 +32,7 @@ export function UserResetPasswordDialog({
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showPassword, setShowPassword] = useState(true);
 
   useEffect(() => {
     if (open) {
@@ -43,6 +45,7 @@ export function UserResetPasswordDialog({
   const handleGeneratePassword = () => {
     const pwd = generateRandomPassword(12);
     setPassword(pwd);
+    setShowPassword(true);
   };
 
   const handleCopyPassword = () => {
@@ -77,59 +80,89 @@ export function UserResetPasswordDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[480px]">
-        <DialogHeader>
-          <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 mb-1">
-            <KeyRound className="h-5 w-5" />
-            <DialogTitle>重置用户密码</DialogTitle>
-          </div>
-          <DialogDescription className="text-xs">
-            为桌面端账号 <span className="font-semibold text-foreground">{user.username}</span>（{user.name}）设定新的登录密码。
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[480px]">
+        <div className="shrink-0 border-b border-border/60 px-6 pb-4 pr-14 pt-5">
+          <DialogTitle className="text-[17px] font-semibold leading-tight tracking-[-0.01em]">
+            重置用户密码
+          </DialogTitle>
+          <DialogDescription className="mt-1.5 text-xs leading-relaxed">
+            为桌面端账号{" "}
+            <span className="font-medium text-foreground">{user.username}</span>
+            <span className="text-muted-foreground">（{user.name}）</span>{" "}
+            设定新的登录密码
           </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-          <span>重置密码后，系统将自动失效该用户所有已登录客户端会话。</span>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 py-2">
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
+            {/* 影响范围前置说明：这是一个会踢掉在线会话的操作 */}
+            <div className="flex items-start gap-2.5 rounded-[10px] border border-warning/25 bg-warning/[0.07] px-3 py-2.5">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+              <p className="text-[11px] leading-relaxed text-warning/90">
+                保存后，该用户所有已登录的客户端会话会立即失效，需要用新密码重新登录。
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
               <Label htmlFor="reset-pwd" required>
                 新密码
               </Label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleGeneratePassword}
-                  className="text-[11px] text-primary hover:underline flex items-center gap-1"
-                >
-                  <Sparkles className="h-3 w-3" />
-                  <span>换一个</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCopyPassword}
-                  className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1"
-                >
-                  {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
-                  <span>{copied ? "已复制" : "复制"}</span>
-                </button>
+              <div className="relative">
+                <Input
+                  id="reset-pwd"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="h-10 pr-[108px] font-mono text-[13px]"
+                  minLength={6}
+                  required
+                  disabled={loading}
+                />
+                <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+                  <button
+                    type="button"
+                    title={showPassword ? "隐藏密码" : "显示密码"}
+                    onClick={() => setShowPassword((v) => !v)}
+                    className={ICON_BTN}
+                    disabled={loading}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-3.5 w-3.5" />
+                    ) : (
+                      <Eye className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    title="换一个随机密码"
+                    onClick={handleGeneratePassword}
+                    className={ICON_BTN}
+                    disabled={loading}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    title="复制密码"
+                    onClick={handleCopyPassword}
+                    className={ICON_BTN}
+                    disabled={loading}
+                  >
+                    {copied ? (
+                      <Check className="h-3.5 w-3.5 text-success" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
               </div>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                至少 6 位。复制后请通过可靠渠道转交用户。
+              </p>
             </div>
-            <Input
-              id="reset-pwd"
-              type="text"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              minLength={6}
-              required
-              disabled={loading}
-            />
           </div>
 
-          <DialogFooter className="pt-2">
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border/60 bg-muted/30 px-6 py-3.5">
             <Button
               type="button"
               variant="outline"
@@ -138,10 +171,10 @@ export function UserResetPasswordDialog({
             >
               取消
             </Button>
-            <Button type="submit" variant="warning" loading={loading}>
+            <Button type="submit" loading={loading}>
               确认重置
             </Button>
-          </DialogFooter>
+          </div>
         </form>
       </DialogContent>
     </Dialog>

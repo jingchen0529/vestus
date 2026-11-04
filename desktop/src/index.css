@@ -4,77 +4,89 @@
 
 @layer base {
   :root {
-    --background: 216 33% 97%;
-    --foreground: 222.2 84% 4.9%;
+    /* 与后台同一套令牌：纸感暖白 + 墨色前景 + 深青强调 */
+    --background: 40 24% 97%;
+    --foreground: 220 18% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 220 18% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 220 18% 12%;
 
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 168 68% 26%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 40 14% 94%;
+    --secondary-foreground: 220 18% 16%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 40 16% 95%;
+    --muted-foreground: 220 10% 42%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 40 16% 94%;
+    --accent-foreground: 220 18% 16%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 100%;
 
-    --success: 142.1 76.2% 36.3%;
-    --success-foreground: 355.7 100% 97.3%;
+    --success: 152 55% 32%;
+    --success-foreground: 0 0% 100%;
 
-    --warning: 38 92% 50%;
-    --warning-foreground: 48 96% 89%;
+    --warning: 32 80% 40%;
+    --warning-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 90%;
-    --input: 214.3 31.8% 90%;
-    --ring: 221.2 83.2% 53.3%;
+    --info: 205 58% 38%;
+    --info-foreground: 0 0% 100%;
+
+    --border: 40 12% 88%;
+    --input: 40 12% 86%;
+    --ring: 168 68% 26%;
 
     --radius: 0.75rem;
+
+    /* 让原生控件（复选框、滚动条）跟随明暗模式，否则暗色下复选框会是白块 */
+    color-scheme: light;
   }
 
   .dark {
-    --background: 224 71% 4%;
-    --foreground: 210 40% 98%;
+    --background: 220 18% 8%;
+    --foreground: 40 14% 96%;
 
-    --card: 224 71% 7%;
-    --card-foreground: 210 40% 98%;
+    --card: 220 16% 12%;
+    --card-foreground: 40 14% 96%;
 
-    --popover: 224 71% 7%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 220 16% 12%;
+    --popover-foreground: 40 14% 96%;
 
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 168 55% 48%;
+    --primary-foreground: 220 18% 8%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 220 14% 17%;
+    --secondary-foreground: 40 14% 96%;
 
-    --muted: 217.2 32.6% 15%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 220 14% 16%;
+    --muted-foreground: 220 8% 62%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 220 14% 18%;
+    --accent-foreground: 40 14% 96%;
 
-    --destructive: 0 62.8% 50.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 58% 55%;
+    --destructive-foreground: 220 18% 8%;
 
-    --success: 142.1 70.6% 45.3%;
-    --success-foreground: 144.9 80.4% 10%;
+    --success: 152 45% 52%;
+    --success-foreground: 220 18% 8%;
 
-    --warning: 38 92% 50%;
-    --warning-foreground: 48 96% 10%;
+    --warning: 36 80% 58%;
+    --warning-foreground: 220 18% 8%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --info: 205 55% 62%;
+    --info-foreground: 220 18% 8%;
+
+    --border: 220 12% 22%;
+    --input: 220 12% 24%;
+    --ring: 168 55% 48%;
+
+    color-scheme: dark;
   }
 }
 
@@ -86,8 +98,51 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+      "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    /* 数字等宽：版本号、IP、并发数不会随数字宽度跳动 */
+    font-variant-numeric: tabular-nums;
     overflow-x: hidden;
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.02em;
+  }
+  p {
+    text-wrap: pretty;
+  }
+}
+
+@layer utilities {
+  /* 极细网格：给深色面板一点材质，不是纯色块 */
+  .bg-grid {
+    background-image: linear-gradient(
+        to right,
+        hsl(var(--foreground) / 0.045) 1px,
+        transparent 1px
+      ),
+      linear-gradient(to bottom, hsl(var(--foreground) / 0.045) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  .bg-grid-dark {
+    background-image: linear-gradient(
+        to right,
+        hsl(0 0% 100% / 0.05) 1px,
+        transparent 1px
+      ),
+      linear-gradient(to bottom, hsl(0 0% 100% / 0.05) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  /* 噪点：消掉纯矢量的塑料感。不在这里设 position，
+     由调用方决定是 relative 还是 absolute inset-0。 */
+  .bg-noise::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 }
 
@@ -109,3 +164,7 @@
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.5);
 }
+
+/* ── 登录页背景：无着色 ─────────────────────────────────────────────
+   只用极淡的中性网格和噪点给纸面一点质感，不带任何色相。
+   渲染完即静止画面，零动画、零滤镜、零离屏缓冲。 */

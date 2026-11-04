@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { ToastProvider, useToast } from "@/components/ui/toast";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { Sidebar, NavTab } from "@/components/layout/Sidebar";
@@ -231,10 +231,12 @@ function MainLayout() {
     tauriBridge
       .onManagedSessionGuardFailed((payload) => {
         if (!active) return;
+        const cause =
+          payload.reason === "monitor_disconnected" ? "安全监控连接断开" : "安全监控中断";
         if (payload.browserClosed) {
-          error("托管浏览器已关闭", "安全监控中断，请重新打开平台；托管账号凭据未被标记为失效");
+          error("托管浏览器已关闭", cause + "，请重新打开平台；托管账号凭据未被标记为失效");
         } else {
-          error("托管浏览器关闭未确认", "安全监控中断，请手动关闭对应浏览器后重试");
+          error("托管浏览器关闭未确认", cause + "，请手动关闭对应浏览器后重试");
         }
       })
       .then((unlisten) => {
@@ -253,6 +255,24 @@ function MainLayout() {
       if (unlistenGuardFailedFn) unlistenGuardFailedFn();
     };
   }, [desktopRuntime, authReady, currentUser?.id]);
+
+  // 管理员处理完凭据（如重新保存 Cookie）后，用户切回本窗口即自动同步一次
+  // 登录状态，免去手动点「刷新」；60 秒节流，避免频繁触发服务端会话探测。
+  const focusSyncRef = useRef<(() => void) | null>(null);
+  const lastFocusSyncAtRef = useRef(0);
+  focusSyncRef.current = () => {
+    if (!desktopRuntime || !currentUser || !authService.isAuthenticated()) return;
+    const now = Date.now();
+    if (now - lastFocusSyncAtRef.current < 60_000) return;
+    lastFocusSyncAtRef.current = now;
+    void syncDesktopConfig(false);
+  };
+  useEffect(() => {
+    if (!desktopRuntime) return;
+    const onFocus = () => focusSyncRef.current?.();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [desktopRuntime]);
 
   const syncDesktopConfig = async (announce = false) => {
     if (
@@ -405,13 +425,15 @@ function MainLayout() {
 
   if (!desktopRuntime) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-background p-6 text-foreground">
-        <div className="max-w-md rounded-2xl border border-border bg-card/90 p-6 text-center shadow-2xl backdrop-blur-xl">
-          <h1 className="text-lg font-semibold text-foreground">Vestus 桌面客户端</h1>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            桌面端用户登录只能在 Tauri 客户端中使用。浏览器端仅提供管理员后台。
+      <div className="flex min-h-screen w-full items-center justify-center bg-background p-6 text-foreground">
+        <div className="max-w-sm rounded-[14px] border border-border/70 bg-card p-6 text-center shadow-soft">
+          <h1 className="text-[15px] font-semibold tracking-[-0.02em]">Vestus 桌面客户端</h1>
+          <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
+            桌面端用户登录只能在 Tauri 客户端中使用，浏览器端仅提供管理员后台。
           </p>
-          <p className="mt-4 text-xs text-muted-foreground/80">请访问管理员提供的 Web 后台地址。</p>
+          <p className="mt-3 text-[11px] text-muted-foreground/70">
+            请访问管理员提供的 Web 后台地址
+          </p>
         </div>
       </div>
     );
@@ -419,8 +441,11 @@ function MainLayout() {
 
   if (!authReady) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-background text-muted-foreground">
-        <div className="text-sm">正在验证登录状态…</div>
+      <div className="flex min-h-screen w-full items-center justify-center bg-background text-muted-foreground">
+        <div className="flex items-center gap-2 text-[12px]">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+          正在验证登录状态…
+        </div>
       </div>
     );
   }
@@ -440,7 +465,7 @@ function MainLayout() {
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground font-sans selection:bg-primary selection:text-primary-foreground transition-colors relative">
       {/* Draggable header region across main window */}
-      <div data-tauri-drag-region className="absolute top-0 left-56 right-0 h-8 z-30 select-none cursor-default" />
+      <div data-tauri-drag-region className="absolute left-52 right-0 top-0 z-30 h-8 cursor-default select-none" />
 
       <Sidebar
         productName={productName}
@@ -451,7 +476,7 @@ function MainLayout() {
         onLogout={handleLogout}
       />
 
-      <main className="flex-1 h-screen overflow-y-auto px-5 py-6 pt-8 sm:px-8 sm:py-7 sm:pt-8">
+      <main className="h-screen flex-1 overflow-y-auto px-5 pb-8 pt-10 sm:px-7">
         {activeTab === "platforms" ? (
           <PlatformLauncher
             status={status}

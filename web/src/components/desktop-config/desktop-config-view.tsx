@@ -134,8 +134,8 @@ export function DesktopConfigView({
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-300">
       {/* Notice Banner */}
-      <div className="flex items-center gap-2.5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-700 dark:text-emerald-300">
-        <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
+      <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-xs text-success">
+        <ShieldCheck className="h-4 w-4 shrink-0 text-success" />
         <span>
           多条代理可同时启用。在【用户管理】中可为每个用户单独指定 VPN 节点；未单独配置的用户走【默认】节点，全局同时只有一条默认。
         </span>
@@ -151,7 +151,7 @@ export function DesktopConfigView({
                 {stats.total}
               </p>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-success/10 text-success">
               <Server className="h-5 w-5" />
             </div>
           </CardContent>
@@ -161,11 +161,11 @@ export function DesktopConfigView({
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-muted-foreground font-medium">启用节点数</p>
-              <p className="text-2xl font-bold tracking-tight mt-1 text-emerald-600 dark:text-emerald-400">
+              <p className="text-2xl font-bold tracking-tight mt-1 text-success">
                 {stats.active}
               </p>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-success/10 text-success">
               <CheckCircle2 className="h-5 w-5" />
             </div>
           </CardContent>
@@ -175,11 +175,11 @@ export function DesktopConfigView({
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-muted-foreground font-medium">暂时停用</p>
-              <p className="text-2xl font-bold tracking-tight mt-1 text-slate-600 dark:text-slate-400">
+              <p className="text-2xl font-bold tracking-tight mt-1 text-muted-foreground">
                 {stats.disabled}
               </p>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-500/10 text-slate-600 dark:text-slate-400">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
               <XCircle className="h-5 w-5" />
             </div>
           </CardContent>
@@ -265,7 +265,7 @@ export function DesktopConfigView({
                     {/* Name */}
                     <TableCell>
                       <div className="flex items-center gap-2.5">
-                        <div className="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-600 flex items-center justify-center shadow-sm shrink-0">
+                        <div className="h-8 w-8 rounded-lg bg-success/10 text-success flex items-center justify-center shadow-sm shrink-0">
                           <Server className="h-4 w-4" />
                         </div>
                         <div className="flex flex-col min-w-0">
@@ -299,7 +299,7 @@ export function DesktopConfigView({
                     <TableCell>
                       {(proxy.bypassHosts?.length ?? 0) > 0 ? (
                         <span
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-300 font-medium"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-warning/10 text-warning font-medium"
                           title={proxy.bypassHosts!.join("\n")}
                         >
                           <Globe className="w-3 h-3" />
@@ -355,9 +355,9 @@ export function DesktopConfigView({
                                 toast.error("设置默认失败", { description: err.message });
                               }
                             }}
-                            className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                            className="hover:text-success dark:hover:text-success hover:bg-success/10 hover:border-success/30"
                           >
-                            <Star className="h-3.5 w-3.5 text-emerald-500" />
+                            <Star className="h-3.5 w-3.5 text-success" />
                             <span>设为默认</span>
                           </Button>
                         )}
@@ -368,18 +368,18 @@ export function DesktopConfigView({
                           onClick={() => onToggleProxyStatus(proxy)}
                           className={
                             proxy.status === "active"
-                              ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
-                              : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                              ? "hover:text-warning dark:hover:text-warning hover:bg-warning/10 hover:border-warning/30"
+                              : "hover:text-success dark:hover:text-success hover:bg-success/10 hover:border-success/30"
                           }
                         >
                           {proxy.status === "active" ? (
                             <>
-                              <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                              <PowerOff className="h-3.5 w-3.5 text-warning" />
                               <span>停用</span>
                             </>
                           ) : (
                             <>
-                              <Power className="h-3.5 w-3.5 text-emerald-600" />
+                              <Power className="h-3.5 w-3.5 text-success" />
                               <span>启用</span>
                             </>
                           )}
@@ -418,7 +418,7 @@ export function DesktopConfigView({
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <div className="flex items-center gap-2 text-destructive mb-1">
-              <Trash2 className="h-5 w-5" />
+              <Trash2 className="h-4 w-4 shrink-0" />
               <DialogTitle>确认删除此代理节点？</DialogTitle>
             </div>
             <DialogDescription className="text-xs space-y-2">
@@ -429,7 +429,7 @@ export function DesktopConfigView({
                 </strong>
                 。
               </p>
-              <p className="text-amber-600 dark:text-amber-400">
+              <p className="text-warning">
                 ⚠️ 被指派到该节点的用户将回落到默认节点；若删除的正是默认节点，未单独配置 VPN
                 的用户将回落到第一个启用节点。该操作不可撤销。
               </p>

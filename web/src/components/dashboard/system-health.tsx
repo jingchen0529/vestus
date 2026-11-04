@@ -36,7 +36,7 @@ export function SystemHealthCard() {
       <CardHeader className="flex flex-row items-center justify-between pb-3">
         <div>
           <CardTitle className="text-base flex items-center gap-2">
-            <Activity className="h-4 w-4 text-emerald-500" />
+            <Activity className="h-4 w-4 text-success" />
             <span>系统运行与环境状态</span>
           </CardTitle>
           <CardDescription className="text-xs">
@@ -74,7 +74,7 @@ export function SystemHealthCard() {
           {/* Database */}
           <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
             <div className="flex items-center gap-2.5">
-              <Database className="h-4 w-4 text-indigo-500" />
+              <Database className="h-4 w-4 text-primary" />
               <div>
                 <div className="text-xs font-semibold">数据库存储引擎</div>
                 <div className="text-[11px] text-muted-foreground">
@@ -91,7 +91,7 @@ export function SystemHealthCard() {
           {/* Security & Version */}
           <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
             <div className="flex items-center gap-2.5">
-              <div className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
+              <div className="h-2 w-2 rounded-full bg-success animate-ping" />
               <div>
                 <div className="text-xs font-semibold">
                   {product?.name || "Vestus Enterprise"}

@@ -20,7 +20,15 @@ import {
   Clock,
   UserCheck,
   Trash2,
+  MoreHorizontal,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface AdminTableProps {
   admins: AdminUser[];
@@ -75,7 +83,7 @@ export function AdminTable({
             <TableHead className="w-[140px]">权限角色</TableHead>
             <TableHead className="w-[100px]">账号状态</TableHead>
             <TableHead className="w-[180px]">最后登录时间</TableHead>
-            <TableHead className="w-[280px] text-right">操作管理</TableHead>
+            <TableHead className="w-[96px] text-right">操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -112,7 +120,7 @@ export function AdminTable({
                       <span>超级管理员</span>
                     </Badge>
                   ) : (
-                    <Badge variant="info" className="gap-1 text-[10px]">
+                    <Badge variant="secondary" className="gap-1 text-[10px] font-normal text-muted-foreground">
                       <UserCheck className="h-3 w-3" />
                       <span>普通管理员</span>
                     </Badge>
@@ -121,82 +129,89 @@ export function AdminTable({
 
                 {/* Status */}
                 <TableCell>
-                  {admin.status === "active" ? (
-                    <Badge variant="success" className="text-[10px]">
-                      正常
-                    </Badge>
-                  ) : (
-                    <Badge variant="secondary" className="text-[10px]">
-                      已禁用
-                    </Badge>
-                  )}
+                  <span
+                    className={cn(
+                      "flex items-center gap-1.5 text-[11px] font-medium",
+                      admin.status === "active" ? "text-success" : "text-muted-foreground",
+                    )}
+                  >
+                    <i
+                      className={cn(
+                        "h-1.5 w-1.5 rounded-full",
+                        admin.status === "active" ? "bg-success" : "bg-muted-foreground/50",
+                      )}
+                    />
+                    {admin.status === "active" ? "正常" : "已禁用"}
+                  </span>
                 </TableCell>
 
                 {/* Last Login */}
                 <TableCell>
                   <div className="flex items-center gap-1.5 text-muted-foreground">
                     <Clock className="h-3.5 w-3.5 shrink-0" />
-                    <span>{formatDate(admin.lastLoginAt)}</span>
+                    <span className="tabular-nums">{formatDate(admin.lastLoginAt)}</span>
                   </div>
                 </TableCell>
 
-                {/* Actions */}
+                {/* Actions：一个主操作 + 一个更多菜单，避免每行四颗彩色按钮 */}
                 <TableCell className="text-right whitespace-nowrap">
-                  <div className="flex items-center justify-end gap-1.5">
+                  <div className="flex items-center justify-end gap-1">
                     <Button
-                      variant="table-action"
+                      variant="ghost"
                       size="xs"
                       onClick={() => onEditAdmin(admin)}
+                      className="h-7 gap-1 px-2 text-[11px] font-medium text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground"
                     >
-                      <Edit2 className="h-3.5 w-3.5 text-muted-foreground" />
+                      <Edit2 className="h-3.5 w-3.5" />
                       <span>编辑</span>
                     </Button>
 
                     {!isSelf && (
-                      <>
-                        <Button
-                          variant="table-action"
-                          size="xs"
-                          onClick={() => onResetPassword(admin)}
-                          className="hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
-                        >
-                          <KeyRound className="h-3.5 w-3.5 text-amber-500" />
-                          <span>重置密码</span>
-                        </Button>
-
-                        <Button
-                          variant="table-action"
-                          size="xs"
-                          onClick={() => onToggleStatus(admin)}
-                          className={
-                            admin.status === "active"
-                              ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
-                              : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
-                          }
-                        >
-                          {admin.status === "active" ? (
-                            <>
-                              <PowerOff className="h-3.5 w-3.5 text-amber-600" />
-                              <span>禁用</span>
-                            </>
-                          ) : (
-                            <>
-                              <Power className="h-3.5 w-3.5 text-emerald-600" />
-                              <span>启用</span>
-                            </>
-                          )}
-                        </Button>
-
-                        <Button
-                          variant="table-action"
-                          size="xs"
-                          onClick={() => onDeleteAdmin(admin)}
-                          className="hover:text-destructive hover:bg-destructive/10 hover:border-destructive/30"
-                        >
-                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                          <span>删除</span>
-                        </Button>
-                      </>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground data-[state=open]:bg-foreground/[0.06] data-[state=open]:text-foreground"
+                            aria-label="更多操作"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-40 p-1">
+                          <DropdownMenuItem
+                            onClick={() => onResetPassword(admin)}
+                            className="gap-2 text-xs"
+                          >
+                            <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span>重置密码</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => onToggleStatus(admin)}
+                            className="gap-2 text-xs"
+                          >
+                            {admin.status === "active" ? (
+                              <>
+                                <PowerOff className="h-3.5 w-3.5 text-muted-foreground" />
+                                <span>禁用账号</span>
+                              </>
+                            ) : (
+                              <>
+                                <Power className="h-3.5 w-3.5 text-muted-foreground" />
+                                <span>启用账号</span>
+                              </>
+                            )}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => onDeleteAdmin(admin)}
+                            className="gap-2 text-xs text-destructive focus:bg-destructive/10 focus:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            <span>删除管理员</span>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     )}
                   </div>
                 </TableCell>

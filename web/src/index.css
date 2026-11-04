@@ -4,77 +4,86 @@
 
 @layer base {
   :root {
-    --background: 216 33% 97%;
-    --foreground: 222.2 84% 4.9%;
+    /* 纸感暖白底 + 墨色前景：单一中性色相，避免冷暖灰混用 */
+    --background: 40 24% 97%;
+    --foreground: 220 18% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 220 18% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 220 18% 12%;
 
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
+    /* 唯一强调色：深青，饱和度克制，不用紫蓝渐变 */
+    --primary: 168 68% 26%;
+    --primary-foreground: 40 30% 98%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 40 16% 93%;
+    --secondary-foreground: 220 18% 14%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 40 14% 94%;
+    --muted-foreground: 220 8% 42%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 168 28% 94%;
+    --accent-foreground: 168 58% 18%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 4 68% 46%;
+    --destructive-foreground: 40 30% 98%;
 
-    --success: 142.1 76.2% 36.3%;
-    --success-foreground: 355.7 100% 97.3%;
+    --success: 158 58% 30%;
+    --success-foreground: 40 30% 98%;
 
-    --warning: 38 92% 50%;
-    --warning-foreground: 48 96% 89%;
+    --warning: 32 84% 44%;
+    --warning-foreground: 40 30% 98%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    /* 信息态：低饱和蓝，作为唯一的第四种语义色 */
+    --info: 205 58% 38%;
+    --info-foreground: 40 30% 98%;
 
-    --radius: 0.625rem;
+    --border: 40 12% 88%;
+    --input: 40 12% 86%;
+    --ring: 168 68% 26%;
+
+    --radius: 0.75rem;
   }
 
   .dark {
-    --background: 224 71% 4%;
-    --foreground: 210 40% 98%;
+    --background: 220 18% 7%;
+    --foreground: 40 20% 94%;
 
-    --card: 224 71% 7%;
-    --card-foreground: 210 40% 98%;
+    --card: 220 16% 9%;
+    --card-foreground: 40 20% 94%;
 
-    --popover: 224 71% 7%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 220 16% 9%;
+    --popover-foreground: 40 20% 94%;
 
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 168 55% 48%;
+    --primary-foreground: 220 20% 8%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 220 14% 14%;
+    --secondary-foreground: 40 20% 92%;
 
-    --muted: 217.2 32.6% 15%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 220 14% 13%;
+    --muted-foreground: 220 8% 62%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 220 14% 16%;
+    --accent-foreground: 40 20% 92%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 4 62% 52%;
+    --destructive-foreground: 220 20% 8%;
 
-    --success: 142.1 70.6% 45.3%;
-    --success-foreground: 144.9 80.4% 10%;
+    --success: 158 50% 44%;
+    --success-foreground: 220 20% 8%;
 
-    --warning: 38 92% 50%;
-    --warning-foreground: 48 96% 10%;
+    --warning: 32 78% 52%;
+    --warning-foreground: 220 20% 8%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --info: 205 55% 62%;
+    --info-foreground: 220 20% 8%;
+
+    --border: 220 12% 18%;
+    --input: 220 12% 20%;
+    --ring: 168 55% 48%;
   }
 }
 
@@ -84,7 +93,58 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    /* 后台满屏是数字：一律等宽数字，避免数值跳动 */
+    font-variant-numeric: tabular-nums;
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.02em;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  ::selection {
+    background: hsl(var(--primary) / 0.16);
+  }
+}
+
+@layer utilities {
+  /* 极细网格纹理：给纯色底加一点秩序感，不用渐变球 */
+  .bg-grid {
+    background-image: linear-gradient(
+        to right,
+        hsl(var(--foreground) / 0.045) 1px,
+        transparent 1px
+      ),
+      linear-gradient(to bottom, hsl(var(--foreground) / 0.045) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+  .bg-grid-dark {
+    background-image: linear-gradient(
+        to right,
+        hsl(0 0% 100% / 0.05) 1px,
+        transparent 1px
+      ),
+      linear-gradient(to bottom, hsl(0 0% 100% / 0.05) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+  /* 噪点：消掉纯矢量的塑料感。不在这里设 position，
+     由调用方决定是 relative 还是 absolute inset-0。 */
+  .bg-noise::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .font-display {
+    font-family: "Instrument Serif", "Songti SC", Georgia, serif;
+    letter-spacing: -0.01em;
   }
 }
 
@@ -102,4 +162,10 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* 弹窗内的表单控件统一到 40px 高：表格/工具栏里的 36px 不动，只作用于弹窗 */
+[role="dialog"] input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+[role="dialog"] button[role="combobox"] {
+  min-height: 2.5rem;
 }

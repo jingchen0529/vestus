@@ -2,10 +2,8 @@ import React, { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
   DialogDescription,
-  DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,8 +13,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user";
 import { ProxyItem } from "@/types/proxy";
 import { AdminUser } from "@/types/admin";
-import { generateRandomPassword } from "@/lib/utils";
-import { Sparkles, Copy, Check, Globe, UserCog } from "lucide-react";
+import { generateRandomPassword, cn } from "@/lib/utils";
+import { Sparkles, Copy, Check, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 
 interface UserDialogProps {
@@ -73,6 +71,37 @@ export function buildUserUpdatePayload(
   return payload;
 }
 
+/** 表单分区：左侧小标题 + 贯穿的分隔线，让长表单有可扫读的段落。 */
+function FormSection({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <div className="mb-3 flex items-baseline gap-2.5">
+        <h3 className="shrink-0 text-[11px] font-semibold tracking-[0.06em] text-foreground/60">
+          {title}
+        </h3>
+        <div className="h-px flex-1 bg-border/60" />
+        {hint && (
+          <span className="shrink-0 text-[10.5px] text-muted-foreground/70">{hint}</span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3.5">{children}</div>
+    </section>
+  );
+}
+
+const FIELD = "h-10";
+
+const ICON_BTN =
+  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50";
+
 export function UserDialog({
   open,
   onOpenChange,
@@ -101,6 +130,7 @@ export function UserDialog({
 
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     if (userToEdit) {
@@ -135,6 +165,7 @@ export function UserDialog({
   const handleGeneratePassword = () => {
     const pwd = generateRandomPassword(12);
     setPassword(pwd);
+    setShowPassword(true);
     toast.info("已生成随机强密码");
   };
 
@@ -217,250 +248,300 @@ export function UserDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[560px]">
-        <DialogHeader>
-          <DialogTitle>{isEditing ? "编辑桌面端用户" : "开通桌面端账号"}</DialogTitle>
-          <DialogDescription className="text-xs">
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px]">
+        {/* 头部：固定不滚动 */}
+        <div className="shrink-0 border-b border-border/60 px-6 pb-4 pr-14 pt-5">
+          <DialogTitle className="text-[17px] font-semibold leading-tight tracking-[-0.01em]">
+            {isEditing ? "编辑桌面端用户" : "开通桌面端账号"}
+          </DialogTitle>
+          <DialogDescription className="mt-1.5 text-xs leading-relaxed">
             {isEditing
-              ? "修改用户基本资料、授权有效期、最大并发数或 VPN 指派"
-              : "创建全新的桌面客户端受权账号，并设置初始密码"}
+              ? "修改基本资料、授权有效期、并发上限与节点指派"
+              : "创建全新的桌面客户端授权账号，并设定初始密码"}
           </DialogDescription>
-        </DialogHeader>
+        </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 py-2">
-          <div className="grid grid-cols-2 gap-3">
-            {/* Username */}
-            <div className="space-y-1.5">
-              <Label htmlFor="u-username" required={!isEditing}>
-                登录账号
-              </Label>
-              <Input
-                id="u-username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="例如: client01"
-                disabled={isEditing || loading}
-                required
-              />
-            </div>
-
-            {/* Name */}
-            <div className="space-y-1.5">
-              <Label htmlFor="u-name" required>
-                用户姓名 / 简称
-              </Label>
-              <Input
-                id="u-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="例如: 张三"
-                disabled={loading}
-                required
-              />
-            </div>
-          </div>
-
-          {/* Password for creation */}
-          {!isEditing && (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="u-password" required>
-                  初始密码
-                </Label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleGeneratePassword}
-                    className="text-[11px] text-primary hover:underline flex items-center gap-1"
-                  >
-                    <Sparkles className="h-3 w-3" />
-                    <span>生成强密码</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCopyPassword}
-                    className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1"
-                  >
-                    {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
-                    <span>{copied ? "已复制" : "复制"}</span>
-                  </button>
-                </div>
-              </div>
-              <Input
-                id="u-password"
-                type="text"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="至少 6 位密码"
-                minLength={6}
-                required
-                disabled={loading}
-              />
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            {/* Company */}
-            <div className="space-y-1.5">
-              <Label htmlFor="u-company">所属企业 / 团队</Label>
-              <Input
-                id="u-company"
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                placeholder="例如: 智能科技"
-                disabled={loading}
-              />
-            </div>
-
-            {/* Phone */}
-            <div className="space-y-1.5">
-              <Label htmlFor="u-phone">联系电话</Label>
-              <Input
-                id="u-phone"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="例如: 13800000000"
-                disabled={loading}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            {/* Expires At */}
-            <div className="space-y-1.5">
-              <Label htmlFor="u-expires">授权到期日</Label>
-              <DatePicker
-                id="u-expires"
-                value={expiresAt}
-                onChange={(val) => setExpiresAt(val)}
-                disabled={loading}
-                placeholder="永久有效"
-              />
-              <span className="text-[11px] text-muted-foreground">留空表示永久有效</span>
-            </div>
-
-            {/* Max Sessions */}
-            <div className="space-y-1.5">
-              <Label htmlFor="u-sessions" required>
-                最大登录并发数
-              </Label>
-              <Input
-                id="u-sessions"
-                type="number"
-                min={1}
-                max={50}
-                value={maxSessions}
-                onChange={(e) => setMaxSessions(Number(e.target.value))}
-                required
-                disabled={loading}
-              />
-            </div>
-          </div>
-
-          {isEditing && (
-            <div className="space-y-1.5">
-              <Label htmlFor="u-status">账号状态</Label>
-              <Select
-                value={status}
-                onValueChange={(val: DesktopUser["status"]) => setStatus(val)}
-              >
-                <SelectTrigger id="u-status">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">正常启用</SelectItem>
-                  <SelectItem value="disabled">禁用访问</SelectItem>
-                  <SelectItem value="locked">已锁定</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          {canAssignVpn && (
-            <div className="grid grid-cols-2 gap-3">
-              {/* Assigned VPN */}
-              <div className="space-y-1.5">
-                <Label htmlFor="u-proxy" className="flex items-center gap-1.5">
-                  <Globe className="h-3.5 w-3.5 text-emerald-500" />
-                  <span>指定 VPN 节点</span>
-                </Label>
-                <Select
-                  value={proxyChoice}
-                  onValueChange={(val: string) => setProxyChoice(val)}
-                >
-                  <SelectTrigger id="u-proxy" className="text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="default">默认（跟随默认代理）</SelectItem>
-                    {proxyOptions.map((proxy) => (
-                      <SelectItem key={proxy.id} value={String(proxy.id)}>
-                        {proxy.name}
-                        {proxy.status !== "active" ? "（已停用）" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <span className="text-[11px] text-muted-foreground">
-                  未单独配置的用户使用代理池中的默认节点
-                </span>
-              </div>
-
-              {/* Bound admin */}
-              <div className="space-y-1.5">
-                <Label htmlFor="u-bound-admin" className="flex items-center gap-1.5">
-                  <UserCog className="h-3.5 w-3.5 text-emerald-500" />
-                  <span>绑定管理员</span>
-                </Label>
-                <Select
-                  value={adminChoice}
-                  onValueChange={(val: string) => setAdminChoice(val)}
-                >
-                  <SelectTrigger id="u-bound-admin" className="text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">不绑定（仅超管可见）</SelectItem>
-                    {adminOptions.map((admin) => (
-                      <SelectItem key={admin.id} value={String(admin.id)}>
-                        {admin.name}（{admin.username}）
-                        {admin.status !== "active" ? "（已停用）" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <span className="text-[11px] text-muted-foreground">
-                  该管理员只能查看绑定用户的操作数据
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Remark */}
-          <div className="space-y-1.5">
-            <Label htmlFor="u-remark">备注说明</Label>
-            <Input
-              id="u-remark"
-              value={remark}
-              onChange={(e) => setRemark(e.target.value)}
-              placeholder="可选的备注信息"
-              disabled={loading}
-            />
-          </div>
-
-          <DialogFooter className="pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={loading}
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          {/* 表单主体：唯一可滚动区域 */}
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
+            <FormSection
+              title="账号凭据"
+              hint={isEditing ? "登录账号不可修改" : undefined}
             >
-              取消
-            </Button>
-            <Button type="submit" loading={loading}>
-              {isEditing ? "保存变更" : "确认开通"}
-            </Button>
-          </DialogFooter>
+              <div className="space-y-1.5">
+                <Label htmlFor="u-username" required={!isEditing}>
+                  登录账号
+                </Label>
+                <Input
+                  id="u-username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="例如 client01"
+                  className={`${FIELD} font-mono text-[13px]`}
+                  disabled={isEditing || loading}
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="u-name" required>
+                  用户姓名 / 简称
+                </Label>
+                <Input
+                  id="u-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="例如 张三"
+                  className={FIELD}
+                  disabled={loading}
+                  required
+                />
+              </div>
+
+              {!isEditing && (
+                <div className="col-span-2 space-y-1.5">
+                  <Label htmlFor="u-password" required>
+                    初始密码
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="u-password"
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="至少 6 位密码"
+                      className={`${FIELD} pr-[108px] font-mono text-[13px]`}
+                      minLength={6}
+                      required
+                      disabled={loading}
+                    />
+                    <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+                      <button
+                        type="button"
+                        title={showPassword ? "隐藏密码" : "显示密码"}
+                        onClick={() => setShowPassword((v) => !v)}
+                        className={ICON_BTN}
+                        disabled={loading}
+                      >
+                        {showPassword ? (
+                          <EyeOff className="h-3.5 w-3.5" />
+                        ) : (
+                          <Eye className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        title="生成随机强密码"
+                        onClick={handleGeneratePassword}
+                        className={ICON_BTN}
+                        disabled={loading}
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="复制密码"
+                        onClick={handleCopyPassword}
+                        className={ICON_BTN}
+                        disabled={loading}
+                      >
+                        {copied ? (
+                          <Check className="h-3.5 w-3.5 text-success" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    创建后请把密码转交用户，并提醒其首次登录后自行修改
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Label htmlFor="u-company">所属企业 / 团队</Label>
+                <Input
+                  id="u-company"
+                  value={company}
+                  onChange={(e) => setCompany(e.target.value)}
+                  placeholder="例如 智能科技"
+                  className={FIELD}
+                  disabled={loading}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="u-phone">联系电话</Label>
+                <Input
+                  id="u-phone"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="例如 13800000000"
+                  className={`${FIELD} tabular-nums`}
+                  disabled={loading}
+                />
+              </div>
+
+              <div className="col-span-2 space-y-1.5">
+                <Label htmlFor="u-remark">备注说明</Label>
+                <Input
+                  id="u-remark"
+                  value={remark}
+                  onChange={(e) => setRemark(e.target.value)}
+                  placeholder="可选，例如对接人、合同编号"
+                  className={FIELD}
+                  disabled={loading}
+                />
+              </div>
+            </FormSection>
+
+            <FormSection title="授权与配额" hint="到期日留空表示永久有效">
+              <div className="space-y-1.5">
+                <Label htmlFor="u-expires">授权到期日</Label>
+                <DatePicker
+                  id="u-expires"
+                  value={expiresAt}
+                  onChange={(val) => setExpiresAt(val)}
+                  disabled={loading}
+                  placeholder="永久有效"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="u-sessions" required>
+                  最大登录并发数
+                </Label>
+                <Input
+                  id="u-sessions"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={maxSessions}
+                  onChange={(e) => setMaxSessions(Number(e.target.value))}
+                  className={`${FIELD} tabular-nums`}
+                  required
+                  disabled={loading}
+                />
+              </div>
+
+              {isEditing && (
+                <div className="col-span-2 space-y-1.5">
+                  <Label htmlFor="u-status">账号状态</Label>
+                  <div
+                    id="u-status"
+                    role="radiogroup"
+                    aria-label="账号状态"
+                    className="grid grid-cols-3 gap-1 rounded-[10px] border border-border/70 bg-muted/40 p-1"
+                  >
+                    {(
+                      [
+                        { value: "active", label: "正常启用", dot: "bg-success" },
+                        { value: "disabled", label: "禁用访问", dot: "bg-muted-foreground/50" },
+                        { value: "locked", label: "已锁定", dot: "bg-warning" },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={status === opt.value}
+                        onClick={() => setStatus(opt.value)}
+                        disabled={loading}
+                        className={cn(
+                          "flex items-center justify-center gap-1.5 rounded-[7px] py-1.5 text-[12px] font-medium transition-all",
+                          status === opt.value
+                            ? "bg-card text-foreground shadow-xs"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        <i
+                          className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            opt.dot,
+                            status !== opt.value && "opacity-45",
+                          )}
+                        />
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </FormSection>
+
+            {canAssignVpn && (
+              <FormSection title="分配关系" hint="留空则继承全局默认">
+                <div className="space-y-1.5">
+                  <Label htmlFor="u-proxy">指定 VPN 节点</Label>
+                  <Select
+                    value={proxyChoice}
+                    onValueChange={(val: string) => setProxyChoice(val)}
+                  >
+                    <SelectTrigger id="u-proxy" className={FIELD}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">默认（跟随默认代理）</SelectItem>
+                      {proxyOptions.map((proxy) => (
+                        <SelectItem key={proxy.id} value={String(proxy.id)}>
+                          {proxy.name}
+                          {proxy.status !== "active" ? "（已停用）" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    未单独配置的用户使用代理池中的默认节点
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="u-bound-admin">绑定管理员</Label>
+                  <Select
+                    value={adminChoice}
+                    onValueChange={(val: string) => setAdminChoice(val)}
+                  >
+                    <SelectTrigger id="u-bound-admin" className={FIELD}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">不绑定（仅超管可见）</SelectItem>
+                      {adminOptions.map((admin) => (
+                        <SelectItem key={admin.id} value={String(admin.id)}>
+                          {admin.name}（{admin.username}）
+                          {admin.status !== "active" ? "（已停用）" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    该管理员只能查看绑定用户的操作数据
+                  </p>
+                </div>
+              </FormSection>
+            )}
+          </div>
+
+          {/* 底部操作区：固定不滚动 */}
+          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/60 bg-muted/30 px-6 py-3.5">
+            <span className="text-[11px] text-muted-foreground">
+              带 <span className="text-destructive">*</span> 为必填项
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={loading}
+              >
+                取消
+              </Button>
+              <Button type="submit" loading={loading}>
+                {isEditing ? "保存变更" : "确认开通"}
+              </Button>
+            </div>
+          </div>
         </form>
       </DialogContent>
     </Dialog>

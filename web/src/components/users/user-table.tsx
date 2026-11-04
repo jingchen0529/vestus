@@ -160,7 +160,7 @@ export function UserTable({
                         "h-3 w-3",
                         user.proxyId && user.proxyActive === false
                           ? "text-muted-foreground"
-                          : "text-emerald-500",
+                          : "text-success",
                       )}
                     />
                     <span className="truncate max-w-[110px]" title={user.proxyName || undefined}>
@@ -180,7 +180,7 @@ export function UserTable({
               {/* Bound admin */}
               <TableCell>
                 {user.boundAdminName ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-medium">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-success/10 text-success font-medium">
                     <UserCog className="h-3 w-3" />
                     <span className="truncate max-w-[90px]" title={user.boundAdminName}>
                       {user.boundAdminName}
@@ -239,9 +239,9 @@ export function UserTable({
                     variant="table-action"
                     size="xs"
                     onClick={() => onResetPassword(user)}
-                    className="hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
+                    className="hover:text-warning dark:hover:text-warning hover:bg-warning/10 hover:border-warning/30"
                   >
-                    <KeyRound className="h-3.5 w-3.5 text-amber-500" />
+                    <KeyRound className="h-3.5 w-3.5 text-warning" />
                     <span>重置密码</span>
                   </Button>
 
@@ -251,18 +251,18 @@ export function UserTable({
                     onClick={() => onToggleStatus(user)}
                     className={
                       user.status === "active"
-                        ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
-                        : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                        ? "hover:text-warning dark:hover:text-warning hover:bg-warning/10 hover:border-warning/30"
+                        : "hover:text-success dark:hover:text-success hover:bg-success/10 hover:border-success/30"
                     }
                   >
                     {user.status === "active" ? (
                       <>
-                        <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                        <PowerOff className="h-3.5 w-3.5 text-warning" />
                         <span>停用</span>
                       </>
                     ) : (
                       <>
-                        <Power className="h-3.5 w-3.5 text-emerald-600" />
+                        <Power className="h-3.5 w-3.5 text-success" />
                         <span>启用</span>
                       </>
                     )}

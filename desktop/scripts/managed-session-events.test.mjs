@@ -78,39 +78,65 @@ test("guard failures show closure-specific error messages without invalidating c
   const subscription = guardFailedSubscription(app);
   const branches = subscription.match(/if \(payload\.browserClosed\) \{([\s\S]*?)\} else \{([\s\S]*?)\}/);
   assert.ok(branches);
-  assert.match(branches[1], /error\("托管浏览器已关闭", "安全监控中断，请重新打开平台；托管账号凭据未被标记为失效"\)/);
-  assert.match(branches[2], /error\("托管浏览器关闭未确认", "安全监控中断，请手动关闭对应浏览器后重试"\)/);
+  assert.match(branches[1], /"托管浏览器已关闭", cause \+ "，请重新打开平台；托管账号凭据未被标记为失效"/);
+  assert.match(branches[2], /"托管浏览器关闭未确认", cause \+ "，请手动关闭对应浏览器后重试"/);
+  assert.match(
+    subscription,
+    /payload\.reason === "monitor_disconnected" \? "安全监控连接断开" : "安全监控中断"/,
+  );
   assert.doesNotMatch(subscription, /\b(?:info|success)\(/);
 });
 
-test("local guard faults close the browser and return before credential reporting", () => {
+test("connection-loss faults close the browser and return before credential reporting", () => {
   const commands = readFileSync(new URL("../src-tauri/src/commands/managed.rs", import.meta.url), "utf8");
-  const watch = commands.slice(commands.indexOf("async fn watch_managed_logout"));
-  const failureStart = watch.indexOf("if !matches!(detected, Ok(true))");
-  const eventAt = watch.indexOf('"managed-session-guard-failed"');
+  const watch = commands.slice(commands.indexOf("async fn run_managed_watch"));
+  // 非Expired 分支（ConnectionLost/None）就是本地故障路径。
+  const lostStart = watch.indexOf("other => {");
+  const eventAt = watch.indexOf('"managed-session-guard-failed"', lostStart);
   const reportAt = watch.indexOf(".report_managed_session_expired(");
-  assert.ok(failureStart >= 0 && eventAt > failureStart && reportAt > eventAt);
-  const failure = watch.slice(failureStart, watch.indexOf("return;", eventAt) + "return;".length);
-  assert.match(failure, /kill_managed_browser\(context\.browsers\.clone\(\), context\.browser_id\)/);
-  assert.match(failure, /current_identity\(\)/);
-  assert.match(failure, /generation == context\.auth_generation/);
-  assert.match(failure, /"browserClosed": closed/);
-  assert.match(failure, /"monitor_disconnected"/);
-  assert.match(failure, /"monitor_failed"/);
-  assert.doesNotMatch(failure, /report_managed_session_expired|wait_managed_recovery|\.mark_error\(/);
-  assert.match(failure, /return;\s*$/);
+  assert.ok(lostStart >= 0 && eventAt > lostStart, "断连故障必须发 guard-failed 事件");
+  const lostBranch = watch.slice(lostStart, watch.indexOf("return;", eventAt) + "return;".length);
+  assert.match(lostBranch, /kill_managed_browser\(context\.browsers\.clone\(\), context\.browser_id\)/);
+  assert.match(lostBranch, /current_identity\(\)/);
+  assert.match(lostBranch, /generation == context\.auth_generation/);
+  assert.match(lostBranch, /"browserClosed": closed/);
+  assert.match(lostBranch, /"reason": "monitor_disconnected"/);
+  assert.ok(
+    eventAt < reportAt,
+    "本地故障分支必须整体位于凭据过期上报之前，且不得调用上报"
+  );
+  assert.doesNotMatch(lostBranch, /report_managed_session_expired|wait_managed_recovery|\.mark_error\(/);
 });
 
-test("guard initialization failure returns before cookie injection", () => {
-  const commands = readFileSync(new URL("../src-tauri/src/commands/browser.rs", import.meta.url), "utf8");
-  const start = commands.indexOf("match managed_cdp::prepare_logout_watch");
-  const inject = commands.indexOf("managed_cdp::inject_session", start);
-  assert.ok(start >= 0 && inject > start);
-  const prepare = commands.slice(start, inject);
-  assert.match(prepare, /Err\(_\)\s*=>\s*\{?\s*return\s+Err\(\s*CommandError::new\(/);
-  assert.match(prepare, /"managed_guard_unavailable"/);
-  assert.match(prepare, /managed_guard = true/);
-  assert.doesNotMatch(prepare, /eprintln!|error\.to_string\(\)/);
+test("expired signals run the full credential reporting flow", () => {
+  const commands = readFileSync(new URL("../src-tauri/src/commands/managed.rs", import.meta.url), "utf8");
+  const watch = commands.slice(commands.indexOf("async fn run_managed_watch"));
+  const expiredAt = watch.indexOf("ManagedSignal::Expired");
+  assert.ok(expiredAt >= 0);
+  const flow = watch.slice(expiredAt);
+  assert.match(flow, /kill_managed_browser\(context\.browsers\.clone\(\), context\.browser_id\)/);
+  assert.match(flow, /report_managed_session_expired/);
+  assert.match(flow, /"managed-session-expired"/);
+  assert.match(flow, /wait_managed_recovery/);
+});
+
+test("collector drives the managed watch with a single CDP client", () => {
+  const browser = readFileSync(new URL("../src-tauri/src/commands/browser.rs", import.meta.url), "utf8");
+  const injectAt = browser.indexOf("managed_cdp::inject_session");
+  const spawnAt = browser.indexOf("run_managed_watch(");
+  const startAt = browser.indexOf("activity_collector.start(");
+  assert.ok(spawnAt >= 0 && spawnAt < injectAt, "监控消费端必须在注入前启动");
+  assert.ok(injectAt < startAt, "活动采集（含防护信号）必须在注入成功后启动");
+  assert.doesNotMatch(browser, /prepare_logout_watch/);
+
+  const cdpSource = readFileSync(new URL("../src-tauri/src/cdp.rs", import.meta.url), "utf8");
+  const collectAt = cdpSource.indexOf("pub async fn collect(");
+  const guardWatch = cdpSource.indexOf("waitForDebuggerOnStart", collectAt);
+  assert.ok(guardWatch > collectAt);
+  // 单客户端：采集连接内的暂停+放行是唯一模型，不再有第二条防护连接。
+  const managedCdp = readFileSync(new URL("../src-tauri/src/managed_cdp.rs", import.meta.url), "utf8");
+  assert.doesNotMatch(managedCdp, /setAutoAttach/);
+  assert.match(managedCdp, /ManagedSessionMonitor/);
 });
 
 test("guard failure listeners ignore inactive effects and clean up late subscriptions", () => {

@@ -45,19 +45,22 @@ bootstrap 的两分钟 TTL 是消费期限，不是浏览器会话期限。已�
 - 普通手工登录 profile 仍然持久保存，不使用托管清理规则。
 - 所谓临时 profile 是“运行期 Chromium 可写，结束后清理”，不是零磁盘写入或安全擦除保证。
 
-## watcher 与固定 login guard 的范围
+## watcher 与固定 login guard 的范围（单连接模型）
 
-托管会话使用独立 CDP 连接，在应用注入 Cookie 与发起首次导航前完成初始防护准备。浏览器层通过 `Target.setAutoAttach` 自动附加 page，使用 `waitForDebuggerOnStart: true` 和显式 page-only 过滤，排除其他目标。页面初始化依次执行 `Page.enable`、`Page.addScriptToEvaluateOnNewDocument`（固定脚本，`runImmediately: true`）、`Page.getFrameTree`，然后由防护连接通过 `Runtime.runIfWaitingForDebugger` 恢复页面。统一事件泵处理命令回执和页面事件，保留重复附加去重与命令超时处理。watch 不启用 Runtime 域。采集连接的内部 `managed_guard` 标记为 true 时不暂停目标、也不发送恢复命令；防护控制权不扩展到采集通道或前端 IPC。
+托管会话只有**一条** CDP 连接：活动采集连接（v0.2.10 验证的单客户端模型）。
+它通过 `Target.setAutoAttach`（`waitForDebuggerOnStart: true`、无过滤、flatten）
+暂停所有新 target，按顺序安装 `Page.enable → Runtime.enable → addBinding →
+采集脚本 → 登录页交互锁脚本`，最后以 `Runtime.runIfWaitingForDebugger` 放行；
+非 page target（Service Worker 等）先放行再断开。同一连接的事件流同时喂给
+活动采集与 `LogoutDetector`（登出 URL、登录页 4 秒观察窗）。
 
-`managed_cdp/login_guard.js` 是编译进 Rust 的固定脚本，模板只接受后端固定平台 policy 的 origin/path；测试可使用本地 fake origin/path。它不接收前端脚本，不使用 `Runtime.evaluate` 或任意网页脚本执行，不发送输入命令，不读取凭据、Cookie、DOM 字段值，也不发网络请求。
-
-- 当前规则只适配已知方舟 origin 的 `/login` 及其子路径，不把整个 SSO 主机封住，也不使用通用 `login` / `logout` 子串推断所有产品。其他产品的登录路由需要单独适配。
-- 命中登录路由时，对根节点设置 opacity/inert，并使用捕获阶段事件和表单提交拦截阻止普通页面交互；history 同文档路由变化同步更新防护。固定脚本不代填、不代点、不提交账号。
-- **已就绪页面后续进入登录页**：固定脚本在导航文档起始或 history 同步时锁定页面，每个标签保留独立的 4 秒自动跳转观察窗口。自动返回工作台后解除防护并取消该标签的待判定；持续停留在已知登录页才判定会话失效。正常的短暂 SSO 中转不应立即过期，其他 origin 不因此被封锁。
-- **未就绪页面已直达登录页**：在 `Target.targetCreated`、`Target.targetInfoChanged`、附加或目标列表发现阶段，若 URL 已命中已知 `/login` 及子路径，立即走本地 guard failure 并关闭本次浏览器。该路径**不进入 4 秒观察窗口、不报告凭据过期**，不能让页面在缺少已就绪防护时继续供用户使用或自行登录。
-- 会话过期的导航信号只按对应页面主框架判定；明确登出仍按已知 HTTPS SSO 主机和完整登出路径匹配。上述目标发现阶段的未就绪登录页检测是独立的本地防护故障，不是凭据过期信号。子框架和普通查询参数不能单独触发失效。
-
-防护启动失败时不注入本次托管凭据；未就绪页面直达登录页、防护连接断开或命令超时则关闭本次浏览器。独立的 `managed-session-guard-failed` 事件只带会话标识、reason、browserClosed，不带凭据或网页数据，也不调用凭据失效上报；未就绪直达登录页沿用故障 toast 的 `monitor_failed` reason。主动退出、正常关闭不得误报此故障。`browserClosed` 为 false 时不能声称浏览器已经关闭，应检查后续清理重试和 lease 状态。
+> 2026-11-04 变更：废弃独立的第二条防护连接。真实巨量环境中，任何形式的第二条
+> autoAttach 连接都会让 `window.open` 弹窗停在 about:blank 永不导航（与命令内容
+> 无关，passive 只挂不发也一样）；v0.2.10 的单连接模型无此问题。暂停期间注册的
+> 登录防护脚本覆盖弹窗内容页等所有后续文档；附加瞬间已在登录页的极端情况不再
+> 单独检测（暂停模型下不存在"未就绪页面"窗口）。检测到登出/登录页停留超窗或
+> 连接断开时，采集连接发出 `Expired`/`ConnectionLost` 信号，由命令层执行既有
+> 的关闭、上报与前端事件流程；本地故障绝不上报凭据过期。
 
 ### 能力与保证的边界
 

@@ -22,7 +22,7 @@ import {
   BrowserSessionItem,
 } from "@/types/browser-activity";
 import { formatDate, formatDuration, cn } from "@/lib/utils";
-import { Activity, AlertTriangle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 interface SessionDetailModalProps {
@@ -217,11 +217,10 @@ export function SessionDetailModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-5xl md:max-w-6xl w-[94vw] h-[85vh] max-h-[85vh] flex flex-col p-6 overflow-hidden">
-        <DialogHeader className="shrink-0 mb-2">
+        <DialogHeader className="shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="flex items-center gap-2">
-              <Activity className="h-5 w-5 text-primary" />
-              <DialogTitle className="text-base font-semibold">浏览器会话详情 #{session.id}</DialogTitle>
+              <DialogTitle>浏览器会话详情 #{session.id}</DialogTitle>
             </div>
             <Button
               variant="outline"

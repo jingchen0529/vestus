@@ -155,12 +155,12 @@ export function PlatformsView({
           <CardContent className="p-4 flex items-center justify-between">
             <div className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">正常启用（已分发）</span>
-              <div className="text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400">
+              <div className="text-2xl font-bold tracking-tight text-success">
                 {activeCount}
                 <span className="text-xs font-normal text-muted-foreground ml-1">个</span>
               </div>
             </div>
-            <div className="h-10 w-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+            <div className="h-10 w-10 rounded-xl bg-success/10 flex items-center justify-center text-success">
               <CheckCircle2 className="h-5 w-5" />
             </div>
           </CardContent>
@@ -171,12 +171,12 @@ export function PlatformsView({
           <CardContent className="p-4 flex items-center justify-between">
             <div className="space-y-1">
               <span className="text-xs font-medium text-muted-foreground">已停用 / 下架</span>
-              <div className="text-2xl font-bold tracking-tight text-amber-600 dark:text-amber-400">
+              <div className="text-2xl font-bold tracking-tight text-warning">
                 {disabledCount}
                 <span className="text-xs font-normal text-muted-foreground ml-1">个</span>
               </div>
             </div>
-            <div className="h-10 w-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-600 dark:text-amber-400">
+            <div className="h-10 w-10 rounded-xl bg-warning/10 flex items-center justify-center text-warning">
               <XCircle className="h-5 w-5" />
             </div>
           </CardContent>
@@ -262,7 +262,7 @@ export function PlatformsView({
                     <TableCell>
                       <div className="flex items-center gap-2.5">
                         {platform.iconUrl ? (
-                          <div className="h-8 w-8 rounded-lg bg-white dark:bg-slate-900 border border-border/80 p-1 flex items-center justify-center shadow-sm shrink-0 overflow-hidden">
+                          <div className="h-8 w-8 rounded-lg bg-white border border-border/80 p-1 flex items-center justify-center shadow-sm shrink-0 overflow-hidden">
                             <img
                               src={platform.iconUrl}
                               alt={platform.name}
@@ -349,18 +349,18 @@ export function PlatformsView({
                           onClick={() => onTogglePlatformStatus(platform)}
                           className={
                             platform.status === "active"
-                              ? "hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500/30"
-                              : "hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                              ? "hover:text-warning dark:hover:text-warning hover:bg-warning/10 hover:border-warning/30"
+                              : "hover:text-success dark:hover:text-success hover:bg-success/10 hover:border-success/30"
                           }
                         >
                           {platform.status === "active" ? (
                             <>
-                              <PowerOff className="h-3.5 w-3.5 text-amber-600" />
+                              <PowerOff className="h-3.5 w-3.5 text-warning" />
                               <span>停用</span>
                             </>
                           ) : (
                             <>
-                              <Power className="h-3.5 w-3.5 text-emerald-600" />
+                              <Power className="h-3.5 w-3.5 text-success" />
                               <span>启用</span>
                             </>
                           )}
@@ -399,12 +399,13 @@ export function PlatformsView({
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <div className="flex items-center gap-2 text-destructive mb-1">
-              <Trash2 className="h-5 w-5" />
+              <Trash2 className="h-4 w-4 shrink-0" />
               <DialogTitle>确认删除业务平台？</DialogTitle>
             </div>
             <DialogDescription className="text-xs">
-              您确定要删除平台 <strong className="text-foreground">「{platformToDelete?.name}」</strong> 吗？
-              删除后，所有桌面客户端将不再显示该平台入口。该操作不可撤销。
+              您确定要删除平台
+              <strong className="text-foreground">「{platformToDelete?.name}」</strong>
+              吗？删除后，所有桌面客户端将不再显示该平台入口，该操作不可撤销。
             </DialogDescription>
           </DialogHeader>
 

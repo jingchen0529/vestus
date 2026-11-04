@@ -291,30 +291,34 @@ pub async fn open_browser<R: Runtime>(
         initial_url,
         disable_sandbox,
         move |endpoint| {
-            let mut managed_guard = false;
+            let mut managed_watch = None;
             let injection = if let Some(session) = managed_session_for_ready {
                 rt::runtime().block_on(async {
-                    // The guard must be ready before any managed credentials or
-                    // navigation. A local setup failure must not expire them.
-                    match managed_cdp::prepare_logout_watch(&endpoint, &session).await {
-                        Ok(Some(watch)) => {
-                            let (Some(context), Some(exited)) = (logout_context, watch_exit_rx)
-                            else {
-                                return Err(CommandError::new(
-                                    "托管安全监控初始化失败，请重新打开平台",
-                                    "managed_guard_unavailable",
-                                ));
-                            };
-                            managed_guard = true;
-                            rt::runtime().spawn(watch_managed_logout(context, watch, exited));
-                        }
-                        Ok(None) => {}
-                        Err(_) => {
-                            return Err(CommandError::new(
+                    // 托管会话的登出/登录页检测与登录页交互锁都由采集连接驱动
+                    // （单 CDP 客户端，v0.2.10 验证过的模型）；第二条防护连接
+                    // 会让 window.open 弹窗停在 about:blank，已废弃。
+                    if let Some(context) = logout_context {
+                        let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+                        let unavailable = || {
+                            CommandError::new(
                                 "托管安全监控无法启用，请重新打开平台",
                                 "managed_guard_unavailable",
-                            ))
-                        }
+                            )
+                        };
+                        let watch = cdp::ManagedWatch {
+                            login_guard_script: managed_cdp::logout_guard_script(
+                                &session.target_url,
+                            )
+                            .ok_or_else(unavailable)?,
+                            monitor: managed_cdp::ManagedSessionMonitor::for_session(
+                                &session.target_url,
+                            )
+                            .ok_or_else(unavailable)?,
+                            signals: signal_tx,
+                        };
+                        let exited = watch_exit_rx.ok_or_else(unavailable)?;
+                        rt::runtime().spawn(run_managed_watch(context, signal_rx, exited));
+                        managed_watch = Some(watch);
                     }
                     managed_cdp::inject_session(&endpoint, &session)
                         .await
@@ -334,7 +338,7 @@ pub async fn open_browser<R: Runtime>(
             if injection.is_err() {
                 return;
             }
-            activity_collector.start(activity_key, endpoint, activity_owner, managed_guard);
+            activity_collector.start(activity_key, endpoint, activity_owner, managed_watch);
         },
         move || {
             if let Some(tx) = watch_exit_tx {

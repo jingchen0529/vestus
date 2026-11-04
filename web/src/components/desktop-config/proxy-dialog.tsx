@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
 import { toast } from "sonner";
-import { Server, Eye, EyeOff, ShieldCheck, ShieldOff } from "lucide-react";
+import { Eye, EyeOff, ShieldCheck, ShieldOff } from "lucide-react";
 
 interface ProxyDialogProps {
   open: boolean;
@@ -140,17 +140,14 @@ export function ProxyDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 mb-1">
-            <Server className="h-5 w-5" />
-            <DialogTitle>{isEditing ? "编辑代理节点" : "新增网络代理节点"}</DialogTitle>
-          </div>
+          <DialogTitle>{isEditing ? "编辑代理节点" : "新增网络代理节点"}</DialogTitle>
           <DialogDescription className="text-xs">
             可同时保存多条代理节点，分别下发给不同的用户；未单独配置 VPN
-            的用户走【默认】节点，设为默认会自动取消其它节点的默认标记。
+            的用户走默认节点，设为默认会自动取消其它节点的默认标记。
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4 py-2">
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* Proxy Name */}
           <div className="space-y-1.5">
             <Label htmlFor="p-name" required>
@@ -303,12 +300,12 @@ export function ProxyDialog({
           </div>
 
           <div className="flex items-center gap-2 rounded-lg bg-muted/40 p-2.5 text-[11px] text-muted-foreground">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+            <ShieldCheck className="h-3.5 w-3.5 text-success shrink-0" />
             <span>密码采用 Fernet 安全对称加密存储，仅在受权客户端建立连接时解密分发。</span>
           </div>
 
           {parseBypassHosts(bypassHosts).length > 0 && (
-            <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 p-2.5 text-[11px] text-amber-700 dark:text-amber-400">
+            <div className="flex items-center gap-2 rounded-lg bg-warning/10 p-2.5 text-[11px] text-warning">
               <ShieldOff className="h-3.5 w-3.5 shrink-0" />
               <span>直连域名不经过代理，会暴露用户本机的真实出口 IP，请只填确实需要直连的站点。</span>
             </div>

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import type { ComponentType } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useTheme } from "@/hooks/use-theme";
 import { api } from "@/lib/api-client";
@@ -37,6 +38,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 export type NavTab = "dashboard" | "users" | "bindings" | "desktop" | "platforms" | "admins" | "activity" | "logs" | "settings";
+
+interface NavItem {
+  id: NavTab;
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  badge?: string | null;
+  badgeVariant?: "primary" | "secondary" | "destructive" | "outline";
+  badgeTitle?: string;
+  requiresSuperAdmin?: boolean;
+  group: string;
+}
 
 export function isSuperAdminTab(tab: NavTab): boolean {
   return ["admins", "desktop", "settings", "bindings"].includes(tab);
@@ -98,29 +110,22 @@ export function Sidebar({
     return name.slice(0, 2).toUpperCase();
   };
 
-  const mainNavItems = [
+  const mainNavItems: NavItem[] = [
     {
-      id: "dashboard" as NavTab,
+      id: "dashboard",
       label: "控制总览",
       icon: LayoutDashboard,
-      badge: null,
+      group: "总览",
     },
     {
-      id: "admins" as NavTab,
-      label: "系统管理",
-      icon: ShieldCheck,
-      badge: isSuperAdmin ? "超管" : null,
-      badgeVariant: "primary" as const,
-      requiresSuperAdmin: true,
-    },
-    {
-      id: "users" as NavTab,
+      id: "users",
       label: "桌面用户",
       icon: Users,
       badge: userStatsTotal !== undefined ? `${userStatsTotal}` : null,
+      group: "业务运营",
     },
     {
-      id: "bindings" as NavTab,
+      id: "bindings",
       label: "绑定托管",
       icon: Link2,
       requiresSuperAdmin: true,
@@ -128,47 +133,58 @@ export function Sidebar({
         expiredBindingsCount !== undefined && expiredBindingsCount > 0
           ? `${expiredBindingsCount}`
           : null,
-      badgeVariant: "destructive" as const,
+      badgeVariant: "destructive",
       badgeTitle:
         expiredBindingsCount && expiredBindingsCount > 0
           ? `${expiredBindingsCount} 个托管会话已失效，点击查看`
           : undefined,
+      group: "业务运营",
     },
     {
-      id: "desktop" as NavTab,
+      id: "desktop",
       label: "代理管理",
       icon: Server,
       badge: proxiesTotal !== undefined ? `${proxiesTotal}` : null,
       requiresSuperAdmin: true,
+      group: "业务运营",
     },
     {
-      id: "platforms" as NavTab,
+      id: "platforms",
       label: "平台管理",
       icon: Globe,
       badge: platformsTotal !== undefined ? `${platformsTotal}` : null,
+      group: "业务运营",
     },
     {
-      id: "activity" as NavTab,
+      id: "activity",
       label: "会话追踪",
       icon: Activity,
-      badge: null,
+      group: "监控与审计",
     },
     {
-      id: "logs" as NavTab,
+      id: "logs",
       label: "审计日志",
       icon: FileText,
-      badge: null,
+      group: "监控与审计",
+    },
+    {
+      id: "admins",
+      label: "系统管理",
+      icon: ShieldCheck,
+      badge: isSuperAdmin ? "超管" : null,
+      badgeVariant: "primary",
+      requiresSuperAdmin: true,
+      group: "权限",
     },
   ];
 
-  const bottomNavItems = [
+  const bottomNavItems: NavItem[] = [
     {
-      id: "settings" as NavTab,
+      id: "settings",
       label: "系统配置",
       icon: Sliders,
-      badge: null,
       requiresSuperAdmin: true,
-      badgeVariant: "primary" as const,
+      group: "权限",
     },
   ];
 
@@ -179,7 +195,7 @@ export function Sidebar({
     (item) => !isSuperAdminTab(item.id) || isSuperAdmin
   );
 
-  const renderNavButton = (item: (typeof mainNavItems)[0]) => {
+  const renderNavButton = (item: NavItem) => {
     const Icon = item.icon;
     const isActive = currentTab === item.id;
 
@@ -189,45 +205,53 @@ export function Sidebar({
         onClick={() => onTabChange(item.id)}
         title={collapsed ? item.label : undefined}
         className={cn(
-          "group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all relative",
+          "group relative flex w-full items-center gap-2.5 rounded-[8px] py-2 text-[13px] transition-colors duration-150",
+          collapsed ? "justify-center px-0" : "pl-3 pr-2.5",
           isActive
-            ? "bg-primary text-primary-foreground shadow-sm shadow-primary/25"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          collapsed && "justify-center px-0"
+            ? "bg-primary/[0.09] font-semibold text-primary"
+            : "font-medium text-muted-foreground hover:bg-foreground/[0.035] hover:text-foreground",
         )}
       >
+        {/* 选中指示条：比整块填色克制，视觉重心仍在内容区 */}
+        <span
+          className={cn(
+            "absolute left-0 top-1/2 w-[2.5px] -translate-y-1/2 rounded-full bg-primary transition-all duration-200",
+            isActive ? "h-4 opacity-100" : "h-0 opacity-0",
+          )}
+        />
         <Icon
           className={cn(
-            "h-5 w-5 shrink-0 transition-transform group-hover:scale-105",
-            isActive ? "text-primary-foreground" : "text-muted-foreground group-hover:text-foreground"
+            "h-[17px] w-[17px] shrink-0 transition-colors",
+            isActive ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground",
           )}
         />
 
         {collapsed && item.id === "bindings" && item.badge && (
-          <Badge variant="destructive" className="absolute right-0 top-0 px-1 py-0 text-[9px]"
-            title={item.badgeTitle}>
+          <Badge
+            variant="destructive"
+            className="absolute right-0 top-0 px-1 py-0 text-[9px]"
+            title={item.badgeTitle}
+          >
             {item.badge}
           </Badge>
         )}
         {!collapsed && (
-          <div className="flex flex-1 items-center justify-between truncate">
+          <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
             <span className="truncate">{item.label}</span>
             {item.badge && (
-              <Badge
-                variant={
-                  isActive
-                    ? "outline"
-                    : item.badgeVariant || "secondary"
-                }
+              <span
                 className={cn(
-                  "ml-auto text-[10px] px-1.5 py-0",
-                  isActive && "border-white/40 text-white",
-                  item.badgeVariant === "destructive" && !isActive && "animate-pulse"
+                  "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums leading-none",
+                  isActive
+                    ? "bg-primary/15 text-primary"
+                    : item.badgeVariant === "destructive"
+                      ? "animate-pulse bg-destructive/10 text-destructive"
+                      : "bg-muted text-muted-foreground",
                 )}
-                title={"badgeTitle" in item ? item.badgeTitle : undefined}
+                title={item.badgeTitle}
               >
                 {item.badge}
-              </Badge>
+              </span>
             )}
           </div>
         )}
@@ -235,15 +259,23 @@ export function Sidebar({
     );
   };
 
+  const navGroups = visibleMainNavItems.reduce<Record<string, NavItem[]>>(
+    (acc, item) => {
+      (acc[item.group] ||= []).push(item);
+      return acc;
+    },
+    {},
+  );
+
   return (
     <aside
       className={cn(
-        "relative flex flex-col border-r bg-card/95 backdrop-blur transition-all duration-300 select-none z-20 shrink-0",
+        "relative z-20 flex shrink-0 select-none flex-col border-r border-border/70 bg-card transition-all duration-300",
         collapsed ? "w-16" : "w-64"
       )}
     >
       {/* Brand Header */}
-      <div className="flex h-16 items-center justify-between px-4 border-b">
+      <div className="flex h-16 items-center justify-between border-b border-border/70 px-4">
         {!collapsed ? (
           <div className="flex items-center gap-3 overflow-hidden">
             {adminLogoUrl ? (
@@ -253,15 +285,15 @@ export function Sidebar({
                 className="h-9 w-9 shrink-0 object-contain rounded-xl border border-border/60 bg-background shadow-xs"
               />
             ) : (
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/30">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-primary text-primary-foreground shadow-soft">
                 <Layers className="h-5 w-5" />
               </div>
             )}
             <div className="flex flex-col overflow-hidden">
-              <span className="font-bold text-base tracking-tight truncate">
+              <span className="truncate text-[15px] font-semibold tracking-[-0.01em]">
                 {adminTitle || "Vestus Admin"}
               </span>
-              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
                 Control Console
               </span>
             </div>
@@ -274,7 +306,7 @@ export function Sidebar({
               className="mx-auto h-9 w-9 object-contain rounded-xl border border-border/60 bg-background"
             />
           ) : (
-            <div className="mx-auto flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/30">
+            <div className="mx-auto flex h-9 w-9 items-center justify-center rounded-[10px] bg-primary text-primary-foreground shadow-soft">
               <Layers className="h-5 w-5" />
             </div>
           )
@@ -297,8 +329,18 @@ export function Sidebar({
       </div>
 
       {/* Main Navigation List */}
-      <div className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
-        {visibleMainNavItems.map(renderNavButton)}
+      <div className="flex-1 space-y-5 overflow-y-auto px-2 py-4">
+        {Object.entries(navGroups).map(([group, items]) => (
+          <div key={group} className="space-y-0.5">
+            {!collapsed && (
+              <div className="px-3 pb-1.5 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/55">
+                {group}
+              </div>
+            )}
+            {collapsed && <div className="mx-auto mb-1 h-px w-6 bg-border/70" />}
+            {items.map(renderNavButton)}
+          </div>
+        ))}
       </div>
 
       {/* Bottom Pinned System Settings (directly above user profile) */}
@@ -328,7 +370,7 @@ export function Sidebar({
                 <span
                   className={cn(
                     "absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-card",
-                    user?.status === "active" ? "bg-emerald-500" : "bg-amber-500"
+                    user?.status === "active" ? "bg-success" : "bg-warning"
                   )}
                   title={user?.status === "active" ? "状态正常" : "状态受限"}
                 />
@@ -390,8 +432,8 @@ export function Sidebar({
               <div className="flex items-center justify-between pb-1 border-b border-border/40">
                 <div className="flex items-center gap-1.5">
                   <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
                   </span>
                   <span className="text-[11px] font-semibold text-foreground">
                     系统环境状态
@@ -416,13 +458,13 @@ export function Sidebar({
                 {/* Status 1: API Gateway */}
                 <div className="flex items-center justify-between py-1 px-1.5 rounded-md hover:bg-muted/40 transition-colors">
                   <div className="flex items-center gap-2">
-                    <div className="flex h-5 w-5 items-center justify-center rounded bg-blue-500/10 text-blue-500 dark:text-blue-400">
+                    <div className="flex h-5 w-5 items-center justify-center rounded bg-primary/10 text-primary">
                       <Server className="h-3 w-3" />
                     </div>
                     <span className="text-[11px] text-foreground font-medium">API 网关</span>
                   </div>
-                  <div className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <div className="flex items-center gap-1 text-[10px] text-success font-medium">
+                    <span className="h-1.5 w-1.5 rounded-full bg-success" />
                     <span>
                       {health?.status
                         ? health.status === "HEALTHY" || health.status === "ok"
@@ -436,13 +478,13 @@ export function Sidebar({
                 {/* Status 2: Database Storage Engine */}
                 <div className="flex items-center justify-between py-1 px-1.5 rounded-md hover:bg-muted/40 transition-colors">
                   <div className="flex items-center gap-2">
-                    <div className="flex h-5 w-5 items-center justify-center rounded bg-indigo-500/10 text-indigo-500 dark:text-indigo-400">
+                    <div className="flex h-5 w-5 items-center justify-center rounded bg-primary/10 text-primary">
                       <Database className="h-3 w-3" />
                     </div>
                     <span className="text-[11px] text-foreground font-medium">持久层数据库</span>
                   </div>
-                  <div className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <div className="flex items-center gap-1 text-[10px] text-success font-medium">
+                    <span className="h-1.5 w-1.5 rounded-full bg-success" />
                     <span>{health?.database ? "已就绪" : "已连接"}</span>
                   </div>
                 </div>
@@ -450,7 +492,7 @@ export function Sidebar({
                 {/* Status 3: Enterprise Core */}
                 <div className="flex items-center justify-between py-1 px-1.5 rounded-md hover:bg-muted/40 transition-colors">
                   <div className="flex items-center gap-2">
-                    <div className="flex h-5 w-5 items-center justify-center rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    <div className="flex h-5 w-5 items-center justify-center rounded bg-success/10 text-success">
                       <Shield className="h-3 w-3" />
                     </div>
                     <span className="text-[11px] text-foreground font-medium">企业内核</span>
@@ -489,7 +531,7 @@ export function Sidebar({
                   )}
                   title="明亮模式"
                 >
-                  <Sun className={cn("h-3.5 w-3.5", theme === "light" ? "text-amber-500" : "")} />
+                  <Sun className={cn("h-3.5 w-3.5", theme === "light" ? "text-warning" : "")} />
                   <span>明亮</span>
                 </button>
                 <button
@@ -506,7 +548,7 @@ export function Sidebar({
                   )}
                   title="暗黑模式"
                 >
-                  <Moon className={cn("h-3.5 w-3.5", theme === "dark" ? "text-sky-400" : "")} />
+                  <Moon className={cn("h-3.5 w-3.5", theme === "dark" ? "text-info" : "")} />
                   <span>暗黑</span>
                 </button>
                 <button

@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
-import { Globe, Upload, RefreshCw, X, Image as ImageIcon } from "lucide-react";
+import { Upload, RefreshCw, X, Image as ImageIcon } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -140,16 +140,13 @@ export function PlatformDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <div className="flex items-center gap-2 text-primary mb-1">
-            <Globe className="h-5 w-5" />
-            <DialogTitle>{isEditing ? "编辑业务平台" : "新增业务平台入口"}</DialogTitle>
-          </div>
+          <DialogTitle>{isEditing ? "编辑业务平台" : "新增业务平台入口"}</DialogTitle>
           <DialogDescription className="text-xs">
             为桌面客户端提供一键直达且受控的业务平台快捷入口，支持上传专属图标
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4 py-2">
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* Icon Upload & Platform Name */}
           <div className="flex items-start gap-4">
             {/* Icon Uploader */}
@@ -157,7 +154,7 @@ export function PlatformDialog({
               <Label className="text-xs">平台图标</Label>
               <label
                 className={cn(
-                  "relative group flex flex-col items-center justify-center w-20 h-20 rounded-xl border-2 border-dashed transition-all overflow-hidden cursor-pointer select-none bg-slate-50/80 dark:bg-slate-900/40",
+                  "relative group flex flex-col items-center justify-center w-20 h-20 rounded-xl border-2 border-dashed transition-all overflow-hidden cursor-pointer select-none bg-muted/50",
                   isUploadingIcon
                     ? "opacity-60 cursor-not-allowed border-muted-foreground/30"
                     : "border-primary/40 hover:border-primary hover:bg-primary/5 shadow-2xs"
@@ -184,7 +181,7 @@ export function PlatformDialog({
                     </div>
                   </>
                 ) : (
-                  <div className="flex flex-col items-center justify-center text-slate-400 group-hover:text-primary transition-colors gap-1">
+                  <div className="flex flex-col items-center justify-center text-muted-foreground/70 group-hover:text-primary transition-colors gap-1">
                     <ImageIcon className="w-6 h-6 stroke-[1.5]" />
                     <span className="text-[9px] font-medium">上传图标</span>
                   </div>

@@ -28,7 +28,7 @@ const initialState: ThemeProviderState = {
   resolvedTheme: "light",
   setTheme: () => null,
   toggleTheme: () => null,
-  accentColor: "blue",
+  accentColor: "teal",
   setAccentColor: () => null,
 };
 
@@ -51,7 +51,7 @@ const syncTauriWindowTheme = async (activeTheme: "dark" | "light") => {
 export function ThemeProvider({
   children,
   defaultTheme = "light",
-  defaultAccent = "blue",
+  defaultAccent = "teal",
   storageKey = "vestus-desktop-theme",
   accentStorageKey = "vestus-desktop-accent",
   ...props

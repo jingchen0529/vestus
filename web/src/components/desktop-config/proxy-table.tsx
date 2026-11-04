@@ -34,7 +34,7 @@ export function ProxyTable({
       <CardHeader className="flex flex-row items-center justify-between pb-3">
         <div>
           <CardTitle className="text-base flex items-center gap-2">
-            <Server className="h-4 w-4 text-emerald-500" />
+            <Server className="h-4 w-4 text-success" />
             <span>代理池管理 ({proxies.length} 套)</span>
           </CardTitle>
           <CardDescription className="text-xs">
@@ -93,7 +93,7 @@ export function ProxyTable({
                     {proxy.host}:{proxy.port}
                     {(proxy.bypassHosts?.length ?? 0) > 0 && (
                       <span
-                        className="mt-0.5 block font-sans text-[11px] text-amber-600 dark:text-amber-400"
+                        className="mt-0.5 block font-sans text-[11px] text-warning"
                         title={proxy.bypassHosts!.join("\n")}
                       >
                         直连 {proxy.bypassHosts!.length} 个域名

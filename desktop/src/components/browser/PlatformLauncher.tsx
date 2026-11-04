@@ -1,16 +1,13 @@
 import React, { useState } from "react";
 import {
   AlertTriangle,
-  ExternalLink,
+  ArrowUpRight,
   Globe,
   RefreshCw,
   ShieldAlert,
   ShieldOff,
-  Store,
-  Video,
 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DesktopConfigView,
@@ -18,6 +15,7 @@ import {
   DesktopPlatform,
   StatusView,
 } from "@/services/tauriBridge";
+import { cn } from "@/lib/utils";
 
 // 自动登录恢复中的账号不再要求用户联系管理员：系统会自行恢复并重开浏览器。
 const isRecovering = (account?: DesktopManagedAccount | null): boolean =>
@@ -36,6 +34,71 @@ interface PlatformLauncherProps {
   onOpenBrowser: (platformId: number, managedAccountId?: number) => Promise<void> | void;
 }
 
+/** 统一提示条：三种语气共用一套骨架，避免每条自己配色。 */
+function Notice({
+  tone,
+  icon: Icon,
+  children,
+  action,
+}: {
+  tone: "warning" | "danger" | "info";
+  icon: React.ComponentType<{ className?: string }>;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  const styles = {
+    warning: "border-warning/25 bg-warning/[0.06] text-warning",
+    danger: "border-destructive/25 bg-destructive/[0.06] text-destructive",
+    info: "border-border/70 bg-muted/40 text-muted-foreground",
+  }[tone];
+
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-between gap-3 rounded-[10px] border px-3 py-2.5",
+        styles,
+      )}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        <Icon className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+        <div className="min-w-0 text-[11.5px] leading-relaxed">{children}</div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/** 平台图标位：没有图标时用平台名首字做单字标，不用彩色渐变方块。 */
+function PlatformMark({
+  name,
+  iconUrl,
+  muted,
+}: {
+  name: string;
+  iconUrl?: string | null;
+  muted?: boolean;
+}) {
+  if (iconUrl) {
+    return (
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-border/70 bg-background p-1">
+        <img src={iconUrl} alt={name} className="h-full w-full object-contain" />
+      </div>
+    );
+  }
+  return (
+    <div
+      className={cn(
+        "flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] text-[14px] font-semibold",
+        muted
+          ? "bg-muted text-muted-foreground/60"
+          : "bg-primary/[0.08] text-primary",
+      )}
+    >
+      {name.slice(0, 1)}
+    </div>
+  );
+}
+
 export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
   status,
   desktopConfig,
@@ -48,12 +111,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
   const [launchingPlatformKey, setLaunchingPlatformKey] = useState<string | null>(null);
   const platforms = desktopConfig?.platforms || [];
   const directHosts = desktopConfig?.direct_hosts || [];
-  const platformIcons = [Store, Video, Globe];
-  const platformColors = [
-    "from-blue-600 to-indigo-600",
-    "from-cyan-600 to-blue-600",
-    "from-emerald-600 to-teal-600",
-  ];
+
   // 账号不可用时的用户可读原因；unknown 状态兜底展示原始值。
   const accountStatusLabels: Record<string, string> = {
     expired: "登录状态已失效，请联系管理员或渠道客服",
@@ -77,6 +135,8 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
       (Boolean(desktopConfig?.proxy_assigned) &&
         (status.phase === "ready" || status.phase === "browser_running")));
 
+  const ready = status.phase === "ready" || status.phase === "browser_running";
+
   const handleOpenPlatform = async (platform: DesktopPlatform, managedAccountId?: number) => {
     const key = managedAccountId ? `${platform.id}:${managedAccountId}` : String(platform.id);
     setLaunchingPlatformKey(key);
@@ -87,64 +147,209 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
     }
   };
 
+  const entries = platforms.flatMap((platform) => {
+    const accounts = platform.managed_accounts?.length ? platform.managed_accounts : [null];
+    return accounts.map((account) => ({ platform, account }));
+  });
+
   return (
-    <section className="mx-auto w-full max-w-3xl">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">选择平台</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            点击系统已启用的平台，在独立的浏览器窗口中打开；登录状态会保存在这台电脑上。
+    <section className="mx-auto w-full max-w-3xl space-y-3.5">
+      {/* 页头 */}
+      <header className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-foreground">
+            平台入口
+          </h2>
+          <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+            点击在独立浏览器窗口中打开，登录状态保存在这台电脑上
           </p>
         </div>
-        {!proxyEnabled && (
-          <span className="rounded-full bg-secondary/80 px-2.5 py-0.5 text-[11px] font-medium text-secondary-foreground border border-border">
-            本机直连模式
-          </span>
-        )}
-      </div>
 
-      {(configLoading || configError) && (
-        <div
-          className={`mb-4 flex items-center justify-between gap-3 rounded-lg border p-3 ${
-            configError
-              ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-              : "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300"
-          }`}
-        >
-          <div className="flex items-center gap-2 text-xs">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>{configLoading ? "正在加载全局平台配置…" : configError}</span>
-          </div>
-          {!configLoading && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 shrink-0 text-xs px-2.5"
-              onClick={onRetryConfig}
-            >
-              重新加载
-            </Button>
-          )}
+        <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-card px-2.5 py-1">
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              ready ? "bg-success" : "bg-warning",
+            )}
+          />
+          <span className="text-[10.5px] font-medium text-muted-foreground">
+            {proxyEnabled ? "代理" : "直连"} · {ready ? "已就绪" : "准备中"}
+          </span>
         </div>
+      </header>
+
+      {/* 提示区 */}
+      {(configLoading || configError) && (
+        <Notice
+          tone={configError ? "warning" : "info"}
+          icon={configError ? AlertTriangle : RefreshCw}
+          action={
+            !configLoading ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 px-2.5 text-[11px]"
+                onClick={onRetryConfig}
+              >
+                重新加载
+              </Button>
+            ) : undefined
+          }
+        >
+          {configLoading ? (
+            <span className="flex items-center gap-1.5">
+              <RefreshCw className="h-3 w-3 animate-spin" />
+              正在加载全局平台配置…
+            </span>
+          ) : (
+            configError
+          )}
+        </Notice>
       )}
 
       {!configLoading && !configError && !canLaunch && (
-        <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+        <Notice tone="warning" icon={AlertTriangle}>
           {status.message || "浏览器环境尚未就绪，请稍后重试。"}
+        </Notice>
+      )}
+
+      {expiredCount > 0 && (
+        <Notice
+          tone="danger"
+          icon={ShieldAlert}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 gap-1 px-2.5 text-[11px]"
+              onClick={onRetryConfig}
+              title="刷新平台登录状态"
+            >
+              <RefreshCw className="h-3 w-3" />
+              刷新
+            </Button>
+          }
+        >
+          <span className="font-medium">
+            {expiredCount} 个账号登录状态已失效
+          </span>
+          <span className="ml-1 opacity-80">
+            请联系管理员或渠道客服，处理后点「刷新」恢复
+          </span>
+        </Notice>
+      )}
+
+      {/* 平台卡片 */}
+      {entries.length > 0 && (
+        <div className="grid grid-cols-1 gap-2.5 min-[660px]:grid-cols-2">
+          {entries.map(({ platform, account }) => {
+            const entryKey = account ? `${platform.id}:${account.id}` : String(platform.id);
+            const launching = launchingPlatformKey === entryKey;
+            const recovering = isRecovering(account);
+            const isExpired = Boolean(account && account.status === "expired") && !recovering;
+            const unavailable = Boolean(account && account.status !== "active");
+            const blocked = !canLaunch || launching || unavailable;
+
+            return (
+              <button
+                type="button"
+                key={entryKey}
+                onClick={() => handleOpenPlatform(platform, account?.id)}
+                disabled={blocked}
+                className={cn(
+                  "group relative flex flex-col justify-between gap-3 overflow-hidden rounded-[12px] border bg-card p-3.5 text-left transition-all duration-200",
+                  isExpired
+                    ? "border-destructive/30 hover:border-destructive/50"
+                    : unavailable
+                      ? "border-border/60 opacity-60"
+                      : "border-border/70 hover:border-primary/40 hover:shadow-soft",
+                  blocked ? "cursor-not-allowed" : "active:scale-[0.995]",
+                )}
+              >
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <PlatformMark
+                    name={platform.name}
+                    iconUrl={platform.icon_url}
+                    muted={unavailable && !isExpired}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className={cn(
+                        "truncate text-[13px] font-medium leading-tight",
+                        isExpired ? "text-destructive" : "text-foreground",
+                      )}
+                    >
+                      {platform.name}
+                    </div>
+                    <div className="mt-1 truncate text-[11px] leading-tight text-muted-foreground">
+                      {account ? account.name : "直接打开"}
+                    </div>
+                  </div>
+
+                  {!blocked && (
+                    <ArrowUpRight className="mt-0.5 h-3.5 w-3.5 shrink-0 -translate-x-1 text-muted-foreground/50 opacity-0 transition-all duration-200 group-hover:translate-x-0 group-hover:text-primary group-hover:opacity-100" />
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 text-[10.5px]">
+                  {launching ? (
+                    <span className="flex items-center gap-1.5 text-primary">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      正在打开…
+                    </span>
+                  ) : recovering ? (
+                    <span className="flex items-center gap-1.5 text-primary">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      自动恢复登录中
+                    </span>
+                  ) : isExpired ? (
+                    <span className="flex items-center gap-1.5 text-destructive">
+                      <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+                      登录失效
+                    </span>
+                  ) : unavailable ? (
+                    <span className="flex items-center gap-1.5 text-muted-foreground">
+                      <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
+                      {accountStatusLabels[account!.status] ?? account!.status}
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-muted-foreground">
+                      <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                      可用
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
 
+      {/* 空态 */}
+      {!configLoading && !configError && platforms.length === 0 && (
+        <div className="rounded-[12px] border border-dashed border-border/80 px-6 py-9 text-center">
+          <Globe className="mx-auto h-6 w-6 text-muted-foreground/40" />
+          <p className="mt-2.5 text-[12px] font-medium text-foreground">
+            系统当前没有已启用的平台入口
+          </p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            请联系管理员启用平台后重新加载
+          </p>
+        </div>
+      )}
+
+      {/* 直连域名 */}
       {directHosts.length > 0 && (
-        <div className="mb-4 rounded-lg border border-border bg-card/60 p-3 shadow-sm">
-          <div className="flex items-center gap-2 text-xs font-medium text-foreground">
-            <ShieldOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="rounded-[10px] border border-border/70 bg-muted/30 px-3 py-2.5">
+          <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+            <ShieldOff className="h-3 w-3 shrink-0" />
             <span>以下域名按管理员配置直连，不经过代理，使用本机真实出口 IP</span>
           </div>
           <div className="mt-1.5 flex flex-wrap gap-1">
             {directHosts.map((host) => (
               <span
                 key={host}
-                className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground border border-border/50"
+                className="rounded-[5px] border border-border/60 bg-background px-1.5 py-0.5 font-mono text-[10px] text-foreground/75"
               >
                 {host}
               </span>
@@ -153,144 +358,9 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
         </div>
       )}
 
-      {/* 账号登录状态失效 顶部明显红色提示横幅 */}
-      {expiredCount > 0 && (
-        <div className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 shadow-sm text-destructive dark:bg-destructive/20 dark:border-destructive/50">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <ShieldAlert className="h-5 w-5 shrink-0 text-destructive" />
-              <div className="space-y-0.5 min-w-0">
-                <h3 className="text-sm font-semibold tracking-tight text-destructive">
-                  账号登录状态已失效
-                </h3>
-                <p className="text-xs text-destructive/90 leading-relaxed">
-                  请联系管理员或渠道客服处理，处理完成后点击右侧「刷新」即可恢复使用。
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 shrink-0 text-xs px-2.5 gap-1.5 bg-background/80 hover:bg-background border-destructive/30 text-destructive hover:text-destructive shadow-2xs"
-              onClick={onRetryConfig}
-              title="刷新平台登录状态"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              <span>刷新</span>
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* 单行紧凑平台列表 */}
-      <div className="flex flex-col gap-2">
-        {platforms.flatMap((platform, index) => {
-          const Icon = platformIcons[index % platformIcons.length];
-          const color = platformColors[index % platformColors.length];
-          const accounts = platform.managed_accounts?.length ? platform.managed_accounts : [null];
-          return accounts.map((account) => {
-            const entryKey = account ? `${platform.id}:${account.id}` : String(platform.id);
-            const launching = launchingPlatformKey === entryKey;
-            const recovering = isRecovering(account);
-            const isExpired = Boolean(account && account.status === "expired") && !recovering;
-            const unavailable = Boolean(account && account.status !== "active");
-            return (
-              <button
-                type="button"
-                key={entryKey}
-                onClick={() => handleOpenPlatform(platform, account?.id)}
-                disabled={!canLaunch || launching || unavailable}
-                className={`group flex items-center justify-between gap-3.5 rounded-xl border px-4 py-3 text-left shadow-sm transition-all active:scale-[0.99] disabled:cursor-not-allowed ${
-                  isExpired
-                    ? "border-destructive/40 bg-destructive/5 hover:border-destructive/60 hover:bg-destructive/10"
-                    : unavailable
-                      ? "border-border/80 bg-card/60 opacity-60"
-                      : "border-border/80 bg-card hover:shadow-md hover:border-primary/50 hover:bg-accent/40"
-                }`}
-              >
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  {platform.icon_url ? (
-                    <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-900 border border-border/80 p-1 flex items-center justify-center shadow-xs shrink-0 overflow-hidden">
-                      <img
-                        src={platform.icon_url}
-                        alt={platform.name}
-                        className="w-full h-full object-contain"
-                      />
-                    </div>
-                  ) : (
-                    <div className={`w-8 h-8 rounded-lg bg-gradient-to-tr ${color} flex items-center justify-center text-white shadow-sm shrink-0`}>
-                      <Icon className="h-4 w-4" />
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <h3 className={`truncate text-sm font-medium transition-colors ${
-                      isExpired ? "text-destructive font-semibold" : "text-foreground group-hover:text-primary"
-                    }`}>
-                      {account ? `${platform.name} · ${account.name}` : platform.name}
-                    </h3>
-                    {account && account.status !== "active" && (
-                      <div className="flex items-center gap-1 mt-0.5">
-                        {recovering ? (
-                          <span className="text-xs font-medium text-primary flex items-center gap-1">
-                            <RefreshCw className="h-3 w-3 shrink-0 animate-spin" />
-                            正在自动恢复登录，完成后将自动重新打开
-                          </span>
-                        ) : isExpired ? (
-                          <span className="text-xs font-medium text-destructive flex items-center gap-1">
-                            <ShieldAlert className="h-3 w-3 shrink-0" />
-                            登录状态已失效，请联系管理员或渠道客服
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-amber-600 dark:text-amber-300">
-                            {accountStatusLabels[account.status] ?? account.status}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground group-hover:text-primary transition-colors shrink-0">
-                  {launching ? (
-                    <span className="text-xs text-primary animate-pulse">正在打开…</span>
-                  ) : recovering ? (
-                    <Badge variant="outline" className="gap-1 text-[11px] font-normal py-0.5 text-primary border-primary/40">
-                      <RefreshCw className="h-3 w-3 animate-spin" />
-                      <span>自动恢复中</span>
-                    </Badge>
-                  ) : isExpired ? (
-                    <Badge variant="destructive" className="gap-1 text-[11px] font-normal py-0.5">
-                      <ShieldAlert className="h-3 w-3" />
-                      <span>登录失效</span>
-                    </Badge>
-                  ) : unavailable ? (
-                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                      不可用
-                    </Badge>
-                  ) : (
-                    <>
-                      <span className="text-[11px] hidden sm:inline">打开平台</span>
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </>
-                  )}
-                </div>
-              </button>
-            );
-          });
-        })}
-
-        {!configLoading && !configError && platforms.length === 0 && (
-          <div className="rounded-xl border border-dashed border-border bg-card/40 p-8 text-center">
-            <Globe className="mx-auto h-7 w-7 text-muted-foreground/60" />
-            <p className="mt-2 text-xs text-foreground font-medium">系统当前没有已启用的平台入口</p>
-            <p className="mt-1 text-[11px] text-muted-foreground">请联系管理员启用平台后重新加载。</p>
-          </div>
-        )}
-      </div>
-
       {status.browser_open && (
-        <p className="mt-4 text-center text-xs text-muted-foreground">
-          浏览器已在运行；再次点击同一平台会切回它的标签页（页面原样保留），别的平台照常独立打开。
+        <p className="pt-0.5 text-center text-[10.5px] leading-relaxed text-muted-foreground/70">
+          浏览器已在运行；再次点击同一平台会切回它的标签页，别的平台照常独立打开
         </p>
       )}
     </section>

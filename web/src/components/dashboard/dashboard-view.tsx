@@ -6,9 +6,8 @@ import { PlatformItem } from "@/types/platform";
 import { AdminUser } from "@/types/admin";
 import { UserLogItem } from "@/types/log";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { formatDate } from "@/lib/utils";
+import { formatDate, cn } from "@/lib/utils";
 import { History, ArrowRight } from "lucide-react";
 import { NavTab } from "@/components/layout/sidebar";
 
@@ -62,7 +61,7 @@ export function DashboardView({
         <CardHeader className="flex flex-row items-center justify-between pb-3">
           <div>
             <CardTitle className="text-base flex items-center gap-2">
-              <History className="h-4 w-4 text-blue-500" />
+              <History className="h-4 w-4 text-primary" />
               <span>最新审计与操作动态</span>
             </CardTitle>
             <CardDescription className="text-xs">
@@ -85,38 +84,57 @@ export function DashboardView({
               暂无审计日志记录
             </div>
           ) : (
-            <div className="space-y-2">
-              {recentLogs.slice(0, 6).map((log) => (
-                <div
-                  key={log.id}
-                  className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/40 transition-colors text-xs"
-                >
-                  <div className="flex items-center gap-3 min-w-0 flex-1 mr-4">
-                    <Badge
-                      variant={log.status === "SUCCESS" ? "success" : "destructive"}
-                      className="text-[10px] px-1.5 py-0 shrink-0 whitespace-nowrap"
+            <div>
+              {/* 列头：让数字与时间有稳定的落位，而不是每行各自浮动 */}
+              <div className="hidden grid-cols-[56px_1fr_120px_132px] gap-3 border-b border-border/60 pb-2 text-[10px] font-medium tracking-[0.06em] text-muted-foreground/55 sm:grid">
+                <span>状态</span>
+                <span>操作者 / 内容</span>
+                <span>来源 IP</span>
+                <span className="text-right">时间</span>
+              </div>
+              <div className="divide-y divide-border/50">
+                {recentLogs.slice(0, 6).map((log) => {
+                  const ok = log.status === "SUCCESS";
+                  return (
+                    <div
+                      key={log.id}
+                      className="grid grid-cols-[56px_1fr_auto] items-center gap-3 py-2.5 text-xs transition-colors hover:bg-muted/25 sm:grid-cols-[56px_1fr_120px_132px]"
                     >
-                      {log.status === "SUCCESS" ? "成功" : "失败"}
-                    </Badge>
-                    <div className="truncate flex items-center gap-2">
-                      <span className="font-semibold text-foreground shrink-0 font-mono">
-                        {log.actorUsername || "系统"}
+                      <span
+                        className={cn(
+                          "flex items-center gap-1.5 text-[11px] font-medium",
+                          ok ? "text-success" : "text-destructive",
+                        )}
+                      >
+                        <i
+                          className={cn(
+                            "h-1.5 w-1.5 shrink-0 rounded-full",
+                            ok ? "bg-success" : "bg-destructive",
+                          )}
+                        />
+                        {ok ? "成功" : "失败"}
                       </span>
-                      <span className="text-muted-foreground truncate">
-                        {log.summary || log.action}
+
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 font-mono text-[11px] font-medium text-foreground">
+                          {log.actorUsername || "系统"}
+                        </span>
+                        <span className="truncate text-muted-foreground">
+                          {log.summary || log.action}
+                        </span>
+                      </div>
+
+                      <span className="hidden truncate font-mono text-[10.5px] text-muted-foreground/70 sm:block">
+                        {log.ipAddress || "—"}
+                      </span>
+
+                      <span className="whitespace-nowrap text-right text-[11px] tabular-nums text-muted-foreground/70">
+                        {formatDate(log.createdAt)}
                       </span>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-4 text-[11px] text-muted-foreground shrink-0">
-                    {log.ipAddress && (
-                      <span className="hidden sm:inline font-mono text-[10px] bg-muted/60 px-1.5 py-0.5 rounded border border-border/40">
-                        {log.ipAddress}
-                      </span>
-                    )}
-                    <span>{formatDate(log.createdAt)}</span>
-                  </div>
-                </div>
-              ))}
+                  );
+                })}
+              </div>
             </div>
           )}
         </CardContent>

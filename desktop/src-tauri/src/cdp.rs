@@ -290,20 +290,64 @@ async fn connect(endpoint: &DevToolsEndpoint) -> Result<WebSocketStream<TcpStrea
     Ok(socket)
 }
 
+/// 托管监控器通过采集连接发出的信号。
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ManagedSignal {
+    /// 平台登出，或登录页停留超过观察窗：按凭据过期流程处理。
+    Expired,
+    /// 采集调试连接断开：本地防护故障，关闭浏览器但不动凭据。
+    ConnectionLost,
+}
+
+/// 托管会话在采集连接上的防护注入物：登录页交互锁脚本 + 事件监控器 + 信号出口。
+///
+/// 采集连接是托管浏览器唯一的 CDP 客户端（v0.2.10 起验证的单连接模型）：暂停新
+/// target、安装两个固定脚本后放行，事件流同时喂给活动采集与登录/登出检测。
+/// 独立的第二条防护连接会让 `window.open` 弹窗停在 about:blank 永不导航，已废弃。
+pub(crate) struct ManagedWatch {
+    pub(crate) login_guard_script: String,
+    pub(crate) monitor: crate::managed_cdp::ManagedSessionMonitor,
+    pub(crate) signals: tokio::sync::mpsc::UnboundedSender<ManagedSignal>,
+}
+
+struct ManagedCollectorState {
+    login_guard_script: String,
+    signals: tokio::sync::mpsc::UnboundedSender<ManagedSignal>,
+    monitor: crate::managed_cdp::ManagedSessionMonitor,
+}
+
 /// 把一个 Chromium 进程的活动采集到 `sink`，直到调试通道关闭（通常就是浏览器退出）。
 ///
 /// 返回 `Ok(())` 表示通道正常结束。任何错误都不该冒到用户面前：浏览器本身不依赖
-/// 这条通道，采集失败只意味着这次会话没有日志。
+/// 这条通道，采集失败只意味着这次会话没有日志。托管模式下连接结束（无论正常还是
+/// 传输错误）都会发出 [`ManagedSignal::ConnectionLost`]，由消费方判断浏览器是否
+/// 仍在运行再决定是否按防护故障处理。
 pub async fn collect(
     endpoint: DevToolsEndpoint,
     sink: UnboundedSender<PageReport>,
-    managed_guard: bool,
+    managed: Option<ManagedWatch>,
+) -> Result<(), CdpError> {
+    let result = collect_events(endpoint, sink, managed).await;
+    // 注意顺序：Expired 信号在事件处理中先行入队（FIFO），连接断开的
+    // ConnectionLost 只会排在它后面，消费方取到第一个信号后即收尾。
+    result
+}
+
+async fn collect_events(
+    endpoint: DevToolsEndpoint,
+    sink: UnboundedSender<PageReport>,
+    managed: Option<ManagedWatch>,
 ) -> Result<(), CdpError> {
     let socket = connect(&endpoint).await?;
+    let managed_state = managed.map(|watch| ManagedCollectorState {
+        login_guard_script: watch.login_guard_script,
+        signals: watch.signals,
+        monitor: watch.monitor,
+    });
 
     let (mut writer, mut reader) = socket.split();
     let mut collector = Collector {
-        managed_guard,
+        managed: managed_state,
         ..Collector::default()
     };
     for command in collector.opening_commands() {
@@ -334,6 +378,9 @@ pub async fn collect(
                 .await
                 .map_err(|error| CdpError::Transport(error.to_string()))?;
         }
+    }
+    if let Some(state) = collector.managed.as_ref() {
+        let _ = state.signals.send(ManagedSignal::ConnectionLost);
     }
     Ok(())
 }
@@ -683,10 +730,9 @@ struct Handled {
 }
 
 /// 协议状态机。刻意不碰 IO，于是整套分支都能在没有浏览器的情况下测。
-#[derive(Debug, Default)]
 struct Collector {
-    /// 托管防护独占暂停/放行，采集连接不得抢先恢复尚未装好防护的页面。
-    managed_guard: bool,
+    /// 托管会话的登录/登出检测与登录页交互锁脚本；普通会话为 None。
+    managed: Option<ManagedCollectorState>,
     next_id: i64,
     /// `Target.getTargets` 的请求 id，用来认出那一条回执。
     get_targets_id: i64,
@@ -702,6 +748,17 @@ struct Collector {
     sessions: HashMap<String, String>,
 }
 
+impl Default for Collector {
+    fn default() -> Self {
+        Self {
+            managed: None,
+            next_id: 0,
+            get_targets_id: 0,
+            sessions: HashMap::new(),
+        }
+    }
+}
+
 impl Collector {
     /// 连上之后立刻发的两条命令。
     ///
@@ -713,8 +770,9 @@ impl Collector {
             "Target.setAutoAttach",
             json!({
                 "autoAttach": true,
-                // 普通环境由采集器暂停；托管环境必须等独立防护装好后放行。
-                "waitForDebuggerOnStart": !self.managed_guard,
+                // 所有新 target（含弹窗）都停在第一行脚本之前，安装订阅与固定
+                // 防护脚本后再放行——v0.2.10 起验证的单连接暂停+放行模型。
+                "waitForDebuggerOnStart": true,
                 // flatten 把子 session 复用同一条 WebSocket，靠 sessionId 区分。
                 "flatten": true,
             }),
@@ -733,7 +791,7 @@ impl Collector {
         message.to_string()
     }
 
-    /// 给一个刚附上的 page session 装采集，并放行它。
+    /// 给一个刚附上的 page session 装采集与固定防护，并放行它。
     fn install(&mut self, session_id: &str) -> Vec<String> {
         let mut commands = vec![
             self.command(Some(session_id), "Page.enable", json!({})),
@@ -746,17 +804,27 @@ impl Collector {
             self.command(
                 Some(session_id),
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": COLLECTOR_SCRIPT, "runImmediately": self.managed_guard }),
+                json!({ "source": COLLECTOR_SCRIPT }),
             ),
         ];
-        if !self.managed_guard {
-            // 托管页面只由防护连接放行，采集安装稍晚也不能绕开这道屏障。
+        if let Some(managed) = &self.managed {
+            // 登录页交互锁：与采集脚本一样按文档起始执行；暂停期间注册，
+            // 放行后的首个真实文档（含弹窗内容页）必然被覆盖。
             commands.push(self.command(
                 Some(session_id),
-                "Runtime.runIfWaitingForDebugger",
-                json!({}),
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({
+                    "source": managed.login_guard_script,
+                    "runImmediately": false,
+                }),
             ));
         }
+        // 必须最后发：放行之前所有订阅都得就位，否则首个文档会漏采。
+        commands.push(self.command(
+            Some(session_id),
+            "Runtime.runIfWaitingForDebugger",
+            json!({}),
+        ));
         commands
     }
 
@@ -775,20 +843,18 @@ impl Collector {
     /// * 关闭浏览器时 Chromium 会等这些暂停的进程恢复，于是关不掉，只能被
     ///   [`crate::browser`] 强杀，profile 也就删不干净。
     fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {
-        let mut commands = Vec::new();
-        if !self.managed_guard {
-            commands.push(self.command(
+        vec![
+            self.command(
                 Some(session_id),
                 "Runtime.runIfWaitingForDebugger",
                 json!({}),
-            ));
-        }
-        commands.push(self.command(
-            None,
-            "Target.detachFromTarget",
-            json!({ "sessionId": session_id }),
-        ));
-        commands
+            ),
+            self.command(
+                None,
+                "Target.detachFromTarget",
+                json!({ "sessionId": session_id }),
+            ),
+        ]
     }
 
     /// 处理一条来自浏览器的消息。无法解析或不关心的消息一律安静丢掉。
@@ -851,6 +917,13 @@ impl Collector {
                 }
             }
             _ => {}
+        }
+        if let Some(state) = self.managed.as_mut() {
+            // 同一条事件流喂给托管监控器；返回 true 表示登出/登录页停留超窗，
+            // 已向消费方发出 Expired 信号（每个会话只发一次）。
+            if state.monitor.observe(&message) {
+                let _ = state.signals.send(ManagedSignal::Expired);
+            }
         }
         out
     }
@@ -1035,28 +1108,132 @@ mod tests {
     }
 
     #[test]
-    fn managed_collector_never_resumes_guarded_targets() {
+    fn managed_collector_installs_both_scripts_then_resumes() {
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut collector = Collector {
-            managed_guard: true,
+            managed: Some(ManagedCollectorState {
+                login_guard_script: "(() => {})();".into(),
+                signals,
+                monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
+                    "https://agent.oceanengine.com/",
+                )
+                .unwrap(),
+            }),
             ..Collector::default()
         };
         let opening = collector.opening_commands();
         let auto: Value = serde_json::from_str(&opening[0]).unwrap();
-        assert_eq!(auto["params"]["waitForDebuggerOnStart"], false);
-        for event in [
-            attached("S1", "page", "about:blank"),
-            attached("duplicate", "page", "about:blank"),
-            attached("worker", "service_worker", "https://example.test/sw.js"),
-        ] {
-            let handled = collector.handle(&event);
-            for command in handled.commands {
-                assert_ne!(method_of(&command), "Runtime.runIfWaitingForDebugger");
-                if method_of(&command) == "Page.addScriptToEvaluateOnNewDocument" {
-                    let value: Value = serde_json::from_str(&command).unwrap();
-                    assert_eq!(value["params"]["runImmediately"], true);
-                }
-            }
-        }
+        assert_eq!(auto["params"]["waitForDebuggerOnStart"], true);
+
+        let handled = collector.handle(&attached(
+            "S1",
+            "page",
+            "https://agent.oceanengine.com/workbench",
+        ));
+        let scripts: Vec<String> = handled
+            .commands
+            .iter()
+            .filter(|c| method_of(c) == "Page.addScriptToEvaluateOnNewDocument")
+            .map(|c| {
+                serde_json::from_str::<Value>(c).unwrap()["params"]["source"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(scripts.len(), 2, "collector + login guard scripts");
+        assert_eq!(
+            method_of(handled.commands.last().unwrap()),
+            "Runtime.runIfWaitingForDebugger",
+            "放行必须是最后一条"
+        );
+        assert!(signal_rx.try_recv().is_err());
+
+        // 弹窗同样暂停 + 双脚本 + 放行（独立 targetId，不是已有页面的重复会话）。
+        let popup = collector.handle(&json!({"method": "Target.attachedToTarget", "params": {
+            "sessionId": "S2",
+            "targetInfo": {"targetId": "T2", "type": "page", "url": "about:blank", "attached": true},
+        }}).to_string());
+        assert_eq!(popup.commands.len(), 6);
+
+        // 非 page target：先放行再断开。
+        let worker = collector.handle(&attached("S3", "service_worker", "https://x.test/sw.js"));
+        let methods: Vec<String> = worker.commands.iter().map(|c| method_of(c)).collect();
+        assert_eq!(
+            methods,
+            vec!["Runtime.runIfWaitingForDebugger", "Target.detachFromTarget"]
+        );
+    }
+
+    #[test]
+    fn managed_collector_reports_logout_immediately() {
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut collector = Collector {
+            managed: Some(ManagedCollectorState {
+                login_guard_script: "(() => {})();".into(),
+                signals,
+                monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
+                    "https://agent.oceanengine.com/",
+                )
+                .unwrap(),
+            }),
+            ..Collector::default()
+        };
+        collector.opening_commands();
+        collector.handle(&attached(
+            "S1",
+            "page",
+            "https://agent.oceanengine.com/workbench",
+        ));
+
+        // 明确登出：立即产生 Expired 信号，且监控器每个会话只报一次。
+        collector.handle(&json!({"method": "Page.frameNavigated", "sessionId": "S1",
+                "params": {"frame": {"id": "main", "url": "https://sso.oceanengine.com/account/page/service/sso_logout"}}}).to_string());
+        assert!(matches!(
+            signal_rx.try_recv().unwrap(),
+            ManagedSignal::Expired
+        ));
+        assert!(signal_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn managed_collector_reports_login_settle_expiry() {
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut collector = Collector {
+            managed: Some(ManagedCollectorState {
+                login_guard_script: "(() => {})();".into(),
+                signals,
+                monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
+                    "https://agent.oceanengine.com/",
+                )
+                .unwrap(),
+            }),
+            ..Collector::default()
+        };
+        collector.opening_commands();
+        collector.handle(&attached(
+            "S1",
+            "page",
+            "https://agent.oceanengine.com/workbench",
+        ));
+
+        // 登录页停留：观察窗内不报；到期后产生 Expired 信号。
+        collector.handle(
+            &json!({"method": "Page.frameNavigated", "sessionId": "S1",
+                "params": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/login"}}})
+            .to_string(),
+        );
+        assert!(signal_rx.try_recv().is_err(), "观察窗内不报");
+        std::thread::sleep(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(50));
+        collector.handle(
+            &json!({"method": "Page.frameNavigated", "sessionId": "S1",
+                "params": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/login"}}})
+            .to_string(),
+        );
+        assert!(matches!(
+            signal_rx.try_recv().unwrap(),
+            ManagedSignal::Expired
+        ));
     }
 
     /// 放行必须是最后一条：`runIfWaitingForDebugger` 之前 addBinding 和注入脚本

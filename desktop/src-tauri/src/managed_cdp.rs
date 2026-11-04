@@ -7,7 +7,6 @@
 //! on every managed page through a separate, fail-closed connection.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -25,7 +24,11 @@ use url::Url;
 use crate::browser::DevToolsEndpoint;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+/// 浏览器进程级 CDP 命令（Target.* 系列）的回执期限，衡量的是 DevTools 通道与
+/// 浏览器主进程是否存活；超时即按本地故障关闭。页面级命令（Page.*）不设期限：
+/// 它们等的是渲染进程就绪，巨量系页面冷启动可能任意慢，而挂起中的页面
+/// （waitForDebuggerOnStart）本就冻结不可交互，继续等待不构成防护缺口。
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const SET_COOKIES_COMMAND_ID: i64 = 1;
 const NAVIGATE_COMMAND_ID: i64 = 2;
@@ -763,8 +766,7 @@ impl LogoutPolicy {
 }
 
 /// 主 frame 落到登录页后等待自动跳转；固定脚本在整个等待窗口内锁住登录交互。
-const LOGIN_SETTLE: Duration = Duration::from_secs(4);
-const WATCH_HEARTBEAT: Duration = Duration::from_secs(5);
+pub(crate) const LOGIN_SETTLE: Duration = Duration::from_secs(4);
 
 struct LogoutDetector {
     policy: LogoutPolicy,
@@ -906,22 +908,47 @@ impl LogoutDetector {
     }
 }
 
-#[path = "managed_cdp/watch.rs"]
-mod watch;
-#[cfg(test)]
-use watch::prepare_logout_watch_with_policy;
-pub(crate) use watch::{prepare_logout_watch, LogoutWatch};
+/// 托管会话监控器：把 [`LogoutDetector`] 封装成可供采集连接（唯一 CDP 客户端）
+/// 直接喂事件的形态。事件来源是采集连接自己的 Page/Target 事件流——v0.2.10 正是
+/// 这种单连接模型，弹窗行为已被线上验证；独立的第二条防护连接会破坏
+/// `window.open` 弹窗导航，已废弃。
+pub(crate) struct ManagedSessionMonitor {
+    detector: LogoutDetector,
+    notified: bool,
+}
+
+impl ManagedSessionMonitor {
+    pub(crate) fn for_session(target_url: &str) -> Option<Self> {
+        LogoutPolicy::for_platform(target_url).map(|policy| Self {
+            detector: LogoutDetector::new(policy),
+            notified: false,
+        })
+    }
+
+    /// 喂一条采集连接事件；返回 true 表示平台登出或登录页停留超窗，
+    /// 按凭据过期流程处理（每个会话只报一次）。
+    pub(crate) fn observe(&mut self, event: &Value) -> bool {
+        self.detector.observe(event);
+        if !self.notified
+            && (self.detector.detected
+                || self.detector.login_expired_at(tokio::time::Instant::now()))
+        {
+            self.notified = true;
+            return true;
+        }
+        false
+    }
+}
+
+/// 平台入口的登录页交互锁脚本；仅供托管采集注入使用。
+pub(crate) fn logout_guard_script(target_url: &str) -> Option<String> {
+    LogoutPolicy::for_platform(target_url).map(|policy| policy.login_guard_script())
+}
 
 type ManagedSocket = WebSocketStream<TcpStream>;
 
 /// 命令自增 ID：登出监听会随标签页开合动态发送 Page.enable/getFrameTree，
 /// 不再使用固定序号。
-static NEXT_COMMAND_ID: AtomicI64 = AtomicI64::new(100);
-
-fn next_command_id() -> i64 {
-    NEXT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)
-}
-
 /// Cookie 注入仍要求“恰好一个页面目标”：多页面或陌生域名页面的环境直接拒绝
 /// 注入，防止把会话 Cookie 装进不受信页面。登出监听不受此限制——它只观察。
 fn select_single_target(
@@ -1353,158 +1380,6 @@ mod tests {
                 Err(ManagedCdpError::SessionIdentityInvalid)
             );
         }
-    }
-
-    #[tokio::test]
-    async fn setup_retains_logout_events_before_command_replies() {
-        use tokio::net::TcpListener;
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = DevToolsEndpoint {
-            port: listener.local_addr().unwrap().port(),
-            browser_path: "/devtools/browser/setup-test".into(),
-        };
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-            for method in [
-                "Target.setDiscoverTargets",
-                "Target.setAutoAttach",
-                "Target.getTargets",
-                "Target.attachToTarget",
-                "Page.enable",
-                "Page.addScriptToEvaluateOnNewDocument",
-                "Page.getFrameTree",
-                "Runtime.runIfWaitingForDebugger",
-            ] {
-                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
-                    panic!("expected command");
-                };
-                let command: Value = serde_json::from_str(&text).unwrap();
-                assert_eq!(command["method"], method);
-                let result = match method {
-                    "Target.getTargets" => {
-                        json!({"targetInfos": [{"targetId": "page", "type": "page", "url": "about:blank"}]})
-                    }
-                    "Target.attachToTarget" => json!({"sessionId": "attached"}),
-                    "Page.addScriptToEvaluateOnNewDocument" => json!({"identifier": "fixed-guard"}),
-                    "Page.getFrameTree" => {
-                        json!({"frameTree": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/"}}})
-                    }
-                    _ => json!({}),
-                };
-                if method == "Page.enable" {
-                    // 在回执之前就推登出事件：监听必须保留并识别它。
-                    ws.send(Message::Text(json!({"method": "Page.frameNavigated", "sessionId": "attached",
-                        "params": {"frame": {"id": "main", "url": "https://sso.oceanengine.com/account/page/service/sso_logout"}}
-                    }).to_string().into())).await.unwrap();
-                }
-                ws.send(Message::Text(
-                    json!({"id": command["id"], "result": result})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .unwrap();
-            }
-        });
-        let session = validate_session(serde_json::from_value(session_json()).unwrap()).unwrap();
-        let watch = prepare_logout_watch(&endpoint, &session)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(watch.wait().await.unwrap());
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn duplicated_tab_logout_triggers_the_watch() {
-        use tokio::net::TcpListener;
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = DevToolsEndpoint {
-            port: listener.local_addr().unwrap().port(),
-            browser_path: "/devtools/browser/duplicate-test".into(),
-        };
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-            for method in [
-                "Target.setDiscoverTargets",
-                "Target.setAutoAttach",
-                "Target.getTargets",
-                "Target.attachToTarget",
-                "Page.enable",
-                "Page.addScriptToEvaluateOnNewDocument",
-                "Page.getFrameTree",
-                "Runtime.runIfWaitingForDebugger",
-            ] {
-                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
-                    panic!("expected command");
-                };
-                let command: Value = serde_json::from_str(&text).unwrap();
-                assert_eq!(command["method"], method);
-                let result = match method {
-                    "Target.getTargets" => {
-                        json!({"targetInfos": [{"targetId": "page", "type": "page", "url": "about:blank"}]})
-                    }
-                    "Target.attachToTarget" => json!({"sessionId": "first"}),
-                    "Page.addScriptToEvaluateOnNewDocument" => json!({"identifier": "fixed-guard"}),
-                    "Page.getFrameTree" => {
-                        json!({"frameTree": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/workbench"}}})
-                    }
-                    _ => json!({}),
-                };
-                ws.send(Message::Text(
-                    json!({"id": command["id"], "result": result})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .unwrap();
-            }
-            // 用户复制标签页：auto-attach 送来第二个页面会话。
-            ws.send(Message::Text(json!({
-                "method": "Target.attachedToTarget",
-                "params": {"sessionId": "dup", "targetInfo": {"type": "page", "targetId": "dup-page"}}
-            }).to_string().into())).await.unwrap();
-            // 复制页登出：必须同样命中。
-            for method in [
-                "Page.enable",
-                "Page.addScriptToEvaluateOnNewDocument",
-                "Page.getFrameTree",
-                "Runtime.runIfWaitingForDebugger",
-            ] {
-                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
-                    panic!("expected {method}");
-                };
-                let command: Value = serde_json::from_str(&text).unwrap();
-                assert_eq!(command["method"], method);
-                assert_eq!(command["sessionId"], "dup");
-                let result = if method == "Page.getFrameTree" {
-                    json!({"frameTree": {"frame": {"id": "dup-main", "url": "https://agent.oceanengine.com/workbench"}}})
-                } else if method == "Page.addScriptToEvaluateOnNewDocument" {
-                    json!({"identifier": "dup-guard"})
-                } else {
-                    json!({})
-                };
-                ws.send(Message::Text(
-                    json!({"id": command["id"], "result": result})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .unwrap();
-            }
-            ws.send(Message::Text(json!({"method": "Page.frameNavigated", "sessionId": "dup",
-                "params": {"frame": {"id": "dup-main", "url": "https://sso.oceanengine.com/account/page/service/sso_logout"}}
-            }).to_string().into())).await.unwrap();
-        });
-        let session = validate_session(serde_json::from_value(session_json()).unwrap()).unwrap();
-        let watch = prepare_logout_watch(&endpoint, &session)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(watch.wait().await.unwrap());
-        server.await.unwrap();
     }
 }
 

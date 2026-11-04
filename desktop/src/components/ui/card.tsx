@@ -8,8 +8,8 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-xl border border-border bg-card text-card-foreground shadow-md backdrop-blur-md transition-all duration-200",
-      glow && "border-primary/30 shadow-primary/10 shadow-xl",
+      "rounded-[12px] border border-border/70 bg-card text-card-foreground shadow-none transition-all duration-200",
+      glow && "border-primary/30 shadow-soft",
       className
     )}
     {...props}
@@ -23,7 +23,7 @@ const CardHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex flex-col space-y-1.5 p-5 pb-4", className)}
+    className={cn("flex flex-col space-y-1 p-4 pb-3", className)}
     {...props}
   />
 ));
@@ -36,7 +36,7 @@ const CardTitle = React.forwardRef<
   <h3
     ref={ref}
     className={cn(
-      "text-base font-semibold leading-none tracking-tight text-foreground flex items-center gap-2",
+      "flex items-center gap-2 text-[13px] font-semibold leading-tight tracking-[-0.01em] text-foreground",
       className
     )}
     {...props}
@@ -50,7 +50,7 @@ const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-xs text-muted-foreground leading-relaxed", className)}
+    className={cn("text-[11px] leading-relaxed text-muted-foreground", className)}
     {...props}
   />
 ));
@@ -60,7 +60,7 @@ const CardContent = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("p-5 pt-0", className)} {...props} />
+  <div ref={ref} className={cn("p-4 pt-0", className)} {...props} />
 ));
 CardContent.displayName = "CardContent";
 
@@ -70,7 +70,7 @@ const CardFooter = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex items-center p-5 pt-0 border-t border-border mt-4", className)}
+    className={cn("mt-3 flex items-center border-t border-border/70 p-4 pt-0", className)}
     {...props}
   />
 ));

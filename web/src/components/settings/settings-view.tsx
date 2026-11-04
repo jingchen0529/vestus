@@ -80,7 +80,7 @@ function LogoUploader({ label, value, onChange, disabled }: LogoUploaderProps) {
             "relative group flex flex-col items-center justify-center w-28 h-28 rounded-2xl border-2 border-dashed transition-all overflow-hidden shrink-0 shadow-sm select-none",
             disabled || isUploading
               ? "opacity-60 cursor-not-allowed border-muted-foreground/30 bg-muted/20"
-              : "cursor-pointer border-primary/40 hover:border-primary bg-slate-50/80 dark:bg-slate-900/40 hover:bg-primary/5"
+              : "cursor-pointer border-primary/40 hover:border-primary bg-muted/50 hover:bg-primary/5"
           )}
         >
           <input
@@ -103,7 +103,7 @@ function LogoUploader({ label, value, onChange, disabled }: LogoUploaderProps) {
               </div>
             </>
           ) : (
-            <div className="flex flex-col items-center justify-center text-slate-400 group-hover:text-primary transition-colors gap-1">
+            <div className="flex flex-col items-center justify-center text-muted-foreground/70 group-hover:text-primary transition-colors gap-1">
               <Plus className="w-7 h-7 stroke-[1.75]" />
               <span className="text-[10px] font-medium">点击上传</span>
             </div>
@@ -336,7 +336,7 @@ export function SettingsView() {
                   <Palette className="h-3.5 w-3.5 text-primary" />
                   管理端主题主色调
                 </Label>
-                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-3 w-full">
+                <div className="grid w-full grid-cols-4 gap-2.5 sm:grid-cols-8">
                   {(Object.keys(ACCENT_COLOR_PRESETS) as AccentColor[]).map((key) => {
                     const preset = ACCENT_COLOR_PRESETS[key];
                     const isSelected = accentColor === key;
@@ -346,10 +346,10 @@ export function SettingsView() {
                         type="button"
                         onClick={() => setAccentColor(key)}
                         className={cn(
-                          "flex flex-col items-center gap-1.5 p-3 rounded-xl border transition-all text-center",
+                          "flex flex-col items-center gap-1.5 rounded-[10px] border px-1.5 py-2.5 text-center transition-all",
                           isSelected
-                            ? "border-primary bg-primary/10 shadow-xs ring-2 ring-primary/30 font-semibold"
-                            : "border-border hover:border-border/80 hover:bg-muted/40"
+                            ? "border-primary bg-primary/[0.07] font-semibold"
+                            : "border-border/70 hover:border-border hover:bg-muted/40"
                         )}
                       >
                         <div
@@ -382,7 +382,7 @@ export function SettingsView() {
                         : "border-border hover:border-border/80 hover:bg-muted/40 text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <Sun className="h-4 w-4 text-amber-500 shrink-0" />
+                    <Sun className="h-4 w-4 text-warning shrink-0" />
                     <span>明亮模式</span>
                     {theme === "light" && <Check className="w-3.5 h-3.5 ml-auto text-primary stroke-[3]" />}
                   </button>
@@ -396,7 +396,7 @@ export function SettingsView() {
                         : "border-border hover:border-border/80 hover:bg-muted/40 text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <Moon className="h-4 w-4 text-sky-400 shrink-0" />
+                    <Moon className="h-4 w-4 text-info shrink-0" />
                     <span>暗黑模式</span>
                     {theme === "dark" && <Check className="w-3.5 h-3.5 ml-auto text-primary stroke-[3]" />}
                   </button>
@@ -410,7 +410,7 @@ export function SettingsView() {
                         : "border-border hover:border-border/80 hover:bg-muted/40 text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <Laptop className="h-4 w-4 text-slate-400 shrink-0" />
+                    <Laptop className="h-4 w-4 text-muted-foreground/70 shrink-0" />
                     <span>跟随系统</span>
                     {theme === "system" && <Check className="w-3.5 h-3.5 ml-auto text-primary stroke-[3]" />}
                   </button>

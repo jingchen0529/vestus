@@ -400,7 +400,7 @@ export function ActivityView({
               disabled={isExportingCsv || isRefreshing || isDailyLoading}
             >
               <FileSpreadsheet
-                className={`h-3.5 w-3.5 text-emerald-600 ${isExportingCsv ? "animate-spin" : ""}`}
+                className={`h-3.5 w-3.5 text-success ${isExportingCsv ? "animate-spin" : ""}`}
               />
               <span>{isExportingCsv ? "正在导出..." : "导出 CSV"}</span>
             </Button>
@@ -412,7 +412,7 @@ export function ActivityView({
               disabled={isExportingJson || isRefreshing || isDailyLoading}
             >
               <FileJson
-                className={`h-3.5 w-3.5 text-blue-600 ${isExportingJson ? "animate-spin" : ""}`}
+                className={`h-3.5 w-3.5 text-primary ${isExportingJson ? "animate-spin" : ""}`}
               />
               <span>{isExportingJson ? "正在导出..." : "导出 JSON"}</span>
             </Button>
@@ -428,7 +428,7 @@ export function ActivityView({
                     className="whitespace-nowrap shrink-0"
                   >
                     <Download
-                      className={`h-3.5 w-3.5 text-indigo-600 shrink-0 ${
+                      className={`h-3.5 w-3.5 text-primary shrink-0 ${
                         isExportingAdvids ? "animate-spin" : ""
                       }`}
                     />
@@ -446,14 +446,14 @@ export function ActivityView({
                     onClick={() => handleExportAdvids(false)}
                     className="cursor-pointer whitespace-nowrap flex items-center py-2 px-3"
                   >
-                    <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 mr-2 shrink-0" />
+                    <FileSpreadsheet className="h-3.5 w-3.5 text-success mr-2 shrink-0" />
                     <span className="whitespace-nowrap">导出去重 ID 汇总表 (CSV)</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => handleExportAdvids(true)}
                     className="cursor-pointer whitespace-nowrap flex items-center py-2 px-3"
                   >
-                    <Download className="h-3.5 w-3.5 text-indigo-600 mr-2 shrink-0" />
+                    <Download className="h-3.5 w-3.5 text-primary mr-2 shrink-0" />
                     <span className="whitespace-nowrap">仅导出纯 ID 列表 (CSV)</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>

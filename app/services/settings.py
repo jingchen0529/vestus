@@ -20,7 +20,7 @@ from app.services.serializers import safe_image_reference
 from app.services.uploads import validated_image_reference
 
 DEFAULT_ADMIN_TITLE = "Vestus Admin"
-DEFAULT_ADMIN_THEME_COLOR = "blue"
+DEFAULT_ADMIN_THEME_COLOR = "teal"
 #: Deliberately empty.  The server has no way to know which desktop build is
 #: current -- the number lives in ``desktop/src-tauri/tauri.conf.json`` and is
 #: stamped from the release tag -- so a default here could only be a guess that

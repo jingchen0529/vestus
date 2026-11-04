@@ -25,10 +25,7 @@ import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { useTheme } from "@/hooks/useTheme";
 import { ACCENT_COLOR_PRESETS, AccentColor } from "@/theme/accentColors";
 import { cn } from "@/lib/utils";
-import {
-  getDirectConnectionStatus,
-  getProxyIpDisplay,
-} from "@/components/settings/proxyIpDisplay";
+import { getDirectConnectionStatus, getProxyIpDisplay } from "@/components/settings/proxyIpDisplay";
 import { UserAccount } from "@/services/authService";
 import { tauriBridge, DesktopConfigView, StatusView } from "@/services/tauriBridge";
 import {
@@ -138,11 +135,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
     }
   }, [proxyEnabled]);
 
-  const proxyIpDisplay = getProxyIpDisplay(
-    desktopConfig,
-    configLoading,
-    status.phase,
-  );
+  const proxyIpDisplay = getProxyIpDisplay(desktopConfig, configLoading, status.phase);
 
   const getPhaseBadge = (phase: string) => {
     switch (phase) {
@@ -203,12 +196,12 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
 
   return (
     <section className="mx-auto w-full max-w-3xl space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground">系统配置</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          查看代理环境连接状态、外观偏好设置与软件信息。
+      <header>
+        <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-foreground">系统配置</h2>
+        <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+          代理环境状态、本机偏好与软件信息
         </p>
-      </div>
+      </header>
 
       {/* 1. 代理与网络状态 */}
       <Card>
@@ -241,18 +234,14 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
               </Button>
             </div>
           </div>
-          <CardDescription className="text-xs">
-            桌面客户端网络隔离与代理调度状态
-          </CardDescription>
+          <CardDescription className="text-xs">桌面客户端网络隔离与代理调度状态</CardDescription>
         </CardHeader>
         <CardContent className="pt-0">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
             <div
               className={cn(
                 "p-2.5 rounded-lg border flex flex-col justify-between transition-colors",
-                proxyEnabled
-                  ? "border-primary/30 bg-primary/5"
-                  : "border-border/60 bg-muted/40"
+                proxyEnabled ? "border-primary/30 bg-primary/5" : "border-border/60 bg-muted/40",
               )}
             >
               <span className="text-muted-foreground text-[11px]">网络模式</span>
@@ -285,8 +274,8 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
                 {proxyEnabled
                   ? proxyIpDisplay
                   : directIpLoading
-                  ? "正在获取…"
-                  : directIp || "正在检测…"}
+                    ? "正在获取…"
+                    : directIp || "正在检测…"}
               </span>
             </div>
             <div className="p-2.5 rounded-lg bg-muted/40 border border-border/60 flex flex-col justify-between">
@@ -299,13 +288,13 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
                       ? directIpFailed
                         ? "bg-destructive"
                         : directIpLoading || !directIp
-                        ? "bg-amber-500 animate-ping"
-                        : "bg-emerald-500"
+                          ? " animate-ping"
+                          : ""
                       : status.phase === "ready" || status.phase === "browser_running"
-                      ? "bg-emerald-500"
-                      : status.phase === "testing"
-                      ? "bg-amber-500 animate-ping"
-                      : "bg-destructive"
+                        ? ""
+                        : status.phase === "testing"
+                          ? " animate-ping"
+                          : "bg-destructive",
                   )}
                 />
                 <span className="font-medium text-foreground text-xs truncate">
@@ -346,12 +335,12 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
               "p-3 rounded-lg border text-xs leading-relaxed",
               sandboxEnabled
                 ? "border-border/60 bg-muted/40 text-muted-foreground"
-                : "border-amber-500/30 bg-amber-500/10 text-foreground"
+                : " text-foreground",
             )}
           >
             {sandboxEnabled ? (
               <div className="flex items-start gap-2">
-                <ShieldCheck className="w-3.5 h-3.5 mt-0.5 text-emerald-500 shrink-0" />
+                <ShieldCheck className="w-3.5 h-3.5 mt-0.5 shrink-0" />
                 <span>
                   沙箱已开启（推荐）。浏览器以完整的安全隔离运行。若在本机始终打不开平台、
                   一直白屏，可尝试关闭沙箱。
@@ -359,7 +348,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
               </div>
             ) : (
               <div className="flex items-start gap-2">
-                <ShieldAlert className="w-3.5 h-3.5 mt-0.5 text-amber-500 shrink-0" />
+                <ShieldAlert className="w-3.5 h-3.5 mt-0.5 shrink-0" />
                 <span>
                   沙箱已关闭（<span className="font-mono">--no-sandbox</span>）。仅建议在浏览器无法
                   打开时使用，这会削弱浏览器的进程隔离。
@@ -453,7 +442,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
               <Palette className="h-3.5 w-3.5 text-primary" />
               <span>选择主题主色：</span>
             </div>
-            <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+            <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-7">
               {(Object.keys(ACCENT_COLOR_PRESETS) as AccentColor[]).map((key) => {
                 const preset = ACCENT_COLOR_PRESETS[key];
                 const selected = accentColor === key;
@@ -465,10 +454,10 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
                     aria-pressed={selected}
                     onClick={() => setAccentColor(key)}
                     className={cn(
-                      "flex min-w-0 flex-col items-center gap-1.5 rounded-lg border px-1.5 py-2.5 text-[11px] transition-all",
+                      "flex min-w-0 flex-col items-center gap-1.5 rounded-[9px] border px-1.5 py-2 text-[10.5px] transition-all",
                       selected
-                        ? "border-primary bg-primary/10 text-foreground ring-2 ring-primary/20 font-semibold"
-                        : "border-border/70 bg-card/60 text-muted-foreground hover:border-primary/50 hover:text-foreground",
+                        ? "border-primary bg-primary/[0.07] font-semibold text-foreground"
+                        : "border-border/70 bg-card text-muted-foreground hover:border-border hover:text-foreground",
                     )}
                   >
                     <span
@@ -545,12 +534,16 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
                       v{versionInfo.latestVersion}
                     </span>
                     {versionInfo.hasUpdate ? (
-                      <Badge variant="success" pulse className="text-[10px] px-1.5 py-0 font-semibold gap-1">
+                      <Badge
+                        variant="success"
+                        pulse
+                        className="text-[10px] px-1.5 py-0 font-semibold gap-1"
+                      >
                         <Sparkles className="w-3 h-3" />
                         <span>可升级</span>
                       </Badge>
                     ) : (
-                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-emerald-600 border-emerald-500/30">
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 ">
                         最新
                       </Badge>
                     )}
@@ -577,9 +570,9 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
 
           {/* 新版本提醒 Banner */}
           {versionInfo?.hasUpdate && (
-            <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="p-3 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
               <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                <Sparkles className="w-4 h-4 shrink-0" />
                 <div>
                   <p className="font-semibold text-foreground">
                     发现新版本 v{versionInfo.latestVersion} 可用！
@@ -592,7 +585,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
               <button
                 type="button"
                 onClick={() => tauriBridge.openExternalUrl(versionInfo.htmlUrl)}
-                className="inline-flex items-center justify-center gap-1.5 h-7 px-3 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 active:scale-[0.98] transition-colors shrink-0 shadow-xs cursor-pointer text-xs"
+                className="inline-flex items-center justify-center gap-1.5 h-7 px-3 rounded-md text-white font-medium active:scale-[0.98] transition-colors shrink-0 shadow-xs cursor-pointer text-xs"
               >
                 <span>前往 GitHub 下载</span>
                 <ExternalLink className="w-3 h-3" />
@@ -604,7 +597,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
           {!checkingVersion && versionInfo && !versionInfo.hasUpdate && (
             <div className="p-2.5 rounded-lg border border-border/60 bg-muted/30 flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 text-muted-foreground">
-                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                <CheckCircle2 className="w-4 h-4 " />
                 <span>
                   {currentVersion
                     ? `当前客户端已是 GitHub 发布的最新版本 (v${currentVersion})。`

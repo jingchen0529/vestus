@@ -579,11 +579,11 @@ export function App() {
   // If initial auth check is ongoing
   if (authLoading) {
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-950 text-slate-100">
+      <div className="flex h-screen w-full flex-col items-center justify-center bg-foreground text-background">
         <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary shadow-lg shadow-primary/30 animate-pulse mb-4">
           <Layers className="h-7 w-7 text-white" />
         </div>
-        <div className="flex items-center gap-2 text-sm text-slate-400">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground/70">
           <Loader2 className="h-4 w-4 animate-spin text-primary" />
           <span>正在验证安全管理凭证...</span>
         </div>

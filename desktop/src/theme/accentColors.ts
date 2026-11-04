@@ -1,4 +1,5 @@
 export type AccentColor =
+  | "teal"
   | "blue"
   | "indigo"
   | "purple"
@@ -19,6 +20,16 @@ export interface AccentColorPreset {
 }
 
 export const ACCENT_COLOR_PRESETS: Record<AccentColor, AccentColorPreset> = {
+  teal: {
+    label: "深青",
+    colorHex: "#16705c",
+    primaryLight: "168 68% 26%",
+    primaryDark: "168 55% 48%",
+    foregroundLight: "0 0% 100%",
+    foregroundDark: "220 18% 8%",
+    ringLight: "168 68% 26%",
+    ringDark: "168 55% 48%",
+  },
   blue: {
     label: "经典蓝",
     colorHex: "#3b82f6",
@@ -99,7 +110,7 @@ export function resolveAccentColor(
     typeof value === "string" &&
     Object.prototype.hasOwnProperty.call(ACCENT_COLOR_PRESETS, value)
       ? (value as AccentColor)
-      : "blue";
+      : "teal";
   const preset = ACCENT_COLOR_PRESETS[accentColor];
 
   return {

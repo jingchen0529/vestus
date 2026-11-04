@@ -68,22 +68,22 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           <div
             key={t.id}
             className={cn(
-              "pointer-events-auto flex items-start gap-3 p-3.5 rounded-xl border shadow-xl backdrop-blur-md transition-all duration-200 animate-in slide-in-from-bottom-5 fade-in-0 bg-card/95 text-foreground",
-              t.type === "success" && "border-emerald-500/40 bg-emerald-50/80 dark:bg-card/95",
-              t.type === "error" && "border-rose-500/40 bg-rose-50/80 dark:bg-card/95",
-              t.type === "warning" && "border-amber-500/40 bg-amber-50/80 dark:bg-card/95",
-              t.type === "info" && "border-blue-500/40 bg-blue-50/80 dark:bg-card/95"
+              "pointer-events-auto flex items-start gap-2.5 rounded-[11px] border bg-card/98 p-3 shadow-lift backdrop-blur-md transition-all duration-200 animate-in slide-in-from-bottom-5 fade-in-0 text-foreground",
+              t.type === "success" && "border-success/30",
+              t.type === "error" && "border-destructive/30",
+              t.type === "warning" && "border-warning/30",
+              t.type === "info" && "border-border/70"
             )}
           >
             <div className="mt-0.5 shrink-0">
-              {t.type === "success" && <CheckCircle2 className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />}
-              {t.type === "error" && <AlertCircle className="w-5 h-5 text-rose-500 dark:text-rose-400" />}
-              {t.type === "warning" && <AlertTriangle className="w-5 h-5 text-amber-500 dark:text-amber-400" />}
-              {t.type === "info" && <Info className="w-5 h-5 text-blue-500 dark:text-blue-400" />}
+              {t.type === "success" && <CheckCircle2 className="h-4 w-4 text-success" />}
+              {t.type === "error" && <AlertCircle className="h-4 w-4 text-destructive" />}
+              {t.type === "warning" && <AlertTriangle className="h-4 w-4 text-warning" />}
+              {t.type === "info" && <Info className="h-4 w-4 text-info" />}
             </div>
             <div className="flex-1 min-w-0">
-              <h4 className="text-xs font-semibold leading-tight text-foreground">{t.title}</h4>
-              {t.message && <p className="text-xs text-muted-foreground mt-1 leading-snug break-words">{t.message}</p>}
+              <h4 className="text-[12px] font-medium leading-tight text-foreground">{t.title}</h4>
+              {t.message && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted-foreground">{t.message}</p>}
             </div>
             <button
               onClick={() => removeToast(t.id)}

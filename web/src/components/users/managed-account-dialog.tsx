@@ -3,8 +3,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
@@ -656,7 +654,7 @@ export function ManagedAccountDialog({
         }}
       >
         <DialogContent
-          className="sm:max-w-4xl lg:max-w-5xl w-[92vw] h-[72vh] min-h-[520px] max-h-[85vh] flex flex-col overflow-hidden p-6"
+          className="flex w-[92vw] max-h-[85vh] min-h-[380px] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl lg:max-w-5xl"
           onEscapeKeyDown={(event) => {
             if (formOpen) event.preventDefault();
           }}
@@ -664,29 +662,31 @@ export function ManagedAccountDialog({
             if (formOpen) event.preventDefault();
           }}
         >
-          <DialogHeader className="shrink-0 pr-8">
-            <div className="flex items-center gap-2 text-primary">
-              <KeyRound className="h-5 w-5" />
-              <DialogTitle>绑定托管账号</DialogTitle>
+          <div className="shrink-0 border-b border-border/60 px-6 pb-4 pr-14 pt-5">
+            <div className="flex items-center gap-2.5">
+              <DialogTitle className="text-[17px] font-semibold leading-tight tracking-[-0.01em]">
+                绑定托管账号
+              </DialogTitle>
               {!accountLoading && (
                 <Badge
                   variant="secondary"
-                  className="text-[11px] px-2 py-0 font-normal"
+                  className="px-2 py-0 text-[11px] font-normal"
                 >
                   已绑定 {bindings.length}
                 </Badge>
               )}
             </div>
-            <DialogDescription className="text-xs">
+            <DialogDescription className="mt-1.5 text-xs leading-relaxed">
               {user
                 ? `为 ${user.name || user.username} 管理方舟托管登录账号。`
                 : "管理方舟托管登录账号。"}
-              同一用户可绑定多个托管账号并在桌面端独立打开；凭据仅对超级管理员可见，不会展示给桌面用户。
+              同一用户可绑定多个账号并在桌面端独立打开；凭据仅超管可见。
             </DialogDescription>
-          </DialogHeader>
+          </div>
 
+          <div className="min-h-0 flex-1 px-6 py-5">
           {accountLoading ? (
-            <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               正在读取绑定列表...
             </div>
@@ -768,8 +768,12 @@ export function ManagedAccountDialog({
               </div>
             </div>
           )}
+          </div>
 
-          <DialogFooter className="shrink-0 mt-0 pt-1">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/60 bg-muted/30 px-6 py-3">
+            <span className="text-[11px] text-muted-foreground">
+              凭据仅对超级管理员可见，不会下发到桌面端
+            </span>
             <Button
               type="button"
               variant="outline"
@@ -778,7 +782,7 @@ export function ManagedAccountDialog({
             >
               关闭
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -791,23 +795,20 @@ export function ManagedAccountDialog({
       >
         <DialogContent
           overlayClassName="z-[60] bg-black/45"
-          className="z-[60] sm:max-w-2xl w-[92vw] max-h-[88vh] flex flex-col overflow-hidden p-6"
+          className="z-[60] flex w-[92vw] max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
         >
-          <DialogHeader className="shrink-0 pr-8">
-            <div className="flex items-center gap-2 text-primary">
-              <KeyRound className="h-5 w-5" />
-              <DialogTitle>
-                {formMode === "edit"
-                  ? `编辑托管账号：${editingBinding?.name || ""}`
-                  : "新增托管账号"}
-              </DialogTitle>
-            </div>
-            <DialogDescription className="text-xs">
+          <div className="shrink-0 border-b border-border/60 px-6 pb-4 pr-14 pt-5">
+            <DialogTitle className="text-[17px] font-semibold leading-tight tracking-[-0.01em]">
               {formMode === "edit"
-                ? "修改该托管账号的显示别名或更新登录凭据；关闭当前窗口将返回已绑定账号列表。"
+                ? `编辑托管账号：${editingBinding?.name || ""}`
+                : "新增托管账号"}
+            </DialogTitle>
+            <DialogDescription className="mt-1.5 text-xs leading-relaxed">
+              {formMode === "edit"
+                ? "修改显示别名或更新登录凭据；关闭当前窗口将返回已绑定账号列表。"
                 : `为 ${user?.name || user?.username || "当前用户"} 录入方舟托管凭据并自动完成绑定。`}
             </DialogDescription>
-          </DialogHeader>
+          </div>
 
           {detailLoading ? (
             <div className="flex min-h-56 items-center justify-center text-sm text-muted-foreground">
@@ -819,7 +820,7 @@ export function ManagedAccountDialog({
               className="flex-1 min-h-0 flex flex-col gap-4"
               onSubmit={submitForm}
             >
-              <div className="flex-1 min-h-0 overflow-y-auto px-1.5 -mx-1.5 py-1 space-y-4">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="user-managed-name">账号名称（别名）</Label>
@@ -948,7 +949,11 @@ export function ManagedAccountDialog({
                 )}
               </div>
 
-              <DialogFooter className="shrink-0 mt-0 pt-2 border-t border-border/60">
+              <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/60 bg-muted/30 px-6 py-3.5">
+                <span className="text-[11px] text-muted-foreground">
+                  保存后桌面端会同步使用新凭据
+                </span>
+                <div className="flex items-center gap-2">
                 <Button
                   type="button"
                   variant="outline"
@@ -966,7 +971,8 @@ export function ManagedAccountDialog({
                 >
                   {formMode === "edit" ? "保存修改" : "创建并绑定"}
                 </Button>
-              </DialogFooter>
+                </div>
+              </div>
             </form>
           )}
         </DialogContent>

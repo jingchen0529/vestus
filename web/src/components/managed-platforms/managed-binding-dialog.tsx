@@ -30,7 +30,7 @@ import {
 } from "@/types/managed-platform";
 import { buildManagedAccountPayload } from "@/components/users/managed-account-dialog";
 import { bindableAccounts, BindingSource, submitNewBinding } from "./managed-binding-form";
-import { ClipboardPaste, KeyRound, Link2, Loader2, Trash2 } from "lucide-react";
+import { ClipboardPaste, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface ManagedBindingDialogProps {
@@ -307,15 +307,12 @@ export function ManagedBindingDialog({
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!submittingRef.current) onOpenChange(next); }}>
       <DialogContent className="sm:max-w-xl w-[92vw] max-h-[88vh] flex flex-col overflow-hidden p-6">
-        <DialogHeader className="shrink-0 pr-8">
-          <div className="flex items-center gap-2 text-primary">
-            {isEditing ? <KeyRound className="h-5 w-5" /> : <Link2 className="h-5 w-5" />}
-            <DialogTitle>
-              {isEditing
-                ? `编辑托管账号：${bindingToEdit?.name || ""}`
-                : "新增托管绑定"}
-            </DialogTitle>
-          </div>
+        <DialogHeader className="shrink-0">
+          <DialogTitle>
+            {isEditing
+              ? `编辑托管账号：${bindingToEdit?.name || ""}`
+              : "新增托管绑定"}
+          </DialogTitle>
           <DialogDescription className="text-xs">
             {isEditing
               ? "修改该托管账号的显示别名或更新登录凭据，保存后桌面端将同步使用新凭据。"

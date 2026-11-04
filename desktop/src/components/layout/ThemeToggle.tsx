@@ -8,10 +8,7 @@ interface ThemeToggleProps {
   className?: string;
 }
 
-export const ThemeToggle: React.FC<ThemeToggleProps> = ({
-  variant = "segmented",
-  className,
-}) => {
+export const ThemeToggle: React.FC<ThemeToggleProps> = ({ variant = "segmented", className }) => {
   const { theme, resolvedTheme, setTheme, toggleTheme } = useTheme();
 
   if (variant === "icon-button") {
@@ -21,22 +18,22 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
         onClick={toggleTheme}
         className={cn(
           "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-card/60 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shadow-sm",
-          className
+          className,
         )}
         title={
           theme === "dark"
             ? "当前：暗黑模式（点击切换为跟随系统）"
             : theme === "light"
-            ? "当前：明亮模式（点击切换为暗黑模式）"
-            : "当前：跟随系统（点击切换为明亮模式）"
+              ? "当前：明亮模式（点击切换为暗黑模式）"
+              : "当前：跟随系统（点击切换为明亮模式）"
         }
       >
         {theme === "system" ? (
           <Laptop className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
         ) : resolvedTheme === "dark" ? (
-          <Moon className="h-3.5 w-3.5 text-sky-400" />
+          <Moon className="h-3.5 w-3.5 " />
         ) : (
-          <Sun className="h-3.5 w-3.5 text-amber-500" />
+          <Sun className="h-3.5 w-3.5 " />
         )}
       </button>
     );
@@ -47,7 +44,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
       <div
         className={cn(
           "inline-flex items-center gap-1 rounded-lg border border-border/80 bg-muted/50 p-0.5 shadow-sm",
-          className
+          className,
         )}
       >
         <button
@@ -57,11 +54,11 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
             "flex h-7 w-7 items-center justify-center rounded-md text-xs transition-all",
             theme === "light"
               ? "bg-card text-foreground shadow-sm font-semibold border border-border/60"
-              : "text-muted-foreground hover:text-foreground hover:bg-card/40"
+              : "text-muted-foreground hover:text-foreground hover:bg-card/40",
           )}
           title="明亮模式"
         >
-          <Sun className={cn("h-3.5 w-3.5", theme === "light" ? "text-amber-500" : "")} />
+          <Sun className={cn("h-3.5 w-3.5", theme === "light" ? "" : "")} />
         </button>
         <button
           type="button"
@@ -70,11 +67,11 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
             "flex h-7 w-7 items-center justify-center rounded-md text-xs transition-all",
             theme === "dark"
               ? "bg-card text-foreground shadow-sm font-semibold border border-border/60"
-              : "text-muted-foreground hover:text-foreground hover:bg-card/40"
+              : "text-muted-foreground hover:text-foreground hover:bg-card/40",
           )}
           title="暗黑模式"
         >
-          <Moon className={cn("h-3.5 w-3.5", theme === "dark" ? "text-sky-400" : "")} />
+          <Moon className={cn("h-3.5 w-3.5", theme === "dark" ? "" : "")} />
         </button>
         <button
           type="button"
@@ -83,7 +80,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
             "flex h-7 w-7 items-center justify-center rounded-md text-xs transition-all",
             theme === "system"
               ? "bg-card text-foreground shadow-sm font-semibold border border-border/60"
-              : "text-muted-foreground hover:text-foreground hover:bg-card/40"
+              : "text-muted-foreground hover:text-foreground hover:bg-card/40",
           )}
           title="跟随系统"
         >
@@ -97,7 +94,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
     <div
       className={cn(
         "inline-flex items-center gap-1 rounded-lg border border-border/70 bg-muted/60 p-0.5 shadow-sm",
-        className
+        className,
       )}
     >
       <button
@@ -107,11 +104,11 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
           "flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all",
           theme === "light"
             ? "bg-card text-foreground shadow-sm font-semibold border border-border/60"
-            : "text-muted-foreground hover:text-foreground hover:bg-card/40"
+            : "text-muted-foreground hover:text-foreground hover:bg-card/40",
         )}
         title="明亮模式"
       >
-        <Sun className={cn("h-3.5 w-3.5", theme === "light" ? "text-amber-500" : "")} />
+        <Sun className={cn("h-3.5 w-3.5", theme === "light" ? "" : "")} />
         <span className="hidden sm:inline text-[11px]">明亮</span>
       </button>
       <button
@@ -121,11 +118,11 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
           "flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all",
           theme === "dark"
             ? "bg-card text-foreground shadow-sm font-semibold border border-border/60"
-            : "text-muted-foreground hover:text-foreground hover:bg-card/40"
+            : "text-muted-foreground hover:text-foreground hover:bg-card/40",
         )}
         title="暗黑模式"
       >
-        <Moon className={cn("h-3.5 w-3.5", theme === "dark" ? "text-sky-400" : "")} />
+        <Moon className={cn("h-3.5 w-3.5", theme === "dark" ? "" : "")} />
         <span className="hidden sm:inline text-[11px]">暗黑</span>
       </button>
       <button
@@ -135,7 +132,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
           "flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all",
           theme === "system"
             ? "bg-card text-foreground shadow-sm font-semibold border border-border/60"
-            : "text-muted-foreground hover:text-foreground hover:bg-card/40"
+            : "text-muted-foreground hover:text-foreground hover:bg-card/40",
         )}
         title="跟随系统"
       >

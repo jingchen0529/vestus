@@ -34,7 +34,7 @@ export function PlatformTable({
       <CardHeader className="flex flex-row items-center justify-between pb-3">
         <div>
           <CardTitle className="text-base flex items-center gap-2">
-            <Globe className="h-4 w-4 text-indigo-500" />
+            <Globe className="h-4 w-4 text-primary" />
             <span>平台管理 ({platforms.length} 个)</span>
           </CardTitle>
           <CardDescription className="text-xs">

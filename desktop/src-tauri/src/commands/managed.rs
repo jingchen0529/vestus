@@ -134,68 +134,66 @@ pub(crate) struct ManagedLogoutContext<R: Runtime> {
     pub(crate) identity: managed_cdp::ManagedSessionIdentity,
 }
 
-/// Local guard failures close only this browser; they never invalidate a
-/// credential. Platform signals still report the consumed bootstrap identity.
-pub(crate) async fn watch_managed_logout<R: Runtime>(
+/// 托管会话的后台监控消费端：等采集连接发来的第一个信号再行动。
+///
+/// `Expired`（平台登出/登录页停留超窗）→ 强杀浏览器并上报凭据过期；
+/// `ConnectionLost`（调试连接断开）→ 本地防护故障，关闭浏览器但绝不动凭据。
+/// 浏览器正常退出会先触发 `exited`，消费端直接返回，不产生任何信号。
+pub(crate) async fn run_managed_watch<R: Runtime>(
     context: ManagedLogoutContext<R>,
-    watch: managed_cdp::LogoutWatch,
+    mut signals: tokio::sync::mpsc::UnboundedReceiver<crate::cdp::ManagedSignal>,
     mut exited: tokio::sync::oneshot::Receiver<()>,
 ) {
     let detected = tokio::select! {
         biased;
         _ = &mut exited => return,
-        result = watch.wait() => result,
+        signal = signals.recv() => signal,
     };
-    if !matches!(detected, Ok(true)) {
-        // Chromium can close the socket just before its process-exit callback.
-        // This grace is for lifecycle completion only, never for an open login
-        // page; a still-running unguarded process is forcibly closed below.
-        if matches!(
-            detected,
-            Ok(false) | Err(managed_cdp::ManagedCdpError::Transport(_))
-        ) && tokio::time::timeout(Duration::from_millis(200), &mut exited)
-            .await
-            .is_ok()
-        {
+    match detected {
+        Some(crate::cdp::ManagedSignal::Expired) => {}
+        other => {
+            // Chromium 可能在进程退出回调之前先断开调试连接。这段宽限只为
+            // 生命周期收尾，绝不是给仍在运行的未防护进程续命；还活着就强关。
+            if other.is_some()
+                && tokio::time::timeout(Duration::from_millis(200), &mut exited)
+                    .await
+                    .is_ok()
+            {
+                return;
+            }
+            let browsers = context.browsers.clone();
+            let browser_id = context.browser_id;
+            let running = rt::runtime()
+                .spawn_blocking(move || browsers.is_running(browser_id))
+                .await
+                .unwrap_or(true);
+            if !running {
+                return;
+            }
+            let closed = kill_managed_browser(context.browsers.clone(), context.browser_id)
+                .await
+                .is_ok();
+            if context
+                .auth
+                .current_identity()
+                .is_ok_and(|(user_id, _, generation)| {
+                    user_id == context.user_id && generation == context.auth_generation
+                })
+            {
+                let _ = context.app.emit(
+                    "managed-session-guard-failed",
+                    serde_json::json!({
+                        "platformId": context.platform_id,
+                        "managedAccountId": context.identity.managed_account_id,
+                        "credentialVersion": context.identity.credential_version,
+                        "browserId": context.browser_id,
+                        "reason": "monitor_disconnected",
+                        "browserClosed": closed,
+                    }),
+                );
+            }
             return;
         }
-        let browsers = context.browsers.clone();
-        let browser_id = context.browser_id;
-        let running = rt::runtime()
-            .spawn_blocking(move || browsers.is_running(browser_id))
-            .await
-            .unwrap_or(true);
-        if !running {
-            return;
-        }
-        let reason = if matches!(detected, Ok(false)) {
-            "monitor_disconnected"
-        } else {
-            "monitor_failed"
-        };
-        let closed = kill_managed_browser(context.browsers.clone(), context.browser_id)
-            .await
-            .is_ok();
-        if context
-            .auth
-            .current_identity()
-            .is_ok_and(|(user_id, _, generation)| {
-                user_id == context.user_id && generation == context.auth_generation
-            })
-        {
-            let _ = context.app.emit(
-                "managed-session-guard-failed",
-                serde_json::json!({
-                    "platformId": context.platform_id,
-                    "managedAccountId": context.identity.managed_account_id,
-                    "credentialVersion": context.identity.credential_version,
-                    "browserId": context.browser_id,
-                    "reason": reason,
-                    "browserClosed": closed,
-                }),
-            );
-        }
-        return;
     }
     let browsers = context.browsers.clone();
     let browser_id = context.browser_id;

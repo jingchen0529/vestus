@@ -251,7 +251,7 @@ export function ManagedBindingsView({
                 <span className="ml-1 text-xs font-normal text-muted-foreground">人</span>
               </div>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-success/10 text-success">
               <UserRound className="h-5 w-5" />
             </div>
           </CardContent>
