@@ -1,0 +1,1094 @@
+"""Browser-activity reporting: the delta contract, the privacy boundary, the views.
+
+The three properties worth locking down here are the ones a future change is most
+likely to break by accident:
+
+* batches **add**, so a retried or duplicated upload cannot rewrite history;
+* the stored base address never carries a query string, fragment or credentials;
+  query data stays in a separately sanitized field;
+* only bounded, non-sensitive latest input/submit snapshots are retained;
+* a report only ever touches the reporting user's own session row.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from sqlalchemy import select
+
+from tests.envelope import code, payload
+
+SESSION_KEY = "0000018f2c4a1b3d000012340000002a"
+OTHER_SESSION_KEY = "0000018f2c4a1b3d00001234000000ff"
+
+
+def _login(client: Any, path: str, username: str, password: str) -> str:
+    response = client.post(path, json={"username": username, "password": password})
+    assert response.status_code == 200, response.text
+    return payload(response)["accessToken"]
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _create_user(client: Any, admin_token: str, username: str, **extra: Any) -> dict[str, Any]:
+    response = client.post(
+        "/api/admin/users",
+        headers=_bearer(admin_token),
+        json={
+            "username": username,
+            "password": f"{username}-password",
+            "name": username,
+            "expiresAt": "2099-12-31",
+            **extra,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return payload(response)
+
+
+def _create_platform(client: Any, admin_token: str, name: str) -> dict[str, Any]:
+    response = client.post(
+        "/api/admin/platforms",
+        headers=_bearer(admin_token),
+        json={"name": name, "url": f"https://{name}.example.test"},
+    )
+    assert response.status_code == 201, response.text
+    return payload(response)
+
+
+def _page(url: str, **counters: int) -> dict[str, Any]:
+    row = {
+        "url": url,
+        "visits": 0,
+        "clicks": 0,
+        "inputs": 0,
+        "submits": 0,
+        "scrolls": 0,
+        "dwellMs": 0,
+        "firstSeenAtMs": 1_700_000_000_000,
+        "lastSeenAtMs": 1_700_000_000_500,
+    }
+    row.update(counters)
+    return row
+
+
+def _report(*pages: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    body = {
+        "sessionKey": SESSION_KEY,
+        "browserId": 1,
+        "platformId": 1,
+        "directMode": False,
+        "reportedAtMs": 1_700_000_001_000,
+        "droppedPages": 0,
+        "pages": list(pages),
+    }
+    body.update(overrides)
+    return body
+
+
+def _setup(client: Any, username: str = "browsing-user") -> tuple[str, str, int]:
+    """Returns ``(admin_token, user_token, platform_id)``."""
+
+    admin_token = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    _create_user(client, admin_token, username)
+    user_token = _login(client, "/api/user/auth/login", username, f"{username}-password")
+    platform = _create_platform(client, admin_token, "reported-platform")
+    return admin_token, user_token, int(platform["id"])
+
+
+def test_repeated_reports_accumulate_into_one_session(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    first = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/orders", visits=1, clicks=3, dwellMs=4_000),
+            _page("https://shop.example.test/items", visits=1, scrolls=2, dwellMs=1_000),
+            platformId=platform_id,
+        ),
+    )
+    assert first.status_code == 200, first.text
+    assert payload(first)["newPages"] == 2
+
+    second = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/orders", clicks=2, inputs=5, dwellMs=6_000),
+            platformId=platform_id,
+        ),
+    )
+    assert second.status_code == 200, second.text
+    # The address was already known, so nothing new was created.
+    assert payload(second)["newPages"] == 0
+    assert payload(first)["sessionId"] == payload(second)["sessionId"]
+
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["total"] == 1
+    session_row = listing["items"][0]
+    assert session_row["username"] == "browsing-user"
+    assert session_row["platformName"] == "reported-platform"
+    assert session_row["pageCount"] == 2
+    assert session_row["visits"] == 2
+    assert session_row["clicks"] == 5
+    assert session_row["inputs"] == 5
+    assert session_row["scrolls"] == 2
+    assert session_row["dwellMs"] == 11_000
+    assert session_row["ipAddress"] == "198.51.100.27"
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{session_row['id']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    by_url = {row["url"]: row for row in detail["pages"]}
+    assert by_url["https://shop.example.test/orders"]["clicks"] == 5
+    assert by_url["https://shop.example.test/orders"]["dwellMs"] == 10_000
+    assert by_url["https://shop.example.test/items"]["scrolls"] == 2
+
+
+def test_same_platform_activity_is_separated_by_managed_account(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    account_ids = []
+    for name in ("账号 A", "账号 B"):
+        created = client.post(
+            "/api/admin/managed-platform-accounts",
+            headers=_bearer(admin_token),
+            json={
+                "platformId": platform_id,
+                "name": name,
+                "authMode": "cookie",
+                "cookieBundle": [{"name": "sid", "value": name, "domain": ".example.test"}],
+            },
+        )
+        assert created.status_code == 201, created.text
+        account_id = payload(created)["id"]
+        account_ids.append(account_id)
+        bound = client.post(
+            f"/api/admin/managed-platform-accounts/{account_id}/bindings",
+            headers=_bearer(admin_token),
+            json={"userId": 1},
+        )
+        assert bound.status_code == 201, bound.text
+
+    responses = []
+    for index, account_id in enumerate(account_ids):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                _page(f"https://shop.example.test/account-{index}", visits=1),
+                sessionKey=f"managed-session-{index}",
+                platformId=platform_id,
+                managedAccountId=account_id,
+            ),
+        )
+        assert response.status_code == 200, response.text
+        responses.append(payload(response))
+
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["total"] == 2
+    by_account = {row["managedAccountId"]: row for row in listing["items"]}
+    assert set(by_account) == set(account_ids)
+    assert by_account[account_ids[0]]["managedAccountName"] == "账号 A"
+    assert by_account[account_ids[1]]["managedAccountName"] == "账号 B"
+
+    legacy = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page("https://shop.example.test/legacy", visits=1), platformId=platform_id),
+    )
+    assert legacy.status_code == 200, legacy.text
+    legacy_row = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(legacy)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert legacy_row["managedAccountId"] is None
+
+
+def test_revoked_managed_account_cannot_continue_an_existing_activity_session(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    created = client.post(
+        "/api/admin/managed-platform-accounts",
+        headers=_bearer(admin_token),
+        json={
+            "platformId": platform_id,
+            "name": "账号 A",
+            "authMode": "cookie",
+            "cookieBundle": [{"name": "sid", "value": "cookie-a", "domain": ".example.test"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    account_id = payload(created)["id"]
+    assert client.post(
+        f"/api/admin/managed-platform-accounts/{account_id}/bindings",
+        headers=_bearer(admin_token),
+        json={"userId": 1},
+    ).status_code == 201
+
+    first = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/account-a", visits=1),
+            sessionKey="managed-session-revoked",
+            platformId=platform_id,
+            managedAccountId=account_id,
+        ),
+    )
+    assert first.status_code == 200, first.text
+
+    removed = client.delete(
+        f"/api/admin/users/1/managed-accounts/{account_id}",
+        headers=_bearer(admin_token),
+    )
+    assert removed.status_code == 200, removed.text
+
+    continued = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/account-a-continued", visits=1),
+            sessionKey="managed-session-revoked",
+            platformId=platform_id,
+            managedAccountId=account_id,
+        ),
+    )
+    assert continued.status_code == 403, continued.text
+
+
+def test_the_stored_address_keeps_the_path_and_drops_everything_else(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page(
+                "https://shop.example.test/orders/42?token=secret&q=name#section",
+                visits=1,
+            ),
+            platformId=platform_id,
+        ),
+    )
+    assert response.status_code == 200, response.text
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(response)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert detail["pages"][0]["url"] == "https://shop.example.test/orders/42"
+
+
+def test_address_params_and_latest_content_snapshots_round_trip_separately(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    first = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/orders", inputs=1, submits=1),
+                "urlParams": "campaign=autumn&token=raw-secret&api_token=raw-secret-too",
+                "inputSnapshot": {
+                    "customerName": ["Alice"],
+                    "password": ["must-not-be-stored"],
+                    "apiToken": ["must-not-be-stored"],
+                },
+                "inputSnapshotAtMs": now_ms - 2_000,
+                "submitSnapshot": {"customerName": ["Alice"], "quantity": ["1"]},
+                "submitSnapshotAtMs": now_ms - 1_000,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms,
+        ),
+    )
+    assert first.status_code == 200, first.text
+
+    latest = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/orders", inputs=1, submits=1),
+                "urlParams": "campaign=autumn&token=another-secret&api_token=another-secret-too",
+                "inputSnapshot": {
+                    "customerName": ["Alice Chen"],
+                    "note": ["call <later>"],
+                    "pass-word": ["must-not-be-stored"],
+                },
+                "inputSnapshotAtMs": now_ms,
+                "submitSnapshot": {
+                    "customerName": ["Alice Chen"],
+                    "quantity": ["2"],
+                    "sessionId": ["must-not-be-stored"],
+                    "sess-ion": ["must-not-be-stored"],
+                },
+                "submitSnapshotAtMs": now_ms + 1_000,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms + 1_000,
+        ),
+    )
+    assert latest.status_code == 200, latest.text
+    assert payload(latest)["newPages"] == 0
+
+    other_params = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/orders", visits=1),
+                "urlParams": "campaign=winter",
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms + 2_000,
+        ),
+    )
+    assert other_params.status_code == 200, other_params.text
+    assert payload(other_params)["newPages"] == 1
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(first)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert detail["pageCount"] == 2
+    by_params = {row["urlParams"]: row for row in detail["pages"]}
+    redacted_params = (
+        "campaign=autumn&token=%5BREDACTED%5D&api_token=%5BREDACTED%5D"
+    )
+    assert set(by_params) == {redacted_params, "campaign=winter"}
+
+    page = by_params[redacted_params]
+    assert page["url"] == "https://shop.example.test/orders"
+    assert page["inputs"] == 2
+    assert page["submits"] == 2
+    assert page["inputSnapshot"] == {
+        "customerName": ["Alice Chen"],
+        "note": ["call <later>"],
+    }
+    assert page["submitSnapshot"] == {
+        "customerName": ["Alice Chen"],
+        "quantity": ["2"],
+    }
+    assert page["inputSnapshotAt"] is not None
+    assert page["submitSnapshotAt"] is not None
+
+
+def test_an_older_snapshot_cannot_overwrite_newer_content(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    newest = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", inputs=1),
+                "inputSnapshot": {"customerName": ["Newest"]},
+                "inputSnapshotAtMs": now_ms,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms,
+        ),
+    )
+    assert newest.status_code == 200, newest.text
+
+    older = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", clicks=3),
+                "inputSnapshot": {"customerName": ["Older"]},
+                "inputSnapshotAtMs": now_ms - 60_000,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms + 1_000,
+        ),
+    )
+    assert older.status_code == 200, older.text
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(newest)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert detail["pages"][0]["inputSnapshot"] == {"customerName": ["Newest"]}
+    assert detail["pages"][0]["clicks"] == 3
+
+
+def test_snapshot_normalization_never_exceeds_the_server_limit() -> None:
+    from app.schemas.browser_activity import MAX_SNAPSHOT_BYTES, sanitize_snapshot
+
+    colliding_prefix = "x" * 128
+    value = "v" * 512
+    snapshot = {colliding_prefix + "-first": [value] * 10}
+    snapshot.update({f"field-{index}": [value] for index in range(45)})
+    snapshot[colliding_prefix + "-second"] = [value] * 10
+
+    sanitized = sanitize_snapshot(snapshot)
+    encoded = json.dumps(
+        sanitized, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    assert len(encoded) <= MAX_SNAPSHOT_BYTES
+
+
+def test_snapshot_checks_sensitive_names_before_truncating_and_skips_collisions() -> None:
+    from app.schemas.browser_activity import sanitize_snapshot
+
+    sensitive = sanitize_snapshot(
+        {"x" * 128 + "password": ["must-not-survive"], "customerName": ["Alice"]}
+    )
+    assert sensitive == {"customerName": ["Alice"]}
+
+    colliding_prefix = "y" * 128
+    collision = sanitize_snapshot(
+        {
+            colliding_prefix + "-first": ["first-value"],
+            colliding_prefix + "-second": ["second-value"],
+        }
+    )
+    assert collision == {colliding_prefix: ["first-value"]}
+
+
+def test_snapshot_content_requires_a_capture_timestamp(api: Any) -> None:
+    client, _module = api
+    _admin_token, user_token, platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", inputs=1),
+                "inputSnapshot": {"customerName": ["Alice"]},
+            },
+            platformId=platform_id,
+        ),
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_equal_or_implausible_snapshot_times_cannot_replace_content(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    first = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/order", inputs=1),
+                "inputSnapshot": {"customerName": ["First"]},
+                "inputSnapshotAtMs": now_ms,
+            },
+            platformId=platform_id,
+            reportedAtMs=now_ms,
+        ),
+    )
+    assert first.status_code == 200, first.text
+
+    for name, captured_at in (
+        ("Same millisecond", now_ms),
+        ("Stale", now_ms - int(timedelta(days=8).total_seconds() * 1000)),
+    ):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                {
+                    **_page("https://shop.example.test/order", clicks=1),
+                    "inputSnapshot": {"customerName": [name]},
+                    "inputSnapshotAtMs": captured_at,
+                },
+                platformId=platform_id,
+                reportedAtMs=now_ms + 1_000,
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(first)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    assert detail["pages"][0]["inputSnapshot"] == {"customerName": ["First"]}
+    assert detail["pages"][0]["clicks"] == 2
+
+
+def test_a_report_is_rejected_when_the_address_is_not_a_web_page(api: Any) -> None:
+    client, _module = api
+    _admin_token, user_token, platform_id = _setup(client)
+
+    for url in (
+        "file:///Users/someone/private.txt",
+        "javascript:alert(1)",
+        "https://user:secret@shop.example.test/orders",
+        "not-a-url",
+    ):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(_page(url, visits=1), platformId=platform_id),
+        )
+        assert response.status_code == 422, f"{url} should not be accepted: {response.text}"
+        assert code(response) == 42200
+
+
+def test_one_user_cannot_write_into_another_users_session(api: Any) -> None:
+    client, _module = api
+    admin_token = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    _create_user(client, admin_token, "first-user")
+    _create_user(client, admin_token, "second-user")
+    first_token = _login(client, "/api/user/auth/login", "first-user", "first-user-password")
+    second_token = _login(client, "/api/user/auth/login", "second-user", "second-user-password")
+    platform_id = int(_create_platform(client, admin_token, "shared-platform")["id"])
+
+    body = _report(_page("https://shop.example.test/a", visits=1), platformId=platform_id)
+    first = client.post("/api/user/browser-activity", headers=_bearer(first_token), json=body)
+    second = client.post("/api/user/browser-activity", headers=_bearer(second_token), json=body)
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    # Same session key, two users: two rows, because the key is only unique
+    # within one account.
+    assert payload(first)["sessionId"] != payload(second)["sessionId"]
+
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["total"] == 2
+    assert {row["username"] for row in listing["items"]} == {"first-user", "second-user"}
+
+
+def test_only_the_reporting_user_and_admins_can_reach_the_endpoints(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    body = _report(_page("https://shop.example.test/a", visits=1), platformId=platform_id)
+
+    # The admin login left a session cookie on the client, and a cookie-authenticated
+    # write is refused without a same-origin ``Origin`` -- the CSRF guard, before
+    # the account type is even considered.
+    assert client.post("/api/user/browser-activity", json=body).status_code == 403
+    client.cookies.clear()
+    assert client.post("/api/user/browser-activity", json=body).status_code == 401
+    # An admin token is not a desktop token.
+    assert (
+        client.post(
+            "/api/user/browser-activity", headers=_bearer(admin_token), json=body
+        ).status_code
+        == 403
+    )
+    assert client.get("/api/admin/browser-sessions").status_code == 401
+    assert (
+        client.get("/api/admin/browser-sessions", headers=_bearer(user_token)).status_code == 403
+    )
+
+
+def test_an_implausible_client_clock_falls_back_to_server_time(api: Any) -> None:
+    client, module = api
+    admin_token, user_token, platform_id = _setup(client)
+    before = module.utc_now()
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page(
+                "https://shop.example.test/a",
+                visits=1,
+                firstSeenAtMs=253_402_300_799_000,  # year 9999
+                lastSeenAtMs=253_402_300_799_000,
+            ),
+            platformId=platform_id,
+            reportedAtMs=0,
+        ),
+    )
+    assert response.status_code == 200, response.text
+
+    detail = payload(
+        client.get(
+            f"/api/admin/browser-sessions/{payload(response)['sessionId']}",
+            headers=_bearer(admin_token),
+        )
+    )
+    # Not the client's year 9999, and not before the request either.
+    assert detail["pages"][0]["firstSeenAt"] >= before.isoformat(timespec="seconds") + "Z"
+    assert detail["startedAt"] >= before.isoformat(timespec="seconds") + "Z"
+
+
+def test_a_report_must_stay_within_the_declared_limits(api: Any) -> None:
+    client, _module = api
+    _admin_token, user_token, platform_id = _setup(client)
+
+    from app.schemas.browser_activity import MAX_PAGES_PER_REPORT
+
+    too_many = [
+        _page(f"https://shop.example.test/{index}", visits=1)
+        for index in range(MAX_PAGES_PER_REPORT + 1)
+    ]
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(*too_many, platformId=platform_id),
+    )
+    assert response.status_code == 422, response.text
+
+    for overrides in (
+        {"pages": []},
+        {"sessionKey": "short"},
+        {"sessionKey": "has spaces and is long enough"},
+    ):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                _page("https://shop.example.test/a", visits=1),
+                platformId=platform_id,
+                **overrides,
+            ),
+        )
+        assert response.status_code == 422, f"{overrides} should be rejected: {response.text}"
+
+    # An unknown counter name is a client/server mismatch, not something to store.
+    body = _report(_page("https://shop.example.test/a", visits=1), platformId=platform_id)
+    body["pages"][0]["keystrokes"] = 12
+    assert (
+        client.post(
+            "/api/user/browser-activity", headers=_bearer(user_token), json=body
+        ).status_code
+        == 422
+    )
+
+
+def test_browser_activity_request_body_has_a_transport_limit(api: Any) -> None:
+    client, _module = api
+    _admin_token, user_token, _platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers={
+            **_bearer(user_token),
+            "Content-Type": "application/json",
+        },
+        content=b'{"padding":"' + (b"x" * (4 * 1024 * 1024)) + b'"}',
+    )
+    assert response.status_code == 413, response.text
+    assert code(response) == 41300
+
+
+def test_a_deleted_platform_leaves_the_recorded_name_intact(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page("https://shop.example.test/a", visits=1), platformId=platform_id),
+    )
+    assert response.status_code == 200, response.text
+    assert (
+        client.delete(
+            f"/api/admin/platforms/{platform_id}", headers=_bearer(admin_token)
+        ).status_code
+        == 200
+    )
+
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["items"][0]["platformName"] == "reported-platform"
+
+
+def test_an_unknown_platform_is_recorded_without_a_name(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, _platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page("https://shop.example.test/a", visits=1), platformId=999_999),
+    )
+    assert response.status_code == 200, response.text
+
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["items"][0]["platformId"] == 999_999
+    assert listing["items"][0]["platformName"] is None
+
+
+def test_the_admin_listing_filters_by_user_platform_and_mode(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    user_id = payload(
+        client.get("/api/admin/users", headers=_bearer(admin_token))
+    )["items"][0]["id"]
+
+    for key, direct in ((SESSION_KEY, False), (OTHER_SESSION_KEY, True)):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                _page("https://shop.example.test/a", visits=1),
+                sessionKey=key,
+                platformId=platform_id,
+                directMode=direct,
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    def listed(**params: Any) -> list[dict[str, Any]]:
+        result = client.get(
+            "/api/admin/browser-sessions", headers=_bearer(admin_token), params=params
+        )
+        assert result.status_code == 200, result.text
+        return payload(result)["items"]
+
+    assert len(listed()) == 2
+    assert len(listed(directMode="true")) == 1
+    assert listed(directMode="true")[0]["sessionKey"] == OTHER_SESSION_KEY
+    # ``false`` has to filter as well as ``true`` does: the admin console's
+    # "went through the proxy" choice sends exactly this.
+    assert len(listed(directMode="false")) == 1
+    assert listed(directMode="false")[0]["sessionKey"] == SESSION_KEY
+    assert len(listed(userId=user_id)) == 2
+    assert len(listed(userId=user_id + 1000)) == 0
+    assert len(listed(platformId=platform_id)) == 2
+    assert len(listed(platformId=platform_id + 1000)) == 0
+
+
+def test_the_admin_listing_filters_by_date_range(api: Any) -> None:
+    """``startAt`` / ``endAt`` take plain dates, and ``endAt`` includes its own day."""
+
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page("https://shop.example.test/a", visits=1), platformId=platform_id),
+    )
+    assert response.status_code == 200, response.text
+
+    # The fixture's client timestamps are years old, so the session is dated with
+    # server time -- the window is anchored on today either way.
+    today = datetime.now(timezone.utc).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    tomorrow = (today + timedelta(days=1)).isoformat()
+
+    def listed(**params: Any) -> list[dict[str, Any]]:
+        result = client.get(
+            "/api/admin/browser-sessions", headers=_bearer(admin_token), params=params
+        )
+        assert result.status_code == 200, result.text
+        return payload(result)["items"]
+
+    assert len(listed(startAt=yesterday, endAt=tomorrow)) == 1
+    assert len(listed(endAt=today.isoformat())) == 1
+    assert len(listed(startAt=tomorrow)) == 0
+    assert len(listed(endAt=yesterday)) == 0
+
+
+def test_a_missing_session_reads_as_not_found(api: Any) -> None:
+    client, _module = api
+    admin_token, _user_token, _platform_id = _setup(client)
+    response = client.get("/api/admin/browser-sessions/424242", headers=_bearer(admin_token))
+    assert response.status_code == 404
+    assert code(response) == 40400
+
+
+def test_the_client_overflow_counter_is_kept_monotonic(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    for dropped in (7, 3, 9):
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                _page("https://shop.example.test/a", visits=1),
+                platformId=platform_id,
+                droppedPages=dropped,
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    # The client sends a running total, so an out-of-order batch must not lower it.
+    assert listing["items"][0]["droppedPages"] == 9
+
+
+def test_the_page_table_stores_the_digest_not_a_long_index(api: Any) -> None:
+    client, module = api
+    _admin_token, user_token, platform_id = _setup(client)
+    url = "https://shop.example.test/" + "a" * 400
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page(url, visits=1), platformId=platform_id),
+    )
+    assert response.status_code == 200, response.text
+
+    from app.db.models import BrowserPageVisit
+    from app.repositories.browser_activity import url_hash
+
+    with module.db.session() as session:
+        row = session.scalars(select(BrowserPageVisit)).one()
+        assert row.url == url
+        assert row.url_hash == url_hash(url)
+        assert len(row.url_hash) == 64
+
+
+def test_session_records_and_returns_client_version(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            _page("https://shop.example.test/versioned", visits=1),
+            platformId=platform_id,
+            clientVersion="0.1.8",
+        ),
+    )
+    assert response.status_code == 200, response.text
+    session_id = payload(response)["sessionId"]
+
+    # In listing
+    listing = payload(client.get("/api/admin/browser-sessions", headers=_bearer(admin_token)))
+    assert listing["items"][0]["clientVersion"] == "0.1.8"
+
+    # In detail
+    detail = payload(
+        client.get(f"/api/admin/browser-sessions/{session_id}", headers=_bearer(admin_token))
+    )
+    assert detail["clientVersion"] == "0.1.8"
+
+
+def test_export_advids_deduplication_and_aggregation(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    res1 = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/item1", visits=3),
+                "urlParams": "advid=99901&utm_source=ad",
+            },
+            {
+                **_page("https://shop.example.test/item2", visits=2),
+                "urlParams": "advid=99901&utm_source=feed",
+            },
+            {
+                **_page("https://shop.example.test/item3", visits=5),
+                "urlParams": "advid=99902&utm_source=search",
+            },
+            platformId=platform_id,
+        ),
+    )
+    assert res1.status_code == 200, res1.text
+
+    resp = client.get(
+        "/api/admin/browser-activity/export-advids",
+        headers=_bearer(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    data = payload(resp)
+    assert data["total"] == 2
+    assert data["param"] == "advid"
+    items = data["items"]
+    assert items[0]["paramValue"] == "99901"
+    assert items[0]["occurrences"] == 2
+    assert items[0]["totalVisits"] == 5
+    assert items[1]["paramValue"] == "99902"
+    assert items[1]["occurrences"] == 1
+    assert items[1]["totalVisits"] == 5
+
+
+def test_export_advids_date_and_user_filtering(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+
+    client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(
+            {
+                **_page("https://shop.example.test/item", visits=1),
+                "urlParams": "advid=88888",
+            },
+            platformId=platform_id,
+        ),
+    )
+
+    resp_empty = client.get(
+        "/api/admin/browser-activity/export-advids?startAt=2020-01-01&endAt=2020-01-02",
+        headers=_bearer(admin_token),
+    )
+    assert resp_empty.status_code == 200
+    assert payload(resp_empty)["total"] == 0
+
+    resp_match = client.get(
+        "/api/admin/browser-activity/export-advids?startAt=2026-01-01&endAt=2099-12-31",
+        headers=_bearer(admin_token),
+    )
+    assert resp_match.status_code == 200
+    assert payload(resp_match)["total"] >= 1
+
+
+THIRD_SESSION_KEY = "0000018f2c4a1b3d00001234000000aa"
+FOURTH_SESSION_KEY = "0000018f2c4a1b3d00001234000000bb"
+
+
+def _expected_local_day() -> str:
+    """The Asia/Shanghai calendar day the server would stamp right now."""
+
+    return (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
+
+
+def test_daily_activity_merges_one_users_day_into_one_row(api: Any) -> None:
+    """同一用户同一天的会话按设备分开聚合，代理与直连合进同一行。"""
+
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    reports = [
+        # (session key, device, direct, visits)
+        (SESSION_KEY, "a" * 32, False, 1),
+        (OTHER_SESSION_KEY, "a" * 32, True, 3),
+        (THIRD_SESSION_KEY, "b" * 32, False, 5),
+        (FOURTH_SESSION_KEY, None, False, 7),
+    ]
+    for key, device, direct, visits in reports:
+        overrides: dict[str, Any] = {
+            "sessionKey": key,
+            "platformId": platform_id,
+            "directMode": direct,
+        }
+        if device is not None:
+            overrides["deviceId"] = device
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(user_token),
+            json=_report(
+                _page("https://shop.example.test/a", visits=visits, clicks=2),
+                **overrides,
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    listing = payload(client.get("/api/admin/browser-activity/daily", headers=_bearer(admin_token)))
+    assert listing["total"] == 3
+
+    by_device = {row["deviceId"]: row for row in listing["items"]}
+    alpha = by_device["a" * 32]
+    # Proxy and direct sessions of the same day and device share one row.
+    assert alpha["sessions"] == 2
+    assert alpha["visits"] == 4
+    assert alpha["clicks"] == 4
+    assert alpha["date"] == _expected_local_day()
+    assert alpha["username"] == "browsing-user"
+    assert alpha["platformName"] == "reported-platform"
+    assert alpha["firstAt"] and alpha["lastAt"]
+
+    assert by_device["b" * 32]["sessions"] == 1
+    assert by_device["b" * 32]["visits"] == 5
+    # Clients too old to report a device still count, under their own key.
+    assert by_device[None]["sessions"] == 1
+    assert by_device[None]["visits"] == 7
+
+
+def test_daily_activity_filters_by_day_range(api: Any) -> None:
+    client, _module = api
+    admin_token, user_token, platform_id = _setup(client)
+    response = client.post(
+        "/api/user/browser-activity",
+        headers=_bearer(user_token),
+        json=_report(_page("https://shop.example.test/a", visits=1), platformId=platform_id),
+    )
+    assert response.status_code == 200, response.text
+
+    day = _expected_local_day()
+    before = (datetime.fromisoformat(day) - timedelta(days=1)).isoformat()
+    after = (datetime.fromisoformat(day) + timedelta(days=1)).isoformat()
+
+    def listed(**params: Any) -> list[dict[str, Any]]:
+        result = client.get(
+            "/api/admin/browser-activity/daily", headers=_bearer(admin_token), params=params
+        )
+        assert result.status_code == 200, result.text
+        return payload(result)["items"]
+
+    assert len(listed(startAt=day, endAt=day)) == 1
+    assert len(listed(endAt=day)) == 1
+    assert len(listed(startAt=after)) == 0
+    assert len(listed(endAt=before)) == 0
+
+
+def test_daily_activity_respects_admin_scope(api: Any) -> None:
+    """绑定管理员只能聚合到自己名下用户的会话，越界不可见。"""
+
+    client, _module = api
+    super_token = _login(client, "/api/admin/auth/login", "test-admin", "test-admin-password")
+    beijing = client.post(
+        "/api/admin/admins",
+        headers=_bearer(super_token),
+        json={
+            "username": "daily-scope-admin",
+            "password": "daily-scope-admin-password",
+            "name": "daily-scope-admin",
+            "role": "admin",
+        },
+    )
+    assert beijing.status_code == 201, beijing.text
+    _create_user(
+        client, super_token, "daily-mine", boundAdminId=payload(beijing)["id"]
+    )
+    _create_user(client, super_token, "daily-theirs")
+
+    for username, key in (("daily-mine", SESSION_KEY), ("daily-theirs", OTHER_SESSION_KEY)):
+        token = _login(client, "/api/user/auth/login", username, f"{username}-password")
+        platform = _create_platform(client, super_token, f"platform-{username}")
+        response = client.post(
+            "/api/user/browser-activity",
+            headers=_bearer(token),
+            json=_report(
+                _page("https://shop.example.test/a", visits=2),
+                sessionKey=key,
+                platformId=int(platform["id"]),
+            ),
+        )
+        assert response.status_code == 200, response.text
+
+    headers = _bearer(
+        _login(
+            client, "/api/admin/auth/login", "daily-scope-admin", "daily-scope-admin-password"
+        )
+    )
+    scoped = payload(client.get("/api/admin/browser-activity/daily", headers=headers))
+    assert scoped["total"] == 1
+    assert scoped["items"][0]["username"] == "daily-mine"
+
+    everything = payload(
+        client.get("/api/admin/browser-activity/daily", headers=_bearer(super_token))
+    )
+    assert everything["total"] == 2

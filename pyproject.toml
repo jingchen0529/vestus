@@ -19,7 +19,7 @@ ignore = [
 # future regeneration produces a reviewable diff instead of style churn.
 "migrations/versions/*.py" = ["E501", "I001", "UP035", "UP006"]
 # Long inline HTTP payloads and assertions read better unwrapped.
-"tests/*.py" = ["E501"]
+"tests/**/*.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "scripts"]
