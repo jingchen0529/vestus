@@ -1,0 +1,45 @@
+name: CI
+
+# 后端四道闸,顺序与 Makefile 的 `make check` 一致:
+# 1. ruff 静态检查  2. mypy 类型检查  3. import-linter 分层契约  4. pytest
+# 测试用例自建 SQLite(conftest 里 monkeypatch VESTUS_DATABASE_URL),
+# 不需要 MySQL service 容器。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend gates (ruff / mypy / layers / pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: python -m ruff check app scripts tests migrations
+
+      - name: Type check (mypy)
+        run: python -m mypy
+
+      - name: Layering contracts (import-linter)
+        run: lint-imports
+
+      - name: Tests (pytest)
+        run: python -m pytest
