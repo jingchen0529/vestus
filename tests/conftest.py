@@ -81,20 +81,31 @@ class DatabaseFacade:
         return self._services.desktop.get_user_desktop_config_with_lease(self._database, user_id)
 
 
-@pytest.fixture()
-def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any]]:
-    """Load the application against an explicit, isolated SQLite database."""
-    database_url = f"sqlite:///{tmp_path / 'vestus-test.sqlite'}"
-    monkeypatch.setenv("VESTUS_DATABASE_URL", database_url)
+def _apply_test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the app at an isolated SQLite database with fixed secrets.
+
+    Call before any ``get_settings()`` call: settings are read when the engine
+    is built, so the environment has to be in place first.  The managed
+    recovery flag is deliberately NOT set here -- HTTP-level tests keep it off
+    (no browser may spawn) while service-layer tests turn it on.
+    """
+    monkeypatch.setenv("VESTUS_DATABASE_URL", f"sqlite:///{tmp_path / 'vestus-test.sqlite'}")
     monkeypatch.setenv("VESTUS_BOOTSTRAP_ADMIN_USERNAME", "test-admin")
     monkeypatch.setenv("VESTUS_BOOTSTRAP_ADMIN_PASSWORD", "test-admin-password")
     monkeypatch.setenv("VESTUS_SECRET_KEY", "test-secret-key-that-is-long-enough")
     monkeypatch.setenv("VESTUS_PLATFORM_SECRET_KEY", "test-platform-secret-key-that-is-long-enough")
     monkeypatch.setenv("VESTUS_ACCESS_TOKEN_TTL_SECONDS", "900")
-    monkeypatch.setenv("VESTUS_MANAGED_RECOVERY_ENABLED", "0")
     monkeypatch.setenv("VESTUS_LOGIN_MAX_ATTEMPTS", "20")
     monkeypatch.setenv("VESTUS_UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("VESTUS_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024))
+
+
+@pytest.fixture()
+def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any]]:
+    """Load the application against an explicit, isolated SQLite database."""
+    _apply_test_env(tmp_path, monkeypatch)
+    # Recovery runs a real browser: keep it off for HTTP-level tests.
+    monkeypatch.setenv("VESTUS_MANAGED_RECOVERY_ENABLED", "0")
 
     # Imported here, not at module scope: settings are read when the engine is
     # built, so the environment above has to be in place first.
@@ -141,5 +152,28 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestC
     try:
         with TestClient(application, client=("198.51.100.27", 50000)) as client:
             yield client, module
+    finally:
+        database.dispose()
+
+
+@pytest.fixture()
+def service_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """A bare, initialized Database for service-layer tests -- no HTTP client.
+
+    Service functions take ``database`` as their first argument and raise
+    ``ServiceError`` for domain failures, so tests drive the business layer
+    directly through its interface.  Managed recovery is enabled so the
+    recovery-queueing tests can run; each test still gets its own isolated
+    SQLite file exactly like :func:`api`.
+    """
+    _apply_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("VESTUS_MANAGED_RECOVERY_ENABLED", "1")
+
+    # Imported here, not at module scope, for the same reason as in ``api``.
+    from app.db.session import Database
+
+    database = Database()
+    try:
+        yield database
     finally:
         database.dispose()
