@@ -16,7 +16,6 @@ const checkerSource = readFileSync(
   "utf8",
 );
 const policyPath = "desktop/src-tauri/src/managed_cdp.rs";
-const watchPath = "desktop/src-tauri/src/managed_cdp/watch.rs";
 const guardPath = "desktop/src-tauri/src/managed_cdp/login_guard.js";
 const cdpPath = "desktop/src-tauri/src/cdp.rs";
 const commandsPath = "desktop/src-tauri/src/commands.rs";
@@ -42,38 +41,8 @@ impl LogoutPolicy {
         )
     }
 }
-#[path = "managed_cdp/watch.rs"]
-mod watch;
-`,
-  [watchPath]: `
-struct WatchState { script: String }
-impl WatchState {
-    fn new(policy: LogoutPolicy) -> Self {
-        let script = policy.login_guard_script();
-        Self { script }
-    }
-    fn opening_commands(&mut self) {
-        self.command(CommandKind::AutoAttach, "Target.setAutoAttach", json!({
-            "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true,
-            "filter": [{"type": "tab"}, {"exclude": true}],
-        }), None, None);
-    }
-    fn attach_child_pages(&mut self, tab_session: &str) {
-        self.command(CommandKind::AutoAttach, "Target.setAutoAttach", json!({
-            "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true,
-            "filter": [{"type": "page"}, {"exclude": true}],
-        }), Some(tab_session), None);
-    }
-    fn install(&mut self, session: &str) {
-        self.page_command(session, CommandKind::Install, "Page.addScriptToEvaluateOnNewDocument",
-            json!({"source": self.script, "runImmediately": true}));
-        self.page_command(session, CommandKind::Enable, "Page.enable", json!({}));
-        self.page_command(session, CommandKind::FrameTree, "Page.getFrameTree", json!({}));
-        self.page_command(session, CommandKind::Resume, "Runtime.runIfWaitingForDebugger", json!({}));
-    }
-}
-async fn prepare(endpoint: &DevToolsEndpoint, policy: LogoutPolicy) {
-    let watch = LogoutWatch { socket: connect(endpoint).await?, state: WatchState::new(policy) };
+pub(crate) fn logout_guard_script(target_url: &str) -> Option<String> {
+    LogoutPolicy::for_platform(target_url).map(|policy| policy.login_guard_script())
 }
 `,
   [guardPath]: `
@@ -90,26 +59,49 @@ async fn prepare(endpoint: &DevToolsEndpoint, policy: LogoutPolicy) {
   Object.defineProperty(window, '__guard', { value: true });
 })();
 `,
+  // 单连接模型：采集连接暂停新 target，装完采集脚本与固定 guard 后放行。
   [cdpPath]: `
-struct Collector { managed_guard: bool }
-pub async fn collect(managed_guard: bool) {
-    let collector = Collector { managed_guard };
+struct ManagedWatch { login_guard_script: String }
+const COLLECTOR_SCRIPT: &str = "collector";
+pub enum ManagedSignal { Expired, ConnectionLost }
+struct Collector { managed: Option<ManagedWatch> }
+pub async fn collect(managed: Option<ManagedWatch>) {
+    let collector = Collector { managed };
 }
 impl Collector {
-    fn opening_commands(&mut self) {
-        self.command(None, "Target.setAutoAttach",
-            json!({"waitForDebuggerOnStart": !self.managed_guard}));
+    fn opening_commands(&mut self) -> Vec<String> {
+        vec![self.command(None, "Target.setAutoAttach", json!({
+            "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true,
+        }))]
     }
-    fn install(&mut self, session_id: &str) {
-        if !self.managed_guard {
-            commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({})));
+    fn install(&mut self, session_id: &str) -> Vec<String> {
+        let mut commands = vec![
+            self.command(Some(session_id), "Page.enable", json!({})),
+            self.command(Some(session_id), "Runtime.enable", json!({})),
+            self.command(Some(session_id), "Runtime.addBinding", json!({"name": BINDING_NAME})),
+            self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": COLLECTOR_SCRIPT})),
+        ];
+        if let Some(managed) = &self.managed {
+            commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": managed.login_guard_script, "runImmediately": false})));
         }
+        commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({})));
+        commands
     }
-    fn resume_and_detach(&mut self, session_id: &str) {
-        if !self.managed_guard {
-            commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({})));
-        }
-        commands.push(self.command(Some(session_id), "Target.detachFromTarget", json!({})));
+    fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {
+        vec![
+            self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({})),
+            self.command(None, "Target.detachFromTarget", json!({"sessionId": session_id})),
+        ]
+    }
+}
+`,
+  [commandsPath]: `
+struct ManagedWatch { login_guard_script: String }
+fn build_watch(session: &Session) -> ManagedWatch {
+    ManagedWatch {
+        login_guard_script: managed_cdp::logout_guard_script(&session.target_url).expect("policy"),
     }
 }
 `,
@@ -135,6 +127,7 @@ function runChecker(overrides = {}, { managed = false, eol = "\n" } = {}) {
       ].join("\n"),
       "desktop/src-tauri/src/lib.rs": managed ? "mod managed_cdp;" : "",
       [cdpPath]: "",
+      [commandsPath]: "",
       "desktop/src-tauri/src/browser.rs": [
         "fn chromium_arguments() {",
         '  let args = ["--remote-debugging-port=0"];',
@@ -196,7 +189,7 @@ test("surface checker isolates chromium_arguments in a Windows CRLF checkout", (
 });
 
 for (const eol of ["\n", "\r\n"]) {
-  test(`fixed managed guard and separate collector pass with ${JSON.stringify(eol)} line endings`, () => {
+  test(`single-connection managed guard passes with ${JSON.stringify(eol)} line endings`, () => {
     passes(runChecker({}, { managed: true, eol }));
   });
 }
@@ -206,24 +199,8 @@ test("guard accepts policy URL checks, style writes and harmless formatting chan
     [policyPath]: managedSources[policyPath]
       .replace('"origin": self.login_route.origin().ascii_serialization(),\n                "path": self.login_route.path(),',
         '"path": self.login_route.path(), /* fixed route */\n                "origin": self.login_route.origin().ascii_serialization(),'),
-    [watchPath]: managedSources[watchPath]
-      .replace('"source": self.script, "runImmediately": true', '"runImmediately" : true, "source" : self.script.clone(),'),
     [guardPath]: managedSources[guardPath] + "\n// Never read document.cookie or call fetch().\n",
   }, { managed: true }));
-});
-
-test("tab-to-page attachment keeps both filters explicit", () => {
-  passes(runChecker({
-    [watchPath]: managedSources[watchPath]
-      .replace('{"type": "tab"}', '{"exclude": false, "type": "tab"}')
-      .replace('{"type": "page"}', '{"type": "page", "exclude": false}'),
-  }, { managed: true }));
-});
-
-test("watch does not regain unnecessary Runtime.enable", () => {
-  fails(runChecker({
-    [watchPath]: managedSources[watchPath] + '\nfn enable_runtime() { send("Runtime.enable"); }',
-  }, { managed: true }), /托管 watch 超出固定防护 CDP 能力/);
 });
 
 test("local test items may use Runtime and do not hide later production code", () => {
@@ -239,13 +216,15 @@ mod tests { fn input() { send("Input.dispatchKeyEvent"); } }
 `;
   passes(runChecker({
     [policyPath]: localTest + managedSources[policyPath],
-    [watchPath]: localTest + managedSources[watchPath],
     [cdpPath]: localTest + managedSources[cdpPath],
-    [commandsPath]: localTest,
+    [commandsPath]: localTest + managedSources[commandsPath],
   }, { managed: true, eol: "\r\n" }));
   fails(runChecker({
-    [watchPath]: localTest + managedSources[watchPath] + '\nfn bypass() { send("Runtime.evaluate"); }',
-  }, { managed: true }), /托管 watch 超出固定防护 CDP 能力/);
+    [cdpPath]: localTest + managedSources[cdpPath].replace(
+      "fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {",
+      'fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> { send("Runtime.evaluate");',
+    ),
+  }, { managed: true }), /采集通道拿到了只读采集用不着的能力/);
 });
 
 for (const [name, extra, expected] of [
@@ -266,59 +245,65 @@ for (const [name, extra, expected] of [
   });
 }
 
-for (const [name, path, from, to, expected] of [
-  ["frontend policy source", policyPath, 'include_str!("managed_cdp/login_guard.js")', "frontend_script", /只能编译固定脚本/],
-  ["extra template data", policyPath, '"path": self.login_route.path(),', '"path": self.login_route.path(), "source": frontend_script,', /只能编译固定脚本/],
-  ["frontend route", policyPath, 'Url::parse("https://agent.oceanengine.com/login")', "Url::parse(target_url)", /固定方舟 policy/],
-  ["dynamic install source", watchPath, '"source": self.script', '"source": frontend.script', /不能使用前端动态 source/],
-  ["external constructor script", watchPath, "fn new(policy: LogoutPolicy)", "fn new(policy: LogoutPolicy, script: String)", /不能从前端传入/],
-  ["script append", watchPath, "fn opening_commands(&mut self) {", 'fn opening_commands(&mut self) { self.script.push_str(&frontend_script);', /不得改写固定脚本/],
-  ["non-immediate injection", watchPath, '"runImmediately": true', '"runImmediately": false', /只能立即安装/],
-  ["worker pause", watchPath, '"type": "page"', '"type": "worker"', /只能暂停显式 page\/tab target/],
-  ["unfiltered targets", watchPath, ', {"exclude": true}', "", /只能暂停显式 page\/tab target/],
-  ["no debugger wait", watchPath, '"waitForDebuggerOnStart": true', '"waitForDebuggerOnStart": false', /只能暂停显式 page\/tab target/],
-  ["shared collector connection", watchPath, "connect(endpoint)", "crate::cdp::connect(endpoint)", /自己的 CDP 连接/],
-  ["collector pausing managed targets", cdpPath, '"waitForDebuggerOnStart": !self.managed_guard', '"waitForDebuggerOnStart": true', /采集连接不得暂停目标/],
-  ["collector resuming managed targets", cdpPath, "if !self.managed_guard {", "if self.managed_guard {", /只能在 !self.managed_guard 分支恢复目标/],
+for (const [name, from, to, expected] of [
+  ["frontend policy source", 'include_str!("managed_cdp/login_guard.js")', "frontend_script", /只能编译固定脚本/],
+  ["extra template data", '"path": self.login_route.path(),', '"path": self.login_route.path(), "source": frontend_script,', /只能编译固定脚本/],
+  ["frontend route", 'Url::parse("https://agent.oceanengine.com/login")', "Url::parse(target_url)", /固定方舟 policy/],
+  ["producer outside the fixed policy", "LogoutPolicy::for_platform(target_url).map(|policy| policy.login_guard_script())", "Some(frontend_script)", /必须由固定 policy 生成/],
 ]) {
   test(`managed boundary rejects ${name}`, () => {
-    fails(runChecker(change(path, from, to), { managed: true }), expected);
+    fails(runChecker(change(policyPath, from, to), { managed: true }), expected);
+  });
+}
+
+for (const [name, from, to, expected] of [
+  ["dynamic install source", '"source": managed.login_guard_script', '"source": frontend.script', /只能来自固定常量或 policy|policy 生成的固定字段/],
+  ["missing guard install", '"source": managed.login_guard_script', '"source": COLLECTOR_SCRIPT', /policy 生成的固定字段/],
+  ["a third document script", 'commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', /只允许安装采集脚本与固定 guard/],
+  ["install before Page.enable", '"Page.enable"', '"Page.enableLater"', /Page\.enable 之后/],
+  ["no debugger wait", '"waitForDebuggerOnStart": true', '"waitForDebuggerOnStart": false', /必须暂停新 target/],
+  ["self-contained guard script", 'const COLLECTOR_SCRIPT: &str = "collector";', 'const COLLECTOR_SCRIPT: &str = "collector";\nconst RAW: &str = include_str!("managed_cdp/login_guard.js");', /只能在 managed_cdp 的 policy 里生成/],
+  ["collapsed failure signals", "pub enum ManagedSignal { Expired, ConnectionLost }", "pub enum ManagedSignal { Expired }", /必须区分凭据过期与防护连接断开/],
+]) {
+  test(`managed boundary rejects ${name}`, () => {
+    fails(runChecker(change(cdpPath, from, to), { managed: true }), expected);
+  });
+}
+
+test("managed boundary rejects page scripting in the policy module", () => {
+  fails(
+    runChecker({ [policyPath]: managedSources[policyPath] + '\nfn bypass() { send("Runtime.evaluate"); }' }, { managed: true }),
+    /不得自行发送页面命令/,
+  );
+});
+
+for (const [name, extra, expected] of [
+  ["page scripting in the command layer", '\nfn bypass() { send("Runtime.evaluate"); }', /不得绕开采集连接执行页面脚本或输入命令/],
+  ["self-installed document scripts", '\nfn bypass() { send("Page.addScriptToEvaluateOnNewDocument"); }', /不得绕开采集连接执行页面脚本或输入命令|不得自带 guard 模板/],
+  ["a second guard script source", '\nfn peek(other: ManagedWatch) { let stolen = other.login_guard_script; }', /只能通过 managed_cdp::logout_guard_script/],
+]) {
+  test(`command layer rejects ${name}`, () => {
+    fails(runChecker({ [commandsPath]: managedSources[commandsPath] + extra }, { managed: true }), expected);
   });
 }
 
 for (const method of ["Runtime.evaluate", "Runtime.callFunctionOn", "Input.dispatchKeyEvent", "Network.getCookies", "Storage.getCookies", "Fetch.enable", "Page.navigate"]) {
-  test(`watch cannot acquire ${method}`, () => {
+  test(`collector cannot acquire ${method}`, () => {
     fails(runChecker({
-      [watchPath]: managedSources[watchPath] + `\nfn bypass() { send("${method}"); }`,
-    }, { managed: true }), /托管 watch 超出固定防护 CDP 能力/);
+      [cdpPath]: managedSources[cdpPath].replace(
+        'fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {',
+        `fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> { send("${method}");`,
+      ),
+    }, { managed: true }), /采集通道拿到了只读采集用不着的能力/);
   });
 }
 
-for (const path of [policyPath, commandsPath]) {
-  test(`page scripting cannot move into ${path}`, () => {
-    fails(runChecker({
-      [path]: (managedSources[path] || "") + '\nfn bypass() { send("Runtime.evaluate"); }',
-    }, { managed: true }), /不得绕开独立 watch/);
-  });
-}
-
-test("collector helpers cannot regain arbitrary page execution", () => {
-  fails(runChecker(change(cdpPath, "fn install(&mut self, session_id: &str) {",
-    'fn install(&mut self, session_id: &str) { send("Runtime.evaluate");'), { managed: true }), /采集通道拿到了只读采集用不着的能力/);
-});
-
-test("an unguarded collector resume outside the usual helper is also rejected", () => {
-  fails(runChecker({
-    [cdpPath]: managedSources[cdpPath] + '\nfn bypass() { send("Runtime.runIfWaitingForDebugger"); }',
-  }, { managed: true }), /只能在 !self.managed_guard 分支恢复目标/);
-});
-
-for (const path of [policyPath, watchPath, guardPath]) {
+for (const path of [policyPath, guardPath]) {
   test(`partial managed fixture cannot omit ${path}`, () => {
-    fails(runChecker({ [path]: null }, { managed: true }), /必须包含固定脚本、policy 和独立 watch 模块/);
+    fails(runChecker({ [path]: null }, { managed: true }), /必须包含固定脚本与 policy/);
   });
 }
 
 test("compiled managed module cannot omit all guard files", () => {
-  fails(runChecker({ "desktop/src-tauri/src/lib.rs": "mod managed_cdp;" }), /必须包含固定脚本、policy 和独立 watch 模块/);
+  fails(runChecker({ "desktop/src-tauri/src/lib.rs": "mod managed_cdp;" }), /必须包含固定脚本与 policy/);
 });

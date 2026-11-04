@@ -168,6 +168,8 @@ for (const method of [
   '"Emulation.',
   '"Fetch.',
   '"Network.enable',
+  '"Network.getCookies',
+  '"Network.setCookie',
 ]) {
   assert(!collectSurface.includes(method), `采集通道拿到了只读采集用不着的能力：${method}`);
 }
@@ -175,19 +177,20 @@ for (const method of [
 // The fixed login guard is an intentionally narrow exception to page writes.
 // Old/minimal checker fixtures can omit managed sessions altogether, but a
 // compiled managed module (or any of its guard files) requires the whole unit.
+//
+// 2026-11-04 起托管防护回到**单连接模型**：采集连接本身就是唯一的 CDP 客户端，
+// 新 target 由它暂停、装完采集脚本与固定 guard 后再放行。独立的第二条防护连接
+// 会让 window.open 弹窗停在 about:blank，已删除；这里只校验单连接上的边界。
 const managedPaths = [
   "src-tauri/src/managed_cdp.rs",
-  "src-tauri/src/managed_cdp/watch.rs",
   "src-tauri/src/managed_cdp/login_guard.js",
 ];
 const managedFilesPresent = managedPaths.map((path) => existsSync(new URL(path, root)));
 if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProduction(rustCommands))) {
-  assert(managedFilesPresent.every(Boolean), "托管防护必须包含固定脚本、policy 和独立 watch 模块");
+  assert(managedFilesPresent.every(Boolean), "托管防护必须包含固定脚本与 policy");
   const managed = rustProduction(read(managedPaths[0]));
-  const watch = rustProduction(read(managedPaths[1]));
-  const guard = maskSource(read(managedPaths[2]), { javascript: true });
+  const guard = maskSource(read(managedPaths[1]), { javascript: true });
 
-  assert(/\bmod\s+watch\s*;/.test(managed), "托管防护必须保留独立 watch 模块");
   assert(
     /\blogin_route\s*:\s*Url\s*::\s*parse\s*\(\s*"https:\/\/agent\.oceanengine\.com\/login"\s*\)/.test(
       rustBody(managed, /\bfn\s+for_platform\s*\(/),
@@ -232,122 +235,86 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
     assert(!pattern.test(guard), `托管固定 guard 不得读取或执行：${capability}`);
   }
 
+  // 单连接模型：采集连接暂停所有新 target，装完两个固定脚本后才放行。
+  const openingCommands = rustBody(rustCdp, /\bfn\s+opening_commands\s*\(/);
   assert(
-    /\bfn\s+new\s*\(\s*policy\s*:\s*LogoutPolicy\s*,?\s*\)\s*->\s*Self\b/.test(watch) &&
-      /\blet\s+script\s*=\s*policy\s*\.\s*login_guard_script\s*\(\s*\)\s*;/.test(
-        rustBody(watch, /\bfn\s+new\s*\(/),
-      ),
-    "托管 watch 的脚本只能在初始化时来自固定 policy，不能从前端传入",
-  );
-  assert(
-    !/\bself\s*\.\s*script\s*(?:=(?!=)|\+=|\.\s*(?:push|push_str|insert|insert_str|clear|replace_range)\s*\()/.test(watch),
-    "托管 watch 不得改写固定脚本",
-  );
-  assert(
-    /\bsocket\s*:\s*connect\s*\(\s*endpoint\s*\)\s*\.\s*await\s*\?/.test(watch) &&
-      !/\b(?:crate|super)\s*::\s*cdp\s*::/.test(watch),
-    "托管 watch 必须使用自己的 CDP 连接，不能借用采集通道",
+    /"autoAttach"\s*:\s*true\b/.test(openingCommands) &&
+      /"waitForDebuggerOnStart"\s*:\s*true\b/.test(openingCommands) &&
+      /"flatten"\s*:\s*true\b/.test(openingCommands),
+    "采集连接必须暂停新 target（waitForDebuggerOnStart: true）才能安装固定防护",
   );
 
-  const allowedWatchMethods = new Set([
-    "Target.setDiscoverTargets", "Target.setAutoAttach", "Target.getTargets",
-    "Target.attachToTarget", "Target.detachFromTarget",
-    "Target.attachedToTarget", "Target.detachedFromTarget", "Target.targetCreated",
-    "Target.targetDestroyed", "Target.targetInfoChanged",
-    "Page.enable", "Page.addScriptToEvaluateOnNewDocument", "Page.getFrameTree",
-    "Page.frameNavigated", "Page.navigatedWithinDocument",
-    "Runtime.runIfWaitingForDebugger",
-  ]);
-  const watchMethods = [...watch.matchAll(/"([A-Z][A-Za-z0-9]*\.[A-Za-z0-9_.]*)"/g)]
-    .map((match) => match[1]);
-  for (const method of watchMethods) {
-    assert(allowedWatchMethods.has(method), `托管 watch 超出固定防护 CDP 能力：${method}`);
-  }
-  for (const method of [
-    "Target.setAutoAttach", "Page.enable", "Page.addScriptToEvaluateOnNewDocument",
-    "Page.getFrameTree", "Runtime.runIfWaitingForDebugger",
-  ]) {
-    assert(watchMethods.includes(method), `托管 watch 缺少文档起始防护步骤：${method}`);
-  }
+  const installBody = rustBody(rustCdp, /\bfn\s+install\s*\(/);
+  const documentScripts = (installBody.match(/"Page\.addScriptToEvaluateOnNewDocument"/g) || []).length;
+  assert(
+    documentScripts === 2,
+    "采集连接只允许安装采集脚本与固定 guard 两个文档脚本",
+  );
+  assert(
+    /"source"\s*:\s*COLLECTOR_SCRIPT\b/.test(installBody),
+    "采集脚本必须来自固定常量 COLLECTOR_SCRIPT",
+  );
+  assert(
+    /"source"\s*:\s*managed\s*\.\s*login_guard_script\b/.test(installBody),
+    "托管 guard 必须由采集连接安装，且 source 只能来自 policy 生成的固定字段",
+  );
+  assert(
+    (installBody.match(/"source"\s*:/g) || []).length === 2,
+    "文档脚本只能来自固定常量或 policy 生成的 guard，不能使用前端动态 source",
+  );
+  const enableAt = installBody.indexOf('"Page.enable"');
+  const guardAt = installBody.indexOf("managed.login_guard_script");
+  const resumeAt = installBody.indexOf('"Runtime.runIfWaitingForDebugger"');
+  assert(
+    enableAt >= 0 && guardAt > enableAt && resumeAt > guardAt,
+    "固定 guard 必须在 Page.enable 之后、放行之前安装",
+  );
+  assert(
+    !/__VESTUS_LOGIN_ROUTE__|login_guard\.js|include_str!/.test(rustCdp),
+    "固定 guard 只能在 managed_cdp 的 policy 里生成，采集通道不得自带脚本",
+  );
 
-  function commandParams(method) {
-    const escaped = method.replaceAll(".", "\\.");
-    const params = [...watch.matchAll(new RegExp(
-      `"${escaped}"\\s*,\\s*json!\\(\\s*(\\{[\\s\\S]*?\\})\\s*\\)`, "g",
-    ))].map((match) => match[1]);
-    assert(
-      params.length === watchMethods.filter((name) => name === method).length,
-      `托管 watch 命令参数必须在固定发送点声明：${method}`,
-    );
-    return params;
-  }
-  for (const params of commandParams("Target.setAutoAttach")) {
-    // Only explicitly selected page/tab targets may be paused. Keep a final
-    // deny-all so workers/default allow remain outside this capability boundary.
-    // Installation ordering and fail-closed handling of an already-navigated
-    // first document need runtime tests, not source-order assertions.
-    const filter = params.match(/"filter"\s*:\s*\[([\s\S]*?)\]/)?.[1];
-    let pageOrTabOnly = false;
-    try {
-      const entries = JSON.parse(`[${filter}]`.replace(/,\s*([}\]])/g, "$1"));
-      const fallback = entries.at(-1);
-      pageOrTabOnly = entries.length >= 2 && fallback?.exclude === true &&
-        Object.keys(fallback).length === 1 && entries.slice(0, -1).every((entry) =>
-          ["page", "tab"].includes(entry.type) &&
-          Object.keys(entry).every((key) => key === "type" || key === "exclude") &&
-          (entry.exclude === undefined || entry.exclude === false),
-        );
-    } catch {
-      // A computed filter is not a fixed allowlist; require an explicit review.
-    }
-    assert(
-      /"autoAttach"\s*:\s*true\b/.test(params) &&
-        /"waitForDebuggerOnStart"\s*:\s*true\b/.test(params) && pageOrTabOnly,
-      "托管 watch 只能暂停显式 page/tab target 并等待固定 guard 安装",
-    );
-  }
-  for (const params of commandParams("Page.addScriptToEvaluateOnNewDocument")) {
-    assert(
-      /"source"\s*:\s*self\s*\.\s*script(?:\s*\.\s*clone\s*\(\s*\))?\s*[,}]/.test(params) &&
-        /"runImmediately"\s*:\s*true\b/.test(params),
-      "托管 watch 只能立即安装 self.script 固定脚本，不能使用前端动态 source",
-    );
-  }
+  const managedSignal = rustBody(rustCdp, /\benum\s+ManagedSignal\b/);
+  assert(
+    /\bExpired\b/.test(managedSignal) && /\bConnectionLost\b/.test(managedSignal),
+    "托管信号必须区分凭据过期与防护连接断开",
+  );
 
   // These checks are production-only: local fake-page tests may deliberately
   // use Runtime.evaluate/Input to prove that the guard blocks normal input.
-  for (const [source, name] of [
-    [managed, "managed_cdp.rs"],
-    [rustProduction(rustCommandSource), "commands.rs"],
-  ]) {
-    assert(
-      !/"(?:Runtime|Input|DOM|DOMStorage|Fetch)\./.test(source) &&
-        !source.includes('"Page.addScriptToEvaluateOnNewDocument"'),
-      `${name} 不得绕开独立 watch 执行页面脚本或输入命令`,
-    );
-  }
-  for (const [source, name] of [[rustCdp, "采集通道"], [rustProduction(rustCommandSource), "命令 IPC"]]) {
-    assert(!/login_guard\.js|login_guard_script|__VESTUS_LOGIN_ROUTE__/.test(source), `${name} 不得接管固定 login guard 脚本`);
-  }
-
-  assert(/\bmanaged_guard\s*:\s*bool\b/.test(rustCdp), "采集通道缺少内部 managed_guard 标记");
-  const collectorOpening = rustBody(rustCdp, /\bfn\s+opening_commands\s*\(/);
-  const collectorPauses = [...collectorOpening.matchAll(/"waitForDebuggerOnStart"\s*:\s*([^,}]+)/g)];
+  const commandSource = rustProduction(rustCommandSource);
   assert(
-    collectorPauses.length > 0 && collectorPauses.every((match) => compact(match[1]) === "!self.managed_guard"),
-    "托管采集连接不得暂停目标：waitForDebuggerOnStart 必须受 managed_guard 限制",
+    !/"(?:Runtime|Input|DOM|DOMStorage|Fetch)\./.test(managed) &&
+      !managed.includes('"Page.addScriptToEvaluateOnNewDocument"'),
+    "managed_cdp.rs 只生成固定脚本与判定，不得自行发送页面命令",
   );
-  const cdpMasked = maskSource(rustCdp, { strings: true });
-  let withoutUnguardedBranches = rustCdp;
-  const unguardedBranches = [...cdpMasked.matchAll(/\bif\s*!\s*self\s*\.\s*managed_guard\s*\{/g)];
-  for (const branch of unguardedBranches.reverse()) {
-    const start = branch.index;
-    const end = blockEnd(cdpMasked, start + branch[0].lastIndexOf("{"));
-    withoutUnguardedBranches = withoutUnguardedBranches.slice(0, start) + withoutUnguardedBranches.slice(end);
-  }
   assert(
-    !withoutUnguardedBranches.includes('"Runtime.runIfWaitingForDebugger"'),
-    "采集连接只能在 !self.managed_guard 分支恢复目标，不能抢先释放托管页面",
+    !/"(?:Runtime|Input|DOM|DOMStorage|Fetch)\./.test(commandSource) &&
+      !commandSource.includes("Page.addScriptToEvaluateOnNewDocument"),
+    "命令 IPC 不得绕开采集连接执行页面脚本或输入命令",
+  );
+  // 命令层只能在装配 ManagedWatch 时向 policy 要一次脚本，不能自带模板或注入点。
+  const guardHandoff =
+    /login_guard_script\s*:\s*managed_cdp\s*::\s*logout_guard_script\s*\(\s*&\s*session\s*\.\s*target_url\s*,?\s*\)/g;
+  const handoffs = (commandSource.match(guardHandoff) || []).length;
+  const mentions = (commandSource.match(/login_guard(_script)?\b/g) || []).length;
+  // 结构体字段声明不算一次取值；命令层自己的 ManagedWatch 定义允许出现一次。
+  const fieldDeclarations =
+    (commandSource.match(/login_guard_script\s*:\s*String\b/g) || []).length;
+  assert(
+    handoffs >= 1 && mentions === handoffs + fieldDeclarations,
+    "命令层只能通过 managed_cdp::logout_guard_script 取得固定 guard 脚本",
+  );
+  assert(
+    !/__VESTUS_LOGIN_ROUTE__|login_guard\.js|include_str!|Page\s*\.\s*addScriptToEvaluateOnNewDocument/.test(commandSource),
+    "命令 IPC 不得自带 guard 模板或自行安装脚本",
+  );
+  const guardProducer = compact(rustBody(managed, /\bfn\s+logout_guard_script\s*\(/));
+  assert(
+    /^LogoutPolicy::for_platform\(target_url\)\.map\(\|policy\|policy\.login_guard_script\(\)\)$/.test(
+      guardProducer,
+    ),
+    "交给命令层的 guard 必须由固定 policy 生成",
   );
 }
 
