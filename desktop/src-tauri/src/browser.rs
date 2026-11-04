@@ -332,8 +332,13 @@ impl BrowserSessionManager {
     /// A monitor disconnect during an intentional close is not a guard failure.
     /// Unknown process status is kept live so a failed guard still forces cleanup.
     pub(crate) fn is_running(&self, session_id: u64) -> bool {
-        let session = self.inner.sessions.lock().expect("浏览器会话锁已中毒")
-            .get(&session_id).cloned();
+        let session = self
+            .inner
+            .sessions
+            .lock()
+            .expect("浏览器会话锁已中毒")
+            .get(&session_id)
+            .cloned();
         session.is_some_and(|session| {
             !session.closing.load(Ordering::Acquire)
                 && !matches!(process_exit_status(&session.process), Ok(true))
@@ -501,9 +506,7 @@ impl BrowserSessionManager {
                 endpoint: Arc::clone(&endpoint),
                 ephemeral,
                 closing: AtomicBool::new(false),
-                finish: Mutex::new(BrowserFinish {
-                    lease: Some(lease),
-                }),
+                finish: Mutex::new(BrowserFinish { lease: Some(lease) }),
                 finished: Condvar::new(),
             });
             sessions.insert(session_id, Arc::clone(&session));

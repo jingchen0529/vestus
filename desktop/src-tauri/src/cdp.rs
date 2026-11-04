@@ -302,7 +302,10 @@ pub async fn collect(
     let socket = connect(&endpoint).await?;
 
     let (mut writer, mut reader) = socket.split();
-    let mut collector = Collector { managed_guard, ..Collector::default() };
+    let mut collector = Collector {
+        managed_guard,
+        ..Collector::default()
+    };
     for command in collector.opening_commands() {
         writer
             .send(Message::Text(command.into()))
@@ -1033,7 +1036,10 @@ mod tests {
 
     #[test]
     fn managed_collector_never_resumes_guarded_targets() {
-        let mut collector = Collector { managed_guard: true, ..Collector::default() };
+        let mut collector = Collector {
+            managed_guard: true,
+            ..Collector::default()
+        };
         let opening = collector.opening_commands();
         let auto: Value = serde_json::from_str(&opening[0]).unwrap();
         assert_eq!(auto["params"]["waitForDebuggerOnStart"], false);

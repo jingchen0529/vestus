@@ -755,7 +755,10 @@ impl LogoutPolicy {
         }
         let path = url.path();
         let login = self.login_route.path();
-        path == login || path.strip_prefix(login).is_some_and(|rest| rest.starts_with('/'))
+        path == login
+            || path
+                .strip_prefix(login)
+                .is_some_and(|rest| rest.starts_with('/'))
     }
 }
 
@@ -806,15 +809,18 @@ impl LogoutDetector {
         if event.get("method").and_then(Value::as_str) != Some("Target.attachedToTarget") {
             return None;
         }
-        if event.pointer("/params/targetInfo/type").and_then(Value::as_str) != Some("page") {
+        if event
+            .pointer("/params/targetInfo/type")
+            .and_then(Value::as_str)
+            != Some("page")
+        {
             return None;
         }
         let session_id = event.pointer("/params/sessionId").and_then(Value::as_str)?;
         if self.sessions.contains_key(session_id) {
             return None;
         }
-        self.sessions
-            .insert(session_id.to_string(), None);
+        self.sessions.insert(session_id.to_string(), None);
         Some(session_id.to_string())
     }
 
@@ -848,10 +854,8 @@ impl LogoutDetector {
                         }
                     }
                     Some("Page.navigatedWithinDocument") => {
-                        let main_frame_id = self
-                            .sessions
-                            .get(session_id)
-                            .and_then(Option::as_deref);
+                        let main_frame_id =
+                            self.sessions.get(session_id).and_then(Option::as_deref);
                         if let Some(main_frame_id) = main_frame_id {
                             if event.pointer("/params/frameId").and_then(Value::as_str)
                                 == Some(main_frame_id)
@@ -904,9 +908,9 @@ impl LogoutDetector {
 
 #[path = "managed_cdp/watch.rs"]
 mod watch;
-pub(crate) use watch::{prepare_logout_watch, LogoutWatch};
 #[cfg(test)]
 use watch::prepare_logout_watch_with_policy;
+pub(crate) use watch::{prepare_logout_watch, LogoutWatch};
 
 type ManagedSocket = WebSocketStream<TcpStream>;
 
@@ -1450,7 +1454,9 @@ mod tests {
                     _ => json!({}),
                 };
                 ws.send(Message::Text(
-                    json!({"id": command["id"], "result": result}).to_string().into(),
+                    json!({"id": command["id"], "result": result})
+                        .to_string()
+                        .into(),
                 ))
                 .await
                 .unwrap();
@@ -1461,7 +1467,12 @@ mod tests {
                 "params": {"sessionId": "dup", "targetInfo": {"type": "page", "targetId": "dup-page"}}
             }).to_string().into())).await.unwrap();
             // 复制页登出：必须同样命中。
-            for method in ["Page.enable", "Page.addScriptToEvaluateOnNewDocument", "Page.getFrameTree", "Runtime.runIfWaitingForDebugger"] {
+            for method in [
+                "Page.enable",
+                "Page.addScriptToEvaluateOnNewDocument",
+                "Page.getFrameTree",
+                "Runtime.runIfWaitingForDebugger",
+            ] {
                 let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
                     panic!("expected {method}");
                 };
@@ -1476,7 +1487,9 @@ mod tests {
                     json!({})
                 };
                 ws.send(Message::Text(
-                    json!({"id": command["id"], "result": result}).to_string().into(),
+                    json!({"id": command["id"], "result": result})
+                        .to_string()
+                        .into(),
                 ))
                 .await
                 .unwrap();
