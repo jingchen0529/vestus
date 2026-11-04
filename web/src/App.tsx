@@ -102,6 +102,10 @@ export function App() {
   const managedViewer = user && isSuperAdmin ? user.id : null;
   const managedViewerRef = useRef(managedViewer);
   managedViewerRef.current = managedViewer;
+  const managedBindingsLoadRef = useRef<{
+    viewer: number | null;
+    inFlight: Promise<void> | null;
+  }>({ viewer: null, inFlight: null });
 
   // Active Tab with persistence
   const [currentTab, setCurrentTab] = useState<NavTab>(getInitialTab);
@@ -262,16 +266,31 @@ export function App() {
     }
   }, [managedViewer]);
 
-  const loadManagedBindings = useCallback(async () => {
-    if (managedViewer === null) return;
-    try {
-      const data = await api.listManagedBindings();
-      if (managedViewerRef.current === managedViewer) setManagedBindings(data);
-    } catch (err: any) {
-      if (managedViewerRef.current === managedViewer) {
-        toast.error("加载绑定托管列表失败", { description: err.message });
-      }
+  const loadManagedBindings = useCallback(() => {
+    if (managedViewer === null) return Promise.resolve();
+    const requestViewer = managedViewer;
+    const current = managedBindingsLoadRef.current;
+    if (current.inFlight && current.viewer === requestViewer) {
+      return current.inFlight;
     }
+
+    let requestPromise!: Promise<void>;
+    requestPromise = (async () => {
+      try {
+        const data = await api.listManagedBindings();
+        if (managedViewerRef.current === requestViewer) setManagedBindings(data);
+      } catch (err: any) {
+        if (managedViewerRef.current === requestViewer) {
+          toast.error("加载绑定托管列表失败", { description: err.message });
+        }
+      } finally {
+        if (managedBindingsLoadRef.current.inFlight === requestPromise) {
+          managedBindingsLoadRef.current = { viewer: requestViewer, inFlight: null };
+        }
+      }
+    })();
+    managedBindingsLoadRef.current = { viewer: requestViewer, inFlight: requestPromise };
+    return requestPromise;
   }, [managedViewer]);
 
   const loadAdmins = useCallback(async (searchQuery?: unknown, statusQuery?: unknown) => {

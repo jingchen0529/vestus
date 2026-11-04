@@ -563,15 +563,14 @@ export function ManagedAccountDialog({
       parsedPayload.username || parsedPayload.password || parsedPayload.cookieBundle,
     );
 
-    if (
-      authMode === "server_login" &&
-      Boolean(parsedPayload.username) !== Boolean(parsedPayload.password)
-    ) {
-      toast.error("账号和密码需要同时填写");
-      return;
-    }
-
     if (formMode === "create") {
+      if (
+        authMode === "server_login" &&
+        Boolean(parsedPayload.username) !== Boolean(parsedPayload.password)
+      ) {
+        toast.error("账号和密码需要同时填写");
+        return;
+      }
       if (!hasCredentials) {
         toast.error(authMode === "cookie" ? "请输入 Cookie" : "请输入账号和密码");
         return;
