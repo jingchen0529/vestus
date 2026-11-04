@@ -102,13 +102,30 @@ const rustCommands = read("src-tauri/src/lib.rs");
 assert(!rustCommands.includes("commands::close_browser"), "Rust 仍注册多余的关闭浏览器 IPC");
 assert(!rustCommands.includes("commands::stop_proxy"), "Rust 仍注册多余的停止代理 IPC");
 
+// The command layer is split by domain under src-tauri/src/commands/; the
+// scan must cover the root file plus every submodule, otherwise moving a
+// dangerous capability into a submodule would silently bypass these checks.
+// Missing directories are fine so the small synthetic fixtures still work.
+const commandDir = "src-tauri/src/commands";
+const commandFiles = [
+  "src-tauri/src/commands.rs",
+  ...(existsSync(new URL(commandDir, root))
+    ? readdirSync(new URL(commandDir, root))
+        // tests.rs is test-only code; rustProduction-style checks do not apply.
+        .filter((name) => name.endsWith(".rs") && name !== "tests.rs")
+        .sort()
+        .map((name) => `${commandDir}/${name}`)
+    : []),
+];
+const rustCommandSource = commandFiles
+  .filter((path) => existsSync(new URL(path, root)))
+  .map((path) => read(path))
+  .join("\n");
+
 // Repeated platform-button clicks may only activate the existing page.  The
 // command layer must not regain either of the old new-target/new-window
 // fallbacks; the browser manager helpers remain available only for legacy
 // lower-level tests and are not reachable from the IPC command.
-const rustCommandSource = existsSync(new URL("src-tauri/src/commands.rs", root))
-  ? read("src-tauri/src/commands.rs")
-  : "";
 assert(
   !rustCommandSource.includes("Target.createTarget"),
   "平台按钮仍可创建第二个页面目标",

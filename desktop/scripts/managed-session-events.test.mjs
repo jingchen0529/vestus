@@ -84,7 +84,7 @@ test("guard failures show closure-specific error messages without invalidating c
 });
 
 test("local guard faults close the browser and return before credential reporting", () => {
-  const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  const commands = readFileSync(new URL("../src-tauri/src/commands/managed.rs", import.meta.url), "utf8");
   const watch = commands.slice(commands.indexOf("async fn watch_managed_logout"));
   const failureStart = watch.indexOf("if !matches!(detected, Ok(true))");
   const eventAt = watch.indexOf('"managed-session-guard-failed"');
@@ -102,12 +102,12 @@ test("local guard faults close the browser and return before credential reportin
 });
 
 test("guard initialization failure returns before cookie injection", () => {
-  const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  const commands = readFileSync(new URL("../src-tauri/src/commands/browser.rs", import.meta.url), "utf8");
   const start = commands.indexOf("match managed_cdp::prepare_logout_watch");
   const inject = commands.indexOf("managed_cdp::inject_session", start);
   assert.ok(start >= 0 && inject > start);
   const prepare = commands.slice(start, inject);
-  assert.match(prepare, /Err\(_\) => return Err\(CommandError::new\(/);
+  assert.match(prepare, /Err\(_\)\s*=>\s*\{?\s*return\s+Err\(\s*CommandError::new\(/);
   assert.match(prepare, /"managed_guard_unavailable"/);
   assert.match(prepare, /managed_guard = true/);
   assert.doesNotMatch(prepare, /eprintln!|error\.to_string\(\)/);
