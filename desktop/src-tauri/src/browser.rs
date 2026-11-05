@@ -1183,7 +1183,9 @@ fn chromium_arguments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::sync::atomic::AtomicUsize;
+    #[cfg(unix)]
     use std::sync::mpsc;
     use std::time::UNIX_EPOCH;
 
