@@ -25,7 +25,19 @@ fn main() {
             }
         }
     }
-    tauri_build::build()
+    // Tauri CLI 调 cargo 前仍会往环境塞废弃的 STATIC_VCRUNTIME，tauri-build 2.7+
+    // 见到就打迁移警告。这里读出 CLI 的取值后移除该变量，改用显式属性传同样的
+    // 语义：CLI 传 true 时 Windows 静态链接 VC 运行库（安装包无需用户另装 VC++
+    // Redistributable，与既有发布包一致）；CLI 没传（本地/测试直接跑 cargo）时
+    // 保持 tauri-build 原默认的动态链接，两条路径行为都不变。
+    let static_vc_runtime = std::env::var("STATIC_VCRUNTIME")
+        .map(|value| value != "false")
+        .unwrap_or(false);
+    std::env::remove_var("STATIC_VCRUNTIME");
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(
+        tauri_build::WindowsAttributes::new().static_vc_runtime(static_vc_runtime),
+    ))
+    .expect("tauri build 失败")
 }
 
 /// 把安装包的版本号导出成 `VESTUS_CLIENT_VERSION`，供活动上报使用。

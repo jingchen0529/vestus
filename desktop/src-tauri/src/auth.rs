@@ -44,7 +44,11 @@ const API_CODE_OK: i64 = 0;
 
 // The bearer token is the only persistent secret owned by the desktop app.
 // Proxy credentials remain in Rust memory for the active synchronized session.
+// Linux 构建不启用 keyring 后端（登录态只保留在运行期），这两个常量仅随
+// keyring 存取代码编译，否则在 Linux 上是 dead code。
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const KEYRING_SERVICE: &str = "com.zhixi.vestus";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const KEYRING_ACCOUNT: &str = "vestus.desktop_auth.access_token";
 
 /// The only account shape desktop JavaScript is allowed to receive.
