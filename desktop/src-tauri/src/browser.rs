@@ -1157,6 +1157,9 @@ fn chromium_arguments(
         OsString::from("--disable-breakpad"),
         OsString::from("--no-first-run"),
         OsString::from("--no-default-browser-check"),
+        // Chrome for Testing shows an infobar in persistent profiles. Playwright
+        // uses this switch for the same context; other Chrome builds ignore it.
+        OsString::from("--disable-infobars"),
         // 持久 profile 被强杀过（等不到它正常退出，或客户端自己崩了）之后，下次启动
         // Chromium 会弹「要恢复页面吗」。起始网址已经由我们给定，这个气泡只会诱人点回
         // 上一次的标签页。
@@ -1213,6 +1216,9 @@ mod tests {
         assert!(!rendered
             .iter()
             .any(|argument| argument.starts_with("--remote-allow-origins")));
+        // Chrome for Testing's persistent profile infobar consumes part of the
+        // visible page viewport unless this switch is passed at launch.
+        assert!(rendered.contains(&"--disable-infobars".into()));
         assert!(rendered.contains(&"--disable-quic".into()));
         // 被强杀过的持久 profile 不能在下次启动时诱人恢复上一次的标签页。
         assert!(rendered.contains(&"--hide-crash-restore-bubble".into()));

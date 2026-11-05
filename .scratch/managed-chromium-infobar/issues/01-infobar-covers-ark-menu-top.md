@@ -107,3 +107,10 @@ persistent context 处理，一行参数、风险最低，需实测 v153 仍有�
 [puppeteer#10516](https://github.com/puppeteer/puppeteer/issues/10516) ·
 [playwright#36238](https://github.com/microsoft/playwright/issues/36238) ·
 [SQA: how to disable infobar](https://sqa.stackexchange.com/questions/32444/how-to-disable-infobar-from-chrome)
+
+### 2026-11-05 设计稿已出，待评审
+
+[docs/design/2026-11-05-托管浏览器提示条治理设计.md](../../docs/design/2026-11-05-托管浏览器提示条治理设计.md)。
+结论：采用① `--disable-infobars`（Playwright 现役做法，改动为 browser.rs 一行参数 +
+一条测试断言）；`--test-type=gpu` 为备选；换正式版 Chrome/Edge 渠道列为长期项单独决策。
+落地拆票建议见设计稿第 7 节。评审通过后按拆票实施。

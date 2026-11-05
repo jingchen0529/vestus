@@ -787,6 +787,7 @@ impl LogoutDetector {
         }
     }
 
+    #[cfg(test)]
     fn has_tracked_session(&self) -> bool {
         !self.sessions.is_empty()
     }
