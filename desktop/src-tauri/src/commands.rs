@@ -5,6 +5,7 @@
 //! - [`common`]  共享错误形态、鉴权守卫、错误翻译、出口探测地址;
 //! - [`config`]  桌面配置同步:下发校验、租约看门狗、代理适配器启动;
 //! - [`browser`] 浏览器生命周期:打开平台、重置持久 profile;
+//! - [`faq`]     客户端「常见问题」帮助内容读取与结构校验;
 //! - [`managed`] 托管会话后台 watch 与恢复等待;
 //! - [`system`]  状态、出口 IP、外链、版本检查。
 //!
@@ -16,12 +17,14 @@
 mod browser;
 mod common;
 mod config;
+mod faq;
 mod managed;
 mod system;
 
 pub(crate) use browser::*;
 pub(crate) use common::*;
 pub(crate) use config::*;
+pub(crate) use faq::*;
 pub(crate) use managed::*;
 pub(crate) use system::*;
 

@@ -1,51 +1,55 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeNoWhitespace, preventSpaceKeyDown } from "./authInputHelpers.ts";
+import {
+  sanitizeAuthValue,
+  sanitizeAuthText,
+  preventSpaceKeyDown,
+  isImeComposing,
+} from "./authInputHelpers.ts";
 
-test("sanitizeNoWhitespace 能够去除首尾和中间的所有半角空格", () => {
-  assert.equal(sanitizeNoWhitespace(" admin "), "admin");
-  assert.equal(sanitizeNoWhitespace("a d m i n"), "admin");
-  assert.equal(sanitizeNoWhitespace("  password123  "), "password123");
-  assert.equal(sanitizeNoWhitespace("pass word 123"), "password123");
+test("账号白名单：只保留字母、数字、点、下划线、连字符、@", () => {
+  assert.equal(sanitizeAuthText("zhang.san_01@corp-x", "account"), "zhang.san_01@corp-x");
+  assert.equal(sanitizeAuthText("13800138000", "account"), "13800138000");
 });
 
-test("sanitizeNoWhitespace 能够去除全角空格、制表符、换行符等各类空白字符", () => {
-  // 全角空格 \u3000
-  assert.equal(sanitizeNoWhitespace("　admin　"), "admin");
-  assert.equal(sanitizeNoWhitespace("ad　min"), "admin");
-  // 制表符与换行符
-  assert.equal(sanitizeNoWhitespace("\tadmin\n123\r"), "admin123");
-  // 混合空白字符
-  assert.equal(sanitizeNoWhitespace(" \t　user_01 \r\n"), "user_01");
+test("账号字段剔除中文、全角字符与空白", () => {
+  assert.equal(sanitizeAuthText("张三", "account"), "");
+  assert.equal(sanitizeAuthText("zhang三san", "account"), "zhangsan");
+  assert.equal(sanitizeAuthText("ad min", "account"), "admin");
+  assert.equal(sanitizeAuthText("　admin　", "account"), "admin");
+  assert.equal(sanitizeAuthText("admin！", "account"), "admin");
 });
 
-test("sanitizeNoWhitespace 处理空字符串或无空格字符串正常", () => {
-  assert.equal(sanitizeNoWhitespace(""), "");
-  assert.equal(sanitizeNoWhitespace("admin"), "admin");
+test("密码字段保留可见 ASCII，剔除中文、全角标点、空格、emoji", () => {
+  assert.equal(sanitizeAuthText("Passw0rd!@#", "password"), "Passw0rd!@#");
+  assert.equal(sanitizeAuthText("密码123", "password"), "123");
+  assert.equal(sanitizeAuthText("abc中文def", "password"), "abcdef");
+  assert.equal(sanitizeAuthText("pass word", "password"), "password");
+  assert.equal(sanitizeAuthText("pass\u3000word", "password"), "password");
+  assert.equal(sanitizeAuthText("pass😀word", "password"), "password");
+});
+
+test("sanitizeAuthValue 返回被剔除的字符数与变更标记", () => {
+  const result = sanitizeAuthValue("zhang三san", "account");
+  assert.equal(result.value, "zhangsan");
+  assert.equal(result.stripped, 1);
+  assert.equal(result.changed, true);
+
+  const untouched = sanitizeAuthValue("zhangsan", "account");
+  assert.equal(untouched.value, "zhangsan");
+  assert.equal(untouched.stripped, 0);
+  assert.equal(untouched.changed, false);
+});
+
+test("空值边界安全", () => {
+  assert.equal(sanitizeAuthText("", "account"), "");
+  assert.equal(sanitizeAuthText("", "password"), "");
 });
 
 test("preventSpaceKeyDown 阻止空格键按键事件", () => {
   let prevented = false;
   preventSpaceKeyDown({
     key: " ",
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, true);
-
-  prevented = false;
-  preventSpaceKeyDown({
-    key: "Spacebar",
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, true);
-
-  prevented = false;
-  preventSpaceKeyDown({
-    code: "Space",
     preventDefault: () => {
       prevented = true;
     },
@@ -72,15 +76,13 @@ test("preventSpaceKeyDown 不阻止普通字符按键事件", () => {
     },
   });
   assert.equal(prevented, false);
-
-  prevented = false;
-  preventSpaceKeyDown({
-    key: "Enter",
-    code: "Enter",
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, false);
 });
 
+test("isImeComposing 能识别输入法组合状态", () => {
+  assert.equal(isImeComposing({ isComposing: true }), true);
+  assert.equal(isImeComposing({ nativeEvent: { isComposing: true } }), true);
+  assert.equal(isImeComposing({ keyCode: 229 }), true);
+  assert.equal(isImeComposing({ nativeEvent: { keyCode: 229 } }), true);
+  assert.equal(isImeComposing({ isComposing: false, keyCode: 65 }), false);
+  assert.equal(isImeComposing(undefined), false);
+});

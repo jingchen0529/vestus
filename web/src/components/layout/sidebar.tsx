@@ -26,6 +26,8 @@ import {
   RefreshCw,
   Globe,
   Link2,
+  MessageSquareText,
+  FolderTree,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -37,7 +39,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export type NavTab = "dashboard" | "users" | "bindings" | "desktop" | "platforms" | "admins" | "activity" | "logs" | "settings";
+export type NavTab = "dashboard" | "users" | "bindings" | "desktop" | "platforms" | "faq" | "faq-groups" | "admins" | "activity" | "logs" | "settings";
 
 interface NavItem {
   id: NavTab;
@@ -51,7 +53,9 @@ interface NavItem {
 }
 
 export function isSuperAdminTab(tab: NavTab): boolean {
-  return ["admins", "desktop", "settings", "bindings"].includes(tab);
+  // 「帮助分组」是结构配置（增删栏目、调整顺序），只对超管开放；
+  // 「帮助内容」对所有管理员可见，普通管理员进只读列表。
+  return ["admins", "desktop", "settings", "bindings", "faq-groups"].includes(tab);
 }
 
 interface SidebarProps {
@@ -153,6 +157,19 @@ export function Sidebar({
       label: "平台管理",
       icon: Globe,
       badge: platformsTotal !== undefined ? `${platformsTotal}` : null,
+      group: "业务运营",
+    },
+    {
+      id: "faq",
+      label: "帮助内容",
+      icon: MessageSquareText,
+      group: "业务运营",
+    },
+    {
+      id: "faq-groups",
+      label: "帮助分组",
+      icon: FolderTree,
+      requiresSuperAdmin: true,
       group: "业务运营",
     },
     {

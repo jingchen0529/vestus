@@ -88,6 +88,7 @@ pub fn run() {
             commands::reset_browser_profiles,
             commands::get_direct_ip,
             commands::get_status,
+            commands::desktop_faq,
             commands::open_external_url,
             commands::check_github_release,
         ])

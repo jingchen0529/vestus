@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  CircleHelp,
   LayoutGrid,
   Settings,
   LogOut,
@@ -11,7 +12,7 @@ import { cn } from "@/lib/utils";
 
 import defaultLogo from "@/assets/logo.png";
 
-export type NavTab = "platforms" | "settings";
+export type NavTab = "platforms" | "faq" | "settings";
 
 interface SidebarProps {
   productName: string;
@@ -24,6 +25,7 @@ interface SidebarProps {
 
 const NAV_ITEMS: { id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "platforms", label: "平台入口", icon: LayoutGrid },
+  { id: "faq", label: "常见问题", icon: CircleHelp },
   { id: "settings", label: "系统配置", icon: Settings },
 ];
 

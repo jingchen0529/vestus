@@ -8,6 +8,8 @@ import { UsersView } from "@/components/users/users-view";
 import { ManagedBindingsView } from "@/components/managed-platforms/managed-bindings-view";
 import { DesktopConfigView } from "@/components/desktop-config/desktop-config-view";
 import { PlatformsView } from "@/components/platforms/platforms-view";
+import { FaqView } from "@/components/desktop-faq/desktop-faq-view";
+import { FaqGroupsView } from "@/components/desktop-faq/desktop-faq-groups-view";
 import { AdminsView } from "@/components/admins/admins-view";
 import { LogsView } from "@/components/logs/logs-view";
 import { ActivityView } from "@/components/activity/activity-view";
@@ -45,6 +47,8 @@ const VALID_TABS: NavTab[] = [
   "bindings",
   "desktop",
   "platforms",
+  "faq",
+  "faq-groups",
   "activity",
   "logs",
   "settings",
@@ -727,6 +731,12 @@ export function App() {
             onDeletePlatform={handleDeletePlatform}
           />
         )}
+
+        {/* Tab: Desktop FAQ（普通管理员只读，编辑按钮对普管隐藏/禁用） */}
+        {currentTab === "faq" && <FaqView isSuperAdmin={isSuperAdmin} />}
+
+        {/* Tab: 帮助分组（栏目结构，仅超管） */}
+        {currentTab === "faq-groups" && isSuperAdmin && <FaqGroupsView />}
 
         {/* Tab 4: Administrators Management */}
         {currentTab === "admins" && isSuperAdmin && (

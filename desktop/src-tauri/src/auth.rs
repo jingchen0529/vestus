@@ -29,6 +29,7 @@ const LOGOUT_PATH: &str = "/api/user/auth/logout";
 const CHANGE_PASSWORD_PATH: &str = "/api/user/auth/change-password";
 const DESKTOP_CONFIG_PATH: &str = "/api/user/desktop-config";
 const DESKTOP_CONFIG_LEASE_PATH: &str = "/api/user/desktop-config/lease";
+const DESKTOP_FAQ_PATH: &str = "/api/user/desktop-faq";
 const PRODUCT_NAME_PATH: &str = "/api/product";
 const ACTIVITY_REPORT_PATH: &str = "/api/user/browser-activity/v2";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -587,6 +588,41 @@ impl DesktopAuthState {
         }
 
         decode_success_json(response, "桌面配置响应格式错误").await
+    }
+
+    /// Fetch the customer help document. Same auth posture as
+    /// ``fetch_desktop_config``: the generic result stays inside Rust, and
+    /// callers must deserialize into an allowlisted shape before anything
+    /// crosses IPC.
+    pub(crate) async fn fetch_desktop_faq<T: DeserializeOwned>(&self) -> AuthResult<T> {
+        let _operation = self.operation.lock().await;
+        let token = self
+            .in_memory_token()?
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| {
+                DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录")
+            })?;
+
+        let response = self
+            .client()?
+            .get(self.endpoint(DESKTOP_FAQ_PATH)?)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(network_error)?;
+
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            self.clear_local_session()?;
+            return Err(DesktopAuthError::new(
+                "unauthenticated",
+                "桌面登录已失效，请重新登录",
+            ));
+        }
+
+        decode_success_json(response, "帮助内容响应格式错误").await
     }
 
     /// Obtain and consume a one-time managed platform bootstrap grant.

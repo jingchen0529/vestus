@@ -9,6 +9,7 @@ from __future__ import annotations
 from app.db.models.admin import Admin
 from app.db.models.assignment import UserPlatformAssignment, UserProxyAssignment
 from app.db.models.browser_activity import BrowserActivityReceipt, BrowserPageVisit, BrowserSession
+from app.db.models.desktop_faq import DesktopFaqGroup, DesktopFaqItem
 from app.db.models.log import UserLog
 from app.db.models.managed_platform import (
     ManagedBrowserSession,
@@ -26,6 +27,8 @@ __all__ = [
     "BrowserActivityReceipt",
     "BrowserPageVisit",
     "BrowserSession",
+    "DesktopFaqGroup",
+    "DesktopFaqItem",
     "ManagedBrowserSession",
     "ManagedPlatformAccount",
     "ManagedPlatformBinding",

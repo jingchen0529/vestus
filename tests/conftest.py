@@ -148,6 +148,8 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestC
         ManagedPlatformAccount=models.ManagedPlatformAccount,
         ManagedPlatformBinding=models.ManagedPlatformBinding,
         ManagedBrowserSession=models.ManagedBrowserSession,
+        DesktopFaqGroup=models.DesktopFaqGroup,
+        DesktopFaqItem=models.DesktopFaqItem,
     )
     try:
         with TestClient(application, client=("198.51.100.27", 50000)) as client:

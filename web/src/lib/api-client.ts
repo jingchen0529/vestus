@@ -48,6 +48,12 @@ import {
   DailyActivityResponse,
   toBrowserSessionQuery,
 } from "@/types/browser-activity";
+import {
+  AdminDesktopFaqResponse,
+  DesktopFaqDocument,
+  DesktopFaqTemplateResponse,
+  UserDesktopFaqResponse,
+} from "@/types/desktop-faq";
 import { API_CODE_OK, ApiCollection, ApiEnvelope, SystemHealth } from "@/types/api";
 
 const REQUEST_FAILED_MESSAGE = "请求失败，请稍后重试";
@@ -660,6 +666,32 @@ export const api = {
     return request<SystemSettingsData>("/api/admin/settings");
   },
 
+  // Desktop FAQ (客户端帮助内容)
+  async getDesktopFaq(): Promise<AdminDesktopFaqResponse> {
+    return request<AdminDesktopFaqResponse>("/api/admin/desktop-faq");
+  },
+
+  /** 内置模板：`faq` 是带 `groups` 包裹的文档，和 GET /api/admin/desktop-faq 的数组形状不同。 */
+  async getDesktopFaqTemplate(): Promise<DesktopFaqTemplateResponse> {
+    return request<DesktopFaqTemplateResponse>("/api/admin/desktop-faq/template");
+  },
+
+  async saveDesktopFaq(payload: DesktopFaqDocument): Promise<AdminDesktopFaqResponse> {
+    return request<AdminDesktopFaqResponse>("/api/admin/desktop-faq", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async resetDesktopFaq(): Promise<AdminDesktopFaqResponse> {
+    return request<AdminDesktopFaqResponse>("/api/admin/desktop-faq", {
+      method: "DELETE",
+    });
+  },
+
+  async getUserDesktopFaq(): Promise<UserDesktopFaqResponse> {
+    return request<UserDesktopFaqResponse>("/api/user/desktop-faq");
+  },
   async updateSettings(data: Partial<SystemSettingsData>): Promise<SystemSettingsData> {
     return request<SystemSettingsData>("/api/admin/settings", {
       method: "PUT",

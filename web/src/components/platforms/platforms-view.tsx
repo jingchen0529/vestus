@@ -409,7 +409,7 @@ export function PlatformsView({
             </DialogDescription>
           </DialogHeader>
 
-          <DialogFooter className="gap-2 sm:gap-0 pt-2">
+          <DialogFooter>
             <Button
               variant="outline"
               size="sm"

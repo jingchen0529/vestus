@@ -5,6 +5,7 @@ import { Sidebar, NavTab } from "@/components/layout/Sidebar";
 import { LoginCard } from "@/components/auth/LoginCard";
 import { ChangePasswordCard } from "@/components/auth/ChangePasswordCard";
 import { PlatformLauncher } from "@/components/browser/PlatformLauncher";
+import { FaqView } from "@/components/faq/FaqView";
 import { SystemSettings } from "@/components/settings/SystemSettings";
 import { authService, UserAccount } from "@/services/authService";
 import {
@@ -487,6 +488,8 @@ function MainLayout() {
             onRetryConfig={() => syncDesktopConfig(true)}
             onOpenBrowser={handleOpenBrowser}
           />
+        ) : activeTab === "faq" ? (
+          <FaqView />
         ) : (
           <SystemSettings
             productName={productName}

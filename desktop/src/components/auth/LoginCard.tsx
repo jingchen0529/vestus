@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { Lock, User, Eye, EyeOff, ArrowRight, ShieldCheck } from "lucide-react";
+import { Lock, User, Eye, EyeOff, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { authService, UserAccount } from "@/services/authService";
 import { useToast } from "@/components/ui/toast";
-import { sanitizeNoWhitespace, preventSpaceKeyDown } from "./authInputHelpers";
+import { useRestrictedInput } from "@/hooks/useRestrictedInput";
+import { sanitizeAuthText, preventSpaceKeyDown } from "./authInputHelpers";
 
 import defaultLogo from "@/assets/logo.png";
 
@@ -13,7 +14,7 @@ const REMEMBER_PASSWORD_KEY = "vestus_desktop_remembered_password_v1";
 
 function readRememberedUsername(): string {
   try {
-    return sanitizeNoWhitespace(window.localStorage.getItem(REMEMBER_USERNAME_KEY) || "");
+    return sanitizeAuthText(window.localStorage.getItem(REMEMBER_USERNAME_KEY) || "", "account");
   } catch {
     return "";
   }
@@ -23,7 +24,7 @@ function readRememberedPassword(): string {
   try {
     const raw = window.localStorage.getItem(REMEMBER_PASSWORD_KEY);
     if (!raw) return "";
-    return sanitizeNoWhitespace(decodeURIComponent(escape(window.atob(raw))));
+    return sanitizeAuthText(decodeURIComponent(escape(window.atob(raw))), "password");
   } catch {
     return "";
   }
@@ -31,8 +32,8 @@ function readRememberedPassword(): string {
 
 function writeRememberedCredentials(username: string, password: string): void {
   try {
-    const cleanUser = sanitizeNoWhitespace(username);
-    const cleanPass = sanitizeNoWhitespace(password);
+    const cleanUser = sanitizeAuthText(username, "account");
+    const cleanPass = sanitizeAuthText(password, "password");
     if (cleanUser) {
       window.localStorage.setItem(REMEMBER_USERNAME_KEY, cleanUser);
       window.localStorage.setItem(REMEMBER_PASSWORD_KEY, window.btoa(unescape(encodeURIComponent(cleanPass))));
@@ -59,9 +60,17 @@ export const LoginCard: React.FC<LoginCardProps> = ({
   onLoginSuccess,
 }) => {
   const { success, error } = useToast();
-  const [username, setUsername] = useState(() => readRememberedUsername());
-  const [password, setPassword] = useState(() => readRememberedPassword());
-  const [rememberUsername, setRememberUsername] = useState(() => Boolean(readRememberedUsername()));
+  const [initialUsername] = useState(readRememberedUsername);
+  const [initialPassword] = useState(readRememberedPassword);
+  const {
+    value: username,
+    inputProps: usernameInputProps,
+  } = useRestrictedInput("account", initialUsername);
+  const {
+    value: password,
+    inputProps: passwordInputProps,
+  } = useRestrictedInput("password", initialPassword);
+  const [rememberUsername, setRememberUsername] = useState(() => Boolean(initialUsername));
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(notice || null);
@@ -72,8 +81,8 @@ export const LoginCard: React.FC<LoginCardProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanUsername = sanitizeNoWhitespace(username);
-    const cleanPassword = sanitizeNoWhitespace(password);
+    const cleanUsername = sanitizeAuthText(username, "account");
+    const cleanPassword = sanitizeAuthText(password, "password");
 
     if (!cleanUsername) {
       setErrMsg("请输入账号");
@@ -148,9 +157,8 @@ export const LoginCard: React.FC<LoginCardProps> = ({
               <label className="text-[11px] font-medium text-muted-foreground">登录账号</label>
               <Input
                 type="text"
-                placeholder="请输入登录账号"
-                value={username}
-                onChange={(e) => setUsername(sanitizeNoWhitespace(e.target.value))}
+                placeholder="请输入登录账号（英文/数字）"
+                {...usernameInputProps}
                 onKeyDown={preventSpaceKeyDown}
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -168,8 +176,7 @@ export const LoginCard: React.FC<LoginCardProps> = ({
               <Input
                 type={showPassword ? "text" : "password"}
                 placeholder="请输入登录密码"
-                value={password}
-                onChange={(e) => setPassword(sanitizeNoWhitespace(e.target.value))}
+                {...passwordInputProps}
                 onKeyDown={preventSpaceKeyDown}
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -217,16 +224,7 @@ export const LoginCard: React.FC<LoginCardProps> = ({
               {!loading && <ArrowRight className="h-[15px] w-[15px]" />}
             </Button>
           </form>
-
-          <div className="mt-3.5 flex items-center justify-center gap-1.5 text-[10px] text-muted-foreground/70">
-            <ShieldCheck className="h-3 w-3 shrink-0" />
-            <span>凭据仅在本机与服务器之间传输，不写入日志</span>
-          </div>
         </div>
-
-        <p className="mt-2 hidden text-center text-[10px] text-muted-foreground/60 [@media(min-height:520px)]:block">
-          账号由管理员统一开通，忘记密码请联系管理员
-        </p>
       </div>
     </div>
   );

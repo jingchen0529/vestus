@@ -17,6 +17,9 @@
 - `user_log`：管理员和桌面端用户操作日志
 - `proxy` / `platform`：管理员维护的代理节点和平台入口；所有 active 平台下发给全部桌面用户，代理按用户解析（单独指派 → 默认节点 → 第一条启用节点）
 - `user_proxy_assignment` / `user_platform_assignment`：历史用户配置关联表，仅为兼容保留，桌面配置读取不再使用
+- `managed_platform_account` / `managed_platform_binding`：「用户 × 托管账号」的账号池与绑定关系；凭据只有超管接口可读
+- `browser_session` / `browser_page_visit` / `browser_activity_receipt`：浏览活动按天汇总、页面明细，以及 v2 投递的幂等收据
+- `desktop_faq_group` / `desktop_faq_item`：桌面端「常见问题」的分组与问答，`sort_order` 决定展示顺序
 - `system_setting`：产品名称、Logo 与界面颜色配置
 - `uploaded_file`：上传文件元数据（只保存相对路径）
 
@@ -82,6 +85,14 @@ VESTUS_DATABASE_URL='sqlite:////tmp/vestus-test.db' uvicorn app.main:app
   服务端登录模式还需要配置
   `VESTUS_MANAGED_CHROMIUM_PATH` 并安装 Python Playwright；验证码、MFA 或无法识别的
   方舟登录页会返回 `needs_manual_verification`，不会绕过风控。
+- 桌面端帮助内容（常见问题）：管理端 `GET/PUT/DELETE /api/admin/desktop-faq` 读写整篇文档，
+  `GET /api/admin/desktop-faq/template` 取随版本内置的模板；桌面端 `GET /api/user/desktop-faq` 只拿启用的分组与问答，
+  一个启用条目都没有时返回 `faq: null`，客户端回落到随包基线。保存是整篇替换（单事务），
+  分组允许为空——空分组不会下发给客户端。
+  **响应形状不统一，取值前必须判类型**：这三个读接口的 `data.faq` 是**分组数组**（服务层
+  `_assemble()` 直接返回 list），只有 `/template` 返回 `{ faq: { groups: [...] } }`。
+  直接写 `data.faq.groups` 会拿到 `undefined`——2026-11-05 管理端白屏就是这个原因。
+  桌面端 Rust 在 IPC 出口又把数组包成 `{ groups }` 交给前端，所以「HTTP 层是数组、IPC 层是对象」。
 - 全局桌面配置：桌面端 `/api/user/desktop-config`；已废弃的管理员 `/api/admin/users/{id}/desktop-config` 按用户接口统一返回 HTTP 410
 - 配置存续校验：桌面端 `GET /api/user/desktop-config/lease`
 - 产品名称：登录前公开读取 `GET /api/product`

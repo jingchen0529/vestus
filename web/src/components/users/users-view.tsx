@@ -351,7 +351,7 @@ export function UsersView({
             </DialogDescription>
           </DialogHeader>
 
-          <DialogFooter className="gap-2 sm:gap-0 mt-4">
+          <DialogFooter className="mt-4">
             <Button
               type="button"
               variant="outline"

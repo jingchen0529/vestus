@@ -90,6 +90,28 @@ export interface BrowserProfileResetView {
   removed: number;
 }
 
+export interface DesktopFaqItemView {
+  question: string;
+  answer: string;
+}
+
+export interface DesktopFaqGroupView {
+  title: string;
+  items: DesktopFaqItemView[];
+}
+
+/**
+ * 服务端自定义的帮助内容；`null` 表示后台未配置，前端回退内置基线。
+ *
+ * 形状是 `{ groups: [...] }`（Rust 侧 `DesktopFaqView` 序列化的结果），**不是数组**；
+ * 而 HTTP 上的 `data.faq` 才是数组——Rust 在中间做过一次包装，别把两层的形状搞混。
+ */
+export interface DesktopFaqDocumentView {
+  groups: DesktopFaqGroupView[];
+}
+
+export type DesktopFaqPayload = DesktopFaqDocumentView | null;
+
 // 检查是否运行在桌面原生 Tauri 环境
 export const isTauri = (): boolean => {
   return typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__);
@@ -133,6 +155,11 @@ export const tauriBridge = {
 
   async getStatus(): Promise<StatusView> {
     return await invokeDesktop<StatusView>("get_status");
+  },
+
+  /** 拉取管理员配置的「常见问题」内容；未配置返回 null。 */
+  async fetchDesktopFaq(): Promise<DesktopFaqPayload> {
+    return await invokeDesktop<DesktopFaqPayload>("desktop_faq");
   },
 
   /**
