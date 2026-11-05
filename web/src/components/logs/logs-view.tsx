@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { LogTable } from "./log-table";
 import { LogDetailModal } from "./log-detail-modal";
-import { UserLogItem } from "@/types/log";
+import { AUDIT_LOG_CATEGORY_LABELS, AuditLogCategoryFilter, getLogPresentation, UserLogItem } from "@/types/log";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -30,6 +30,8 @@ interface LogsViewProps {
   onPageSizeChange?: (pageSize: number) => void;
   statusFilter: string;
   onStatusFilterChange: (val: string) => void;
+  categoryFilter: AuditLogCategoryFilter;
+  onCategoryFilterChange: (val: AuditLogCategoryFilter) => void;
   onRefresh: () => void;
   isRefreshing?: boolean;
 }
@@ -43,6 +45,8 @@ export function LogsView({
   onPageSizeChange,
   statusFilter,
   onStatusFilterChange,
+  categoryFilter = "ALL",
+  onCategoryFilterChange,
   onRefresh,
   isRefreshing,
 }: LogsViewProps) {
@@ -56,6 +60,18 @@ export function LogsView({
     setDetailOpen(true);
   };
 
+  const collectExportLogs = async () => {
+    // Always query the clicked filter snapshot, never reuse potentially stale page data.
+    const allLogs = await api.fetchAllLogs({
+      status: statusFilter === "ALL" ? undefined : statusFilter,
+      category: categoryFilter === "ALL" ? undefined : categoryFilter,
+    });
+    return allLogs.map((log) => {
+      const { actionLabel, category, categoryLabel } = getLogPresentation(log);
+      return { ...log, actionLabel, category, categoryLabel };
+    });
+  };
+
   const handleExportJson = async () => {
     if (totalLogs === 0 && logs.length === 0) {
       toast.warning("当前列表无数据可导出");
@@ -63,10 +79,7 @@ export function LogsView({
     }
     try {
       setIsExportingJson(true);
-      const allLogs =
-        logs.length === totalLogs && currentPage === 1
-          ? logs
-          : await api.fetchAllLogs({ status: statusFilter === "ALL" ? undefined : statusFilter });
+      const allLogs = await collectExportLogs();
 
       if (allLogs.length === 0) {
         toast.warning("未检索到可导出的数据");
@@ -91,10 +104,7 @@ export function LogsView({
     }
     try {
       setIsExportingCsv(true);
-      const allLogs =
-        logs.length === totalLogs && currentPage === 1
-          ? logs
-          : await api.fetchAllLogs({ status: statusFilter === "ALL" ? undefined : statusFilter });
+      const allLogs = await collectExportLogs();
 
       if (allLogs.length === 0) {
         toast.warning("未检索到可导出的数据");
@@ -106,7 +116,10 @@ export function LogsView({
         { label: "主体类型", key: "actorType" },
         { label: "主体账号", key: "actorUsername" },
         { label: "主体角色", key: "actorRole" },
-        { label: "动作类型", key: "action" },
+        { label: "事件代码", key: "action" },
+        { label: "操作内容", key: "actionLabel" },
+        { label: "类别代码", key: "category" },
+        { label: "类别", key: "categoryLabel" },
         { label: "摘要说明", key: "summary" },
         { label: "来源IP", key: "ipAddress" },
         { label: "结果状态", key: "status" },
@@ -166,15 +179,35 @@ export function LogsView({
           </PageToolbarActions>
 
           <PageToolbarFilters>
-            <div className="w-44 shrink-0">
+            <div className="w-40 shrink-0">
+              <Select
+                value={categoryFilter}
+                onValueChange={(value) => onCategoryFilterChange(value as AuditLogCategoryFilter)}
+              >
+                <SelectTrigger size="sm" aria-label="日志类别">
+                  <SelectValue placeholder="全部类别">
+                    {categoryFilter === "ALL" ? "全部类别" : AUDIT_LOG_CATEGORY_LABELS[categoryFilter]}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL" className="text-xs">全部类别</SelectItem>
+                  {Object.entries(AUDIT_LOG_CATEGORY_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value} className="text-xs">{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-36 shrink-0">
               <Select value={statusFilter} onValueChange={onStatusFilterChange}>
-                <SelectTrigger size="sm">
-                  <SelectValue placeholder="全部结果" />
+                <SelectTrigger size="sm" aria-label="执行结果">
+                  <SelectValue placeholder="全部结果">
+                    {statusFilter === "SUCCESS" ? "执行成功" : statusFilter === "FAILED" ? "执行失败" : "全部结果"}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ALL" className="text-xs">全部结果</SelectItem>
-                  <SelectItem value="SUCCESS" className="text-xs">执行成功 (SUCCESS)</SelectItem>
-                  <SelectItem value="FAILED" className="text-xs">执行失败 (FAILED)</SelectItem>
+                  <SelectItem value="SUCCESS" className="text-xs">执行成功</SelectItem>
+                  <SelectItem value="FAILED" className="text-xs">执行失败</SelectItem>
                 </SelectContent>
               </Select>
             </div>

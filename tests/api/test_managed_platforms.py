@@ -23,6 +23,13 @@ def _disable_real_identity_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture()
+def recovery_enabled(api: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The app lifespan has already started with recovery disabled. Enable only
+    # request-time queueing; no background worker or real browser is started.
+    monkeypatch.setenv("VESTUS_MANAGED_RECOVERY_ENABLED", "1")
+
+
 def _login(client: Any, path: str, username: str, password: str) -> str:
     response = client.post(path, json={"username": username, "password": password})
     assert response.status_code == 200, response.text
@@ -56,7 +63,7 @@ def _setup(client: Any) -> tuple[str, str, dict[str, Any]]:
     return admin_token, _login(client, "/api/user/auth/login", "managed-user", "managed-password"), platform
 
 
-def test_admin_managed_account_create_keeps_legacy_list_secret_free(api: Any) -> None:
+def test_admin_managed_account_create_keeps_legacy_list_secret_free(api: Any, recovery_enabled: None) -> None:
     client, module = api
     admin_token, _user_token, platform = _setup(client)
     response = client.post(
@@ -279,7 +286,7 @@ def test_expired_managed_account_invalidates_pending_bootstrap(api: Any) -> None
     assert consumed.status_code == 409, consumed.text
 
 
-def test_managed_account_update_rotates_version_without_returning_secret(api: Any) -> None:
+def test_managed_account_update_rotates_version_without_returning_secret(api: Any, recovery_enabled: None) -> None:
     client, _module = api
     admin_token, _user_token, platform = _setup(client)
     created = client.post(
@@ -357,7 +364,7 @@ def test_plain_admin_cannot_manage_managed_platform_accounts(api: Any) -> None:
     ).status_code == 403
 
 
-def test_super_admin_can_upsert_user_managed_account_in_plaintext(api: Any) -> None:
+def test_super_admin_can_upsert_user_managed_account_in_plaintext(api: Any, recovery_enabled: None) -> None:
     client, module = api
     admin_token, _user_token, platform = _setup(client)
 
@@ -394,7 +401,7 @@ def test_super_admin_can_upsert_user_managed_account_in_plaintext(api: Any) -> N
         assert row.encrypted_password is None
 
 
-def test_user_managed_account_switching_modes_clears_unused_plaintext_secret(api: Any) -> None:
+def test_user_managed_account_switching_modes_clears_unused_plaintext_secret(api: Any, recovery_enabled: None) -> None:
     client, module = api
     admin_token, _user_token, platform = _setup(client)
     cookie_bundle = [{"name": "sessionid", "value": "cookie-secret", "domain": ".example.test"}]
@@ -675,7 +682,7 @@ def test_binding_repository_can_list_and_get_account_specific_rows(api: Any) -> 
         assert selected.managed_account_id == 202
 
 
-def test_user_bound_managed_accounts_support_per_account_create_get_and_patch(api: Any) -> None:
+def test_user_bound_managed_accounts_support_per_account_create_get_and_patch(api: Any, recovery_enabled: None) -> None:
     client, _module = api
     admin_token, _user_token, _platform = _setup(client)
 
@@ -868,7 +875,9 @@ def test_report_session_expired_marks_account_and_blocks_bootstrap(api: Any) -> 
 
 
 @pytest.mark.parametrize("endpoint", ["account-patch", "user-patch", "legacy-put"])
-def test_admin_credential_rotation_resets_session_status(api: Any, endpoint: str) -> None:
+def test_admin_credential_rotation_resets_session_status(
+    api: Any, endpoint: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client, module = api
     admin_token, user_token, platform = _setup(client)
     account_id = _cookie_account_with_binding(client, admin_token, platform)
@@ -876,6 +885,7 @@ def test_admin_credential_rotation_resets_session_status(api: Any, endpoint: str
     reported = _report_expired(client, user_token, platform, identity)
     assert reported.status_code == 200, reported.text
 
+    _install_probe(monkeypatch, _verified_probe([]))
     credentials = {
         "authMode": "cookie",
         "cookieBundle": [{"name": "sessionid", "value": "fresh-cookie", "domain": ".example.test"}],
@@ -1239,9 +1249,9 @@ def test_expiry_cas_does_not_overwrite_concurrent_fresh_credentials(api: Any, mo
         assert session.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").count() == 0
 
 
-def test_bootstrap_provider_cannot_overwrite_concurrent_rotation(api: Any) -> None:
+def test_recovery_provider_cannot_overwrite_concurrent_rotation(api: Any, recovery_enabled: None) -> None:
     from app.services import managed_platforms as service
-    from app.services.errors import ConflictError
+    from app.services.managed_recovery import run_recovery
 
     client, module = api
     admin_token, _user_token, platform = _setup(client)
@@ -1255,15 +1265,19 @@ def test_bootstrap_provider_cannot_overwrite_concurrent_rotation(api: Any) -> No
     class RacingProvider:
         def verify(self, **_kwargs: Any) -> service.ManagedLoginResult:
             service.update_account(module.db._database, account_id, {"password": "fresh-password"})
-            return service.ManagedLoginResult("verified", [{"name": "sid", "value": "stale-result", "domain": ".example.test"}])
+            return service.ManagedLoginResult(
+                "verified", [{"name": "sid", "value": "stale-result", "domain": ".example.test"}],
+                remote_account_id="test-remote-user",
+            )
 
-    with pytest.raises(ConflictError):
-        service.issue_bootstrap(module.db._database, 1, platform["id"], "device-a", provider=RacingProvider())
+    assert run_recovery(module.db._database, account_id, provider=RacingProvider()) is False
+    after = payload(client.get("/api/admin/users/1/managed-account", headers=_bearer(admin_token)))
+    assert after["password"] == "fresh-password"
+    assert after["cookieBundle"] == []
+    assert after["credentialVersion"] == 2
+    assert after["sessionStatus"] == "expired"
+    assert after["recoveryStatus"] == "pending"
     with module.db.session() as session:
-        account = session.get(module.ManagedPlatformAccount, account_id)
-        assert account.password == "fresh-password"
-        assert account.cookie_bundle is None
-        assert account.credential_version == 2
         assert session.query(module.ManagedBrowserSession).count() == 0
 
 
@@ -1517,7 +1531,9 @@ def test_identity_probe_unavailable_does_not_block_admin_create(
     assert data["identityCheckedAt"] is None
 
 
-def test_identity_probe_not_called_for_server_login_accounts(api: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_identity_probe_not_called_for_server_login_accounts(
+    api: Any, monkeypatch: pytest.MonkeyPatch, recovery_enabled: None,
+) -> None:
     client, _module = api
     admin_token, _user_token, platform = _setup(client)
     calls: list = []
@@ -1586,7 +1602,7 @@ def _session_cookie(value: str) -> dict[str, Any]:
     }
 
 
-def test_identity_check_endpoint_verifies_and_restores_session(
+def test_identity_check_endpoint_refreshes_identity_without_restoring_expired_session(
     api: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, module = api
@@ -1609,9 +1625,9 @@ def test_identity_check_endpoint_verifies_and_restores_session(
     assert response.status_code == 200, response.text
     data = payload(response)
     assert data["state"] == "verified"
-    assert data["detail"] == "登录态有效"
-    assert data["account"]["sessionStatus"] == "valid"
-    assert data["account"]["lastError"] is None
+    assert "替换 Cookie" in data["detail"]
+    assert data["account"]["sessionStatus"] == "expired"
+    assert data["account"]["lastError"] == "客户端上报平台侧退出"
     assert data["account"]["remoteDisplayName"] == "潘鹏 · 天津志禧网络技术有限公司"
     assert len(calls) == 1
 
@@ -1643,7 +1659,9 @@ def test_identity_check_endpoint_marks_invalid_session_expired(
     assert issued.status_code == 409, issued.text
 
 
-def test_identity_check_endpoint_rejects_non_cookie_account(api: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_identity_check_endpoint_rejects_non_cookie_account(
+    api: Any, monkeypatch: pytest.MonkeyPatch, recovery_enabled: None,
+) -> None:
     client, module = api
     admin_token, _user_token, platform = _setup(client)
     response = client.post(

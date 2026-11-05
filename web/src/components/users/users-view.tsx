@@ -201,9 +201,12 @@ export function UsersView({
     if (!onCheckIdentity || !managedUser) {
       throw new Error("当前登录身份无法检查登录态");
     }
-    const result = await onCheckIdentity(managedAccountId);
-    await refreshManagedBindingsForUser(managedUser.id);
-    return result;
+    try {
+      return await onCheckIdentity(managedAccountId);
+    } finally {
+      // 503 也会更新最近检查信息，不能只在检查成功时刷新。
+      await refreshManagedBindingsForUser(managedUser.id);
+    }
   };
 
   const handleCreateUserManagedAccount = async (

@@ -39,7 +39,12 @@ import {
   UserManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
 import { parseCookieInput } from "@/lib/cookie-parser";
-import { isManagedRecovering, managedRecoveryLabel } from "@/lib/managed-recovery";
+import { formatDate } from "@/lib/utils";
+import {
+  managedIdentityCheckErrorToast,
+  managedIdentityCheckToast,
+  managedIdentityDisplay,
+} from "@/lib/managed-identity-display";
 import {
   ClipboardPaste,
   Edit2,
@@ -73,7 +78,6 @@ export function buildManagedAccountPayload(
     payload.name = values.name.trim();
   }
   if (values.authMode === "server_login") {
-    payload.autoRelogin = true;
     if (values.username.trim()) payload.username = values.username.trim();
     if (values.password) payload.password = values.password;
   } else if (values.cookieJson.trim()) {
@@ -134,17 +138,11 @@ export function ManagedAccountBindingList({
     setCheckingId(item.managedAccountId);
     try {
       const result = await onCheckIdentity(item.managedAccountId);
-      if (result.state === "verified") {
-        toast.success(`登录态有效：${result.account.remoteDisplayName || "身份已刷新"}`);
-      } else {
-        toast.error("登录态已失效，会话已标记过期", {
-          description: result.detail || "上游返回未登录，请替换 Cookie",
-        });
-      }
+      const notification = managedIdentityCheckToast(result);
+      toast[notification.level](notification.message, { description: notification.description });
     } catch (error) {
-      toast.error("检查登录态失败", {
-        description: error instanceof Error ? error.message : "请稍后重试",
-      });
+      const notification = managedIdentityCheckErrorToast(error);
+      toast[notification.level](notification.message, { description: notification.description });
     } finally {
       setCheckingId(null);
     }
@@ -180,6 +178,7 @@ export function ManagedAccountBindingList({
             const poolAccount = accountMap.get(item.managedAccountId);
             const resolvedAuthMode = item.authMode || poolAccount?.authMode;
             const resolvedAlias = item.alias || poolAccount?.name;
+            const identityDisplay = managedIdentityDisplay({ ...item, authMode: resolvedAuthMode });
             const isRowBusy = disabled || busyAccountId === item.managedAccountId;
 
             return (
@@ -230,22 +229,24 @@ export function ManagedAccountBindingList({
                 <TableCell className="py-3 whitespace-nowrap">
                   <div className="flex items-center gap-1.5">
                     {renderBindingStatusBadge(item.status)}
-                    {isManagedRecovering(item) ? (
-                      <Badge variant="warning" className="gap-1 text-[10px]" title={item.lastError || undefined}>
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        {managedRecoveryLabel(item)}
+                    {identityDisplay.variant !== "outline" && (
+                      <Badge variant={identityDisplay.variant} className="gap-1 text-[10px]" title={identityDisplay.detail || undefined}>
+                        {identityDisplay.recovering ? <RefreshCw className="h-3 w-3 animate-spin" /> : <ShieldAlert className="h-3 w-3" />}
+                        {identityDisplay.label}
                       </Badge>
-                    ) : item.recoveryStatus === "failed" ? (
-                      <Badge variant="destructive" className="text-[10px]" title={item.lastError || undefined}>
-                        自动恢复失败
-                      </Badge>
-                    ) : item.sessionStatus === "expired" ? (
-                      <Badge variant="destructive" className="gap-1 text-[10px]" title={item.lastError || undefined}>
-                        <ShieldAlert className="h-3 w-3" />
-                        会话已失效
-                      </Badge>
-                    ) : null}
+                    )}
                   </div>
+                  {identityDisplay.variant !== "outline" && identityDisplay.detail && (
+                    <p className="mt-1 max-w-xs whitespace-normal break-words text-[11px] text-muted-foreground">
+                      {identityDisplay.detail}
+                    </p>
+                  )}
+                  {identityDisplay.checkedAt && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">最近检查：{formatDate(identityDisplay.checkedAt)}</p>
+                  )}
+                  {identityDisplay.verifiedAt && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">身份校验成功：{formatDate(identityDisplay.verifiedAt)}</p>
+                  )}
                 </TableCell>
                 {showActions && (
                   <TableCell className="py-3 pr-4 text-right whitespace-nowrap">
@@ -617,7 +618,6 @@ export function ManagedAccountDialog({
           if (authMode === "server_login") {
             if (parsedPayload.username) updatePayload.username = parsedPayload.username;
             if (parsedPayload.password) updatePayload.password = parsedPayload.password;
-            updatePayload.autoRelogin = true;
           } else if (parsedPayload.cookieBundle) {
             updatePayload.cookieBundle = parsedPayload.cookieBundle;
           }

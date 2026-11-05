@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.audit_events import AuthSource
 from app.core.config import get_settings
 from app.core.security import (
     create_access_token,
@@ -101,11 +102,15 @@ def _reject(
     error: ServiceError,
     *,
     model: Any = None,
+    auth_source: Optional[AuthSource] = None,
 ) -> ServiceError:
     """Write the ``FAILED`` login row and hand the error back to the caller."""
 
     context = audit.for_account(account_type, model) if audit and model is not None else audit
-    record(session, context, "LOGIN", f"{username}: {reason}", status="FAILED")
+    record(
+        session, context, "LOGIN", f"{username}: {reason}", status="FAILED",
+        details={"authSource": auth_source} if auth_source else None,
+    )
     return error
 
 
@@ -142,6 +147,8 @@ def _refuse_login(
     account_type: str,
     model: Any,
     password: str,
+    *,
+    auth_source: Optional[AuthSource] = None,
 ) -> Optional[ServiceError]:
     """Run every rejection rule in the original order; ``None`` means allowed."""
 
@@ -160,6 +167,7 @@ def _refuse_login(
             "密码错误",
             AuthenticationError(INVALID_CREDENTIALS_DETAIL),
             model=model,
+            auth_source=auth_source,
         )
     if model.status != "active":
         return _reject(
@@ -170,6 +178,7 @@ def _refuse_login(
             "账号不可用",
             AccountUnavailableError(ACCOUNT_UNAVAILABLE_DETAIL),
             model=model,
+            auth_source=auth_source,
         )
     if isinstance(model, User) and model.expires_at is not None and utc_now() >= model.expires_at:
         return _reject(
@@ -180,6 +189,7 @@ def _refuse_login(
             "账号已过期",
             AccountUnavailableError(ACCOUNT_EXPIRED_DETAIL),
             model=model,
+            auth_source=auth_source,
         )
     if isinstance(model, User) and model.locked_until is not None and utc_now() < model.locked_until:
         # A lockout is the consequence of attempts that were already logged;
@@ -196,6 +206,7 @@ def login(
     *,
     device_id: Optional[str] = None,
     audit: Optional[AuditContext] = None,
+    auth_source: Optional[AuthSource] = None,
 ) -> TokenGrant:
     """Authenticate one account, committing the outcome either way.
 
@@ -218,9 +229,10 @@ def login(
                 username,
                 "账号不存在",
                 AuthenticationError(INVALID_CREDENTIALS_DETAIL),
+                auth_source=auth_source,
             )
         else:
-            failure = _refuse_login(session, audit, account_type, model, password)
+            failure = _refuse_login(session, audit, account_type, model, password, auth_source=auth_source)
         if failure is None and model is not None:
             if password_needs_rehash(model.password_hash):
                 # Upgrade the stored hash silently; the old format is never exposed.
@@ -230,12 +242,17 @@ def login(
             token, expires = create_access_token(
                 account_type, model.id, int(model.token_version or 1), ttl
             )
+            login_details: Dict[str, Any] = {}
+            if device_id:
+                login_details["deviceId"] = device_id
+            if auth_source:
+                login_details["authSource"] = auth_source
             record(
                 session,
                 audit.for_account(account_type, model) if audit else None,
                 "LOGIN",
                 "登录成功",
-                details={"deviceId": device_id} if device_id else None,
+                details=login_details or None,
             )
             grant = TokenGrant(
                 payload=_token_payload(account_type, model, token, expires),

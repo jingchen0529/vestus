@@ -435,6 +435,71 @@ test("编辑用户明确改变状态时提交新状态", async () => {
   assert.equal(payload.status, "disabled");
 });
 
+test("审计日志将后端中文动作、类别和摘要合为操作内容一列", async () => {
+  const { LogTable } = await server.ssrLoadModule("/src/components/logs/log-table.tsx");
+  const html = renderToStaticMarkup(createElement(LogTable, {
+    logs: [{
+      id: 61,
+      actorType: "admin",
+      actorUsername: "audit-operator",
+      actorRole: "super_admin",
+      action: "DESKTOP_FAQ_UPDATED",
+      actionLabel: "更新桌面端帮助内容",
+      category: "admin_operation",
+      categoryLabel: "管理端操作",
+      summary: "更新了帮助文档的分组与说明",
+      status: "SUCCESS",
+      createdAt: "2026-11-05T02:00:00Z",
+    }],
+    onViewDetail() {},
+  }));
+
+  const headers = [...html.matchAll(/<th\b[^>]*>(.*?)<\/th>/g)].map((match) => match[1]);
+  assert.deepEqual(headers, ["操作时间", "操作主体", "操作内容", "客户端 IP", "结果", "详情"]);
+  const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map((match) => match[1]);
+  assert.match(cells[1], /管理员/);
+  assert.match(cells[1], /超级管理员/);
+  assert.match(cells[2], /更新桌面端帮助内容/);
+  assert.match(cells[2], /管理端操作/);
+  assert.match(cells[2], /更新了帮助文档的分组与说明/);
+  assert.doesNotMatch(html, /DESKTOP_FAQ_UPDATED|super_admin/);
+});
+
+test("旧审计响应保守显示中文，不按事件前缀推断来源或将匿名账号当作系统", async () => {
+  const { LogTable } = await server.ssrLoadModule("/src/components/logs/log-table.tsx");
+  const html = renderToStaticMarkup(createElement(LogTable, {
+    logs: [
+      { id: 71, actorType: "user", actorRole: "user", action: "LOGIN", summary: "账号登录未通过", status: "FAILED" },
+      { id: 72, actorType: "admin", actorRole: "admin", action: "USER_CREATED", summary: "建立桌面账号", status: "SUCCESS" },
+      { id: 73, actorType: "system", action: "NEW_SYSTEM_EVENT", summary: "后台维护完成", status: "SUCCESS" },
+      { id: 74, actorType: "admin", action: "DESKTOP_FAQ_UPDATED", summary: "修改帮助内容", status: "SUCCESS" },
+    ],
+    onViewDetail() {},
+  }));
+
+  assert.equal((html.match(/>其他操作</g) || []).length, 4);
+  assert.equal((html.match(/>来源不明</g) || []).length, 4);
+  assert.equal((html.match(/>未识别账号</g) || []).length, 3);
+  assert.match(html, />系统</);
+  assert.match(html, /桌面用户/);
+  assert.match(html, /普通管理员/);
+  assert.doesNotMatch(html, /LOGIN|USER_CREATED|NEW_SYSTEM_EVENT|DESKTOP_FAQ_UPDATED|系统内部/);
+});
+
+test("匿名失败登录显示未识别账号，而不是系统操作主体", async () => {
+  const { LogTable } = await server.ssrLoadModule("/src/components/logs/log-table.tsx");
+  const html = renderToStaticMarkup(createElement(LogTable, {
+    logs: ["admin_login", "desktop_login", "unknown"].map((category, index) => ({
+      id: index + 1, actorType: "system", actorId: null, actorUsername: null,
+      action: "LOGIN", actionLabel: "登录", category, summary: "账号不存在", status: "FAILED",
+    })),
+    onViewDetail() {},
+  }));
+  assert.equal((html.match(/>未识别账号</g) || []).length, 3);
+  assert.equal((html.match(/>未认证主体\s*</g) || []).length, 3);
+  assert.doesNotMatch(html, />系统</);
+});
+
 test("审计日志详情读取后端 details 字段", async () => {
   const modalModule = await server.ssrLoadModule(
     "/src/components/logs/log-detail-modal.tsx",
@@ -448,6 +513,47 @@ test("审计日志详情读取后端 details 字段", async () => {
     }),
     { source: "backend" },
   );
+});
+
+test("审计日志查询与逐页导出保留相同类别、结果和原事件码", async () => {
+  const { api } = await server.ssrLoadModule("/src/lib/api-client.ts");
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  const log = {
+    id: 1, actorType: "user", action: "CHANGE_PASSWORD", actionLabel: "修改密码",
+    category: "desktop_operation", categoryLabel: "桌面端操作", status: "FAILED", summary: "修改密码未通过",
+  };
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://audit.test");
+    requests.push(url);
+    const page = Number(url.searchParams.get("page"));
+    const pageSize = Number(url.searchParams.get("pageSize"));
+    const items = pageSize === 200
+      ? Array.from({ length: page === 1 ? 200 : 1 }, (_, index) => ({ ...log, id: (page - 1) * 200 + index + 1 }))
+      : [log];
+    return new Response(JSON.stringify({
+      code: 0, msg: "ok", data: { items, total: 201, page, pageSize }, requestId: "audit-test",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  let allLogs;
+  try {
+    await api.listLogs({ page: 3, pageSize: 50, category: "desktop_operation", status: "FAILED" });
+    allLogs = await api.fetchAllLogs({ category: "desktop_operation", status: "FAILED" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(requests.map((url) => Object.fromEntries(url.searchParams)), [
+    { page: "3", pageSize: "50", category: "desktop_operation", status: "FAILED" },
+    { page: "1", pageSize: "200", category: "desktop_operation", status: "FAILED" },
+    { page: "2", pageSize: "200", category: "desktop_operation", status: "FAILED" },
+  ]);
+  assert.equal(allLogs.length, 201);
+  assert.equal(allLogs[200].id, 201);
+  assert.equal(allLogs[200].action, "CHANGE_PASSWORD");
+  assert.equal(allLogs[200].actionLabel, "修改密码");
+  assert.equal(allLogs[200].categoryLabel, "桌面端操作");
 });
 
 test("审计日志列表不发送后端不支持的 search 参数", async () => {
@@ -877,6 +983,22 @@ test("会话追踪页码条提供 10/30/50/100 每页数量选择", async () => 
   assert.match(html, /50 条/);
 });
 
+test("审计日志筛选栏并列显示中文类别和执行结果", async () => {
+  const { LogsView } = await server.ssrLoadModule("/src/components/logs/logs-view.tsx");
+  const html = renderToStaticMarkup(createElement(LogsView, {
+    logs: [], totalLogs: 0, currentPage: 1, pageSize: 10,
+    onPageChange() {}, onPageSizeChange() {}, onRefresh() {},
+    categoryFilter: "desktop_operation", onCategoryFilterChange() {},
+    statusFilter: "FAILED", onStatusFilterChange() {},
+  }));
+
+  assert.match(html, /aria-label="日志类别"/);
+  assert.match(html, /桌面端操作/);
+  assert.match(html, /aria-label="执行结果"/);
+  assert.match(html, /执行失败/);
+  assert.doesNotMatch(html, /\(FAILED\)|\(SUCCESS\)/);
+});
+
 test("审计日志页码条提供 10/30/50/100 每页数量选择", async () => {
   const { LogsView } = await server.ssrLoadModule(
     "/src/components/logs/logs-view.tsx",
@@ -994,7 +1116,17 @@ test("托管账号表单只保留认证方式和对应凭据", async () => {
       password: "ark-password",
       cookieJson: "",
     }),
-    { authMode: "server_login", autoRelogin: true, username: "ark-user", password: "ark-password" },
+    { authMode: "server_login", username: "ark-user", password: "ark-password" },
+  );
+  assert.deepEqual(
+    dialogModule.buildManagedAccountPayload({
+      name: " 方舟主账号 ",
+      authMode: "server_login",
+      username: " ark-user ",
+      password: "",
+      cookieJson: "",
+    }),
+    { name: "方舟主账号", authMode: "server_login", username: "ark-user" },
   );
   assert.deepEqual(
     dialogModule.buildManagedAccountPayload({
@@ -1008,6 +1140,27 @@ test("托管账号表单只保留认证方式和对应凭据", async () => {
       cookieBundle: [{ name: "sessionid", value: "secret", domain: ".ark.test" }],
     },
   );
+});
+
+test("用户托管账号列表保留响应自动恢复徽章", async () => {
+  const { ManagedAccountBindingList } = await server.ssrLoadModule(
+    "/src/components/users/managed-account-dialog.tsx",
+  );
+  for (const [recoveryStatus, label] of [
+    ["pending", "等待自动登录"],
+    ["running", "自动登录中"],
+    ["retry_wait", "等待自动重试（已尝试 2 次）"],
+    ["failed", "自动恢复失败"],
+  ]) {
+    const html = renderToStaticMarkup(createElement(ManagedAccountBindingList, {
+      bindings: [{
+        id: 1, userId: 3, platformId: 1, managedAccountId: 7,
+        name: "方舟主账号", authMode: "server_login", status: "active",
+        sessionStatus: "expired", autoRelogin: true, recoveryStatus, recoveryAttempts: 2,
+      }],
+    }));
+    assert.ok(html.includes(label), `响应恢复状态 ${recoveryStatus} 应显示 ${label}`);
+  }
 });
 
 test("托管账号 Cookie 支持直接粘贴浏览器原始字符串", async () => {

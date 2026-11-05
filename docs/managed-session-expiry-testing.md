@@ -2,23 +2,50 @@
 
 ## 上游会话自动校验
 
-方舟平台启用了两类只读探测（`managed_identity.py`，user-info 端点，三态结论）：
+方舟平台启用了只读探测（`managed_identity.py`，user-info 端点，三态结论）：
 
 1. **保存时校验**：管理员保存 Cookie（全部托管账号写入入口）前先探测。确定失效直接
-   拒绝写入（400，"Cookie 校验失败"），坏 Cookie 不进账号池；探测不可达不阻塞保存。
+   拒绝写入（400，"Cookie 校验失败"），坏 Cookie 不进账号池。新建或原本正常的账号遇到
+   探测不可达可保留保存行为，但会记录“校验失败／待确认”；已经失效的账号必须重新验证
+   成功才能通过替换恢复，无法验证时返回 503 并保留旧凭据和失效状态。
 2. **桌面同步前校验**：`GET /api/user/desktop-config` 先跑
    `refresh_session_statuses`，对当前用户所有 valid 状态的 Cookie 账号探测。
    确定失效则经 CAS（`expire_account_session`）标为 expired 并推进凭据版本，
    桌面端列表直接显示失效、bootstrap 拒绝启动。
+3. **手动检查**：管理端 `identity-check` 每次探测已保存凭据，记录最近检查结果、时间和
+   脱敏原因。未知仍返回 503，但检查记录先提交，刷新列表后可见；不再仅显示旧的正常状态。
 
-不变式与缓存：
+分类与状态约束：
 
-- 自动探测只允许 valid → expired 单向收紧；expired → valid 只能由管理员保存
-  新 Cookie（保存时重新探测）触发。探测失败、平台改版、网络错误一律按未知处理，
-  不改状态。
+- HTTP 401 表示未认证；HTTP 403 仅在结构化响应明确报告未登录／会话失效时判 invalid，
+  权限不足或安全验证仍为 unavailable。JSON 非零业务码不能单独证明过期，必须有明确的
+  未登录信息；未建立未经实测的方舟业务码表。
+- 网络错误、超时、5xx、非 JSON、缺少身份、未知业务错误均为 unavailable，不凭这些
+  结果撤销会话或强关正在运行的浏览器。原已失效账号仍保持失效并拒绝启动。
+- `expired → valid` 只能由管理员提交并验证凭据，或服务端自动重登成功触发。
+  手动检查旧 Cookie 即使取得身份，也只刷新身份信息，不恢复状态、不取消恢复任务；
+  界面会提示仍需替换 Cookie／重新登录验证，而不是弹出“登录态有效”。
+- `lastIdentityCheckState`、`lastIdentityCheckAt`、`lastIdentityCheckDetail` 独立记录最近尝试；
+  `identityCheckedAt`、`lastVerifiedAt` 保持成功时间语义，失败不能刷新成功有效期。
+  管理页的黄色“校验失败／待确认”不等于桌面协议新增状态，`sessionStatus` 仍为 valid/expired。
 - 探测结论按 (账号, 凭据版本) 进程内缓存：有效结论 5 分钟 TTL，失效结论在
-  凭据变更前不再重复请求；未知结论不缓存。
+  凭据变更前不再重复请求；未知结论不缓存。缓存命中不伪造一次新的校验时间。
 - 探测是产品信号而非安全边界；真正的拦截在 bootstrap 的 session_status 检查。
+
+升级包含 `0016_managed_identity_checks` 增量迁移，须在部署新版后端前执行到对应 head。
+迁移只添加三个可空字段，历史记录留空；不把旧身份时间冒充最新校验记录。
+
+针对性隔离回归（不读取本地 `.env`，不访问真实平台）：
+
+```sh
+PYTHON_DOTENV_DISABLED=1 VESTUS_MANAGED_CHROMIUM_PATH= python3 -m pytest -o addopts='' -q \
+  tests/services/test_managed_identity.py tests/api/test_managed_identity_check.py \
+  tests/api/test_managed_identity_migration.py tests/api/test_managed_platforms.py
+```
+
+探针测试只替换上游 HTTP 边界，API 测试使用临时 SQLite 并调用真实检查、列表、启动及
+更新接口；迁移测试覆盖 `0015 → head → 0015`。真实方舟登出的 HTTP 响应仍需授权实测，
+不得把这些合成响应写成平台实测证据。
 
 ## 接口约束
 

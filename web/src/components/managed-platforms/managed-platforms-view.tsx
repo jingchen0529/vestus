@@ -41,6 +41,11 @@ import {
   UpdateManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
 import { formatDate } from "@/lib/utils";
+import {
+  managedIdentityCheckErrorToast,
+  managedIdentityCheckToast,
+  managedIdentityDisplay,
+} from "@/lib/managed-identity-display";
 import { toast } from "sonner";
 
 const AUTH_MODE_LABELS: Record<ManagedAuthMode, string> = {
@@ -461,20 +466,14 @@ export function ManagedPlatformsView({
     setCheckingId(account.id);
     try {
       const result = await onCheckIdentity(account.id);
-      if (result.state === "verified") {
-        toast.success(`登录态有效：${result.account.remoteDisplayName || "身份已刷新"}`);
-      } else {
-        toast.error("登录态已失效，会话已标记过期", {
-          description: result.detail || "上游返回未登录，请替换 Cookie",
-        });
-      }
-      onRefresh();
+      const notification = managedIdentityCheckToast(result);
+      toast[notification.level](notification.message, { description: notification.description });
     } catch (error) {
-      toast.error("检查登录态失败", {
-        description: error instanceof Error ? error.message : "请稍后重试",
-      });
+      const notification = managedIdentityCheckErrorToast(error);
+      toast[notification.level](notification.message, { description: notification.description });
     } finally {
       setCheckingId(null);
+      onRefresh();
     }
   };
 
@@ -604,8 +603,9 @@ export function ManagedPlatformsView({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredAccounts.map((account) => (
-                  <TableRow key={account.id} className="hover:bg-muted/40 transition-colors text-xs">
+                {filteredAccounts.map((account) => {
+                  const identityDisplay = managedIdentityDisplay(account);
+                  return <TableRow key={account.id} className="hover:bg-muted/40 transition-colors text-xs">
                     <TableCell className="text-center font-mono text-muted-foreground">
                       {account.id}
                     </TableCell>
@@ -620,7 +620,7 @@ export function ManagedPlatformsView({
                             className="text-[10px] text-muted-foreground"
                             title={
                               account.identityCheckedAt
-                                ? `身份检测时间 ${formatDate(account.identityCheckedAt)}`
+                                ? `身份校验成功时间 ${formatDate(account.identityCheckedAt)}`
                                 : undefined
                             }
                           >
@@ -649,18 +649,23 @@ export function ManagedPlatformsView({
                       {formatDate(account.lastVerifiedAt)}
                     </TableCell>
                     <TableCell>
-                      <div
-                        className="flex items-center gap-1.5"
-                        title={account.lastError || undefined}
-                      >
+                      <div className="flex items-center gap-1.5" title={account.lastError || undefined}>
                         {statusBadge(account.status)}
-                        {account.sessionStatus === "expired" && (
-                          <Badge variant="destructive" className="gap-1 text-[10px]">
-                            <ShieldAlert className="h-3 w-3" />
-                            会话已失效
+                        {identityDisplay.variant !== "outline" && (
+                          <Badge variant={identityDisplay.variant} className="gap-1 text-[10px]" title={identityDisplay.detail || undefined}>
+                            {identityDisplay.recovering ? <RefreshCw className="h-3 w-3 animate-spin" /> : <ShieldAlert className="h-3 w-3" />}
+                            {identityDisplay.label}
                           </Badge>
                         )}
                       </div>
+                      {identityDisplay.variant !== "outline" && identityDisplay.detail && (
+                        <p className="mt-1 max-w-xs whitespace-normal break-words text-[11px] text-muted-foreground">
+                          {identityDisplay.detail}
+                        </p>
+                      )}
+                      {identityDisplay.checkedAt && (
+                        <p className="mt-1 text-[11px] text-muted-foreground">最近检查：{formatDate(identityDisplay.checkedAt)}</p>
+                      )}
                     </TableCell>
                     <TableCell className="text-right whitespace-nowrap">
                       <div className="flex justify-end gap-1.5">
@@ -712,8 +717,8 @@ export function ManagedPlatformsView({
                         )}
                       </div>
                     </TableCell>
-                  </TableRow>
-                ))}
+                  </TableRow>;
+                })}
               </TableBody>
             </Table>
           </div>

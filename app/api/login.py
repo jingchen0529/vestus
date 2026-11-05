@@ -12,6 +12,7 @@ from typing import Any, Dict
 from fastapi import Request, Response
 
 from app.api.deps import SESSION_COOKIE, audit_context
+from app.core.audit_events import AuthSource
 from app.core.config import get_settings
 from app.db.session import Database
 from app.schemas.auth import LoginRequest
@@ -24,6 +25,8 @@ def perform_login(
     payload: LoginRequest,
     request: Request,
     response: Response,
+    *,
+    auth_source: AuthSource | None = None,
 ) -> Dict[str, Any]:
     grant = auth_service.login(
         db,
@@ -32,6 +35,7 @@ def perform_login(
         payload.password,
         device_id=payload.device_id,
         audit=audit_context(request),
+        auth_source=auth_source,
     )
     if account_type == "admin":
         response.set_cookie(

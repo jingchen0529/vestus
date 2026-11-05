@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from app.api.deps import admin_auth, get_db, user_scope_admin_id
 from app.api.envelope import EnvelopeRoute
 from app.api.responses import collection
+from app.core.audit_events import AuditLogCategory
 from app.db.session import Database
 from app.services import logs as logs_service
 
@@ -22,6 +23,7 @@ def user_logs(
     actor_type: Optional[str] = Query(None, alias="actorType"),
     actor_id: Optional[int] = Query(None, alias="actorId"),
     action: Optional[str] = None,
+    category: Optional[AuditLogCategory] = None,
     log_status: Optional[str] = Query(None, alias="status"),
     target_id: Optional[int] = Query(None, alias="targetId"),
     start_at: Optional[str] = Query(None, alias="startAt"),
@@ -36,6 +38,7 @@ def user_logs(
         actor_type=actor_type,
         actor_id=actor_id,
         action=action,
+        category=category,
         status=log_status,
         target_id=target_id,
         start_at=start_at,

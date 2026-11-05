@@ -23,7 +23,7 @@ import {
   CreateAdminPayload,
   UpdateAdminPayload,
 } from "@/types/admin";
-import { UserLogResponse, UserLogItem } from "@/types/log";
+import { AuditLogCategory, UserLogResponse, UserLogItem } from "@/types/log";
 import {
   CreateManagedPlatformAccountPayload,
   CreateUserManagedAccountPayload,
@@ -498,12 +498,14 @@ export const api = {
     pageSize?: number;
     status?: string;
     action?: string;
+    category?: AuditLogCategory;
   } = {}): Promise<UserLogResponse> {
     const searchParams = new URLSearchParams();
     searchParams.append("page", String(params.page || 1));
     searchParams.append("pageSize", String(params.pageSize || 10));
     if (params.status) searchParams.append("status", params.status);
     if (params.action) searchParams.append("action", params.action);
+    if (params.category) searchParams.append("category", params.category);
 
     return request<UserLogResponse>(`/api/admin/user-logs?${searchParams.toString()}`);
   },
@@ -511,6 +513,7 @@ export const api = {
   async fetchAllLogs(params: {
     status?: string;
     action?: string;
+    category?: AuditLogCategory;
   } = {}): Promise<UserLogItem[]> {
     const allItems: UserLogItem[] = [];
     let page = 1;

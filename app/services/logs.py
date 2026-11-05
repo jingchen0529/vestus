@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.audit_events import AuditLogCategory
 from app.db.session import Database
 from app.repositories import logs as logs_repo
 from app.repositories import users as users_repo
@@ -43,6 +44,7 @@ def list_logs(
     actor_type: Optional[str] = None,
     actor_id: Optional[int] = None,
     action: Optional[str] = None,
+    category: Optional[AuditLogCategory] = None,
     status: Optional[str] = None,
     target_id: Optional[int] = None,
     start_at: Any = None,
@@ -60,6 +62,7 @@ def list_logs(
             actor_type=actor_type,
             actor_id=actor_id,
             action=action,
+            category=category,
             status=status,
             target_id=target_id,
             start_at=start_at,

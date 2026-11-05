@@ -30,7 +30,7 @@ import {
   UserManagedPlatformAccountPayload,
 } from "@/types/managed-platform";
 import { AdminUser, CreateAdminPayload, UpdateAdminPayload } from "@/types/admin";
-import { UserLogItem } from "@/types/log";
+import { AuditLogCategoryFilter, UserLogItem } from "@/types/log";
 import {
   BrowserSessionFilters,
   BrowserSessionItem,
@@ -190,6 +190,38 @@ export function App() {
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(10);
   const [logStatusFilter, setLogStatusFilter] = useState("ALL");
+  const [logCategoryFilter, setLogCategoryFilter] = useState<AuditLogCategoryFilter>("ALL");
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const logRequestRef = useRef(0);
+  const logViewerRef = useRef(user?.id);
+  logViewerRef.current = user?.id;
+
+  const invalidateLogs = useCallback(() => {
+    logRequestRef.current += 1;
+    setLogs([]);
+    setTotalLogs(0);
+    setIsLoadingLogs(true);
+  }, []);
+
+  const handleLogPageChange = useCallback((page: number) => {
+    if (page === logPage) return;
+    invalidateLogs();
+    setLogPage(page);
+  }, [invalidateLogs, logPage]);
+
+  const handleLogStatusFilterChange = useCallback((status: string) => {
+    if (status === logStatusFilter) return;
+    invalidateLogs();
+    setLogStatusFilter(status);
+    setLogPage(1);
+  }, [invalidateLogs, logStatusFilter]);
+
+  const handleLogCategoryFilterChange = useCallback((category: AuditLogCategoryFilter) => {
+    if (category === logCategoryFilter) return;
+    invalidateLogs();
+    setLogCategoryFilter(category);
+    setLogPage(1);
+  }, [invalidateLogs, logCategoryFilter]);
 
   // Browser activity state
   const [sessions, setSessions] = useState<BrowserSessionItem[]>([]);
@@ -212,9 +244,11 @@ export function App() {
   }, []);
 
   const handleLogPageSizeChange = useCallback((newSize: number) => {
+    if (newSize === logPageSize) return;
+    invalidateLogs();
     setLogPageSize(newSize);
     setLogPage(1);
-  }, []);
+  }, [invalidateLogs, logPageSize]);
 
   // 详情弹窗的取数函数，保持稳定引用。
   const loadSessionDetail = useCallback((id: number) => api.getBrowserSession(id), []);
@@ -310,22 +344,31 @@ export function App() {
     }
   }, [adminSearch, adminStatusFilter, isSuperAdmin]);
 
-  const loadLogs = useCallback(async (page?: any, status?: any) => {
+  const loadLogs = useCallback(async () => {
+    const requestId = ++logRequestRef.current;
+    const viewer = user?.id;
+    const isCurrent = () => requestId === logRequestRef.current && viewer === logViewerRef.current;
+    setIsLoadingLogs(true);
     try {
-      const pageNum = typeof page === "number" ? page : logPage;
-      const statusVal = typeof status === "string" ? status : logStatusFilter;
-      const filter = statusVal === "ALL" ? undefined : statusVal;
       const res = await api.listLogs({
-        page: pageNum,
+        page: logPage,
         pageSize: logPageSize,
-        status: filter,
+        status: logStatusFilter === "ALL" ? undefined : logStatusFilter,
+        category: logCategoryFilter === "ALL" ? undefined : logCategoryFilter,
       });
+      if (!isCurrent()) return;
       setLogs(res.items || []);
       setTotalLogs(res.total || 0);
     } catch (err: any) {
-      toast.error("加载审计日志失败", { description: err.message });
+      if (isCurrent()) {
+        setLogs([]);
+        setTotalLogs(0);
+        toast.error("加载审计日志失败", { description: err.message });
+      }
+    } finally {
+      if (isCurrent()) setIsLoadingLogs(false);
     }
-  }, [logPage, logPageSize, logStatusFilter]);
+  }, [logPage, logPageSize, logStatusFilter, logCategoryFilter, user?.id]);
 
   const loadSessions = useCallback(async (page?: any, filters?: any) => {
     try {
@@ -391,14 +434,22 @@ export function App() {
     return () => clearTimeout(timer);
   }, [adminSearch, adminStatusFilter, user, isSuperAdmin]);
 
-  // Logs filter or page change
+  // Logs filter or page change; isolate log requests from the global refresh state.
   useEffect(() => {
-    if (!user) return;
-    const timer = setTimeout(() => {
-      loadLogs(logPage, logStatusFilter);
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [logPage, logPageSize, logStatusFilter, user]);
+    if (!user) {
+      logRequestRef.current += 1;
+      setLogs([]);
+      setTotalLogs(0);
+      setIsLoadingLogs(false);
+      return;
+    }
+    setIsLoadingLogs(true);
+    const timer = setTimeout(() => { void loadLogs(); }, 250);
+    return () => {
+      clearTimeout(timer);
+      logRequestRef.current += 1;
+    };
+  }, [loadLogs, user]);
 
   // Browser activity filter or page change
   useEffect(() => {
@@ -782,12 +833,14 @@ export function App() {
             totalLogs={totalLogs}
             currentPage={logPage}
             pageSize={logPageSize}
-            onPageChange={setLogPage}
+            onPageChange={handleLogPageChange}
             onPageSizeChange={handleLogPageSizeChange}
             statusFilter={logStatusFilter}
-            onStatusFilterChange={setLogStatusFilter}
+            onStatusFilterChange={handleLogStatusFilterChange}
+            categoryFilter={logCategoryFilter}
+            onCategoryFilterChange={handleLogCategoryFilterChange}
             onRefresh={() => loadLogs()}
-            isRefreshing={isRefreshing}
+            isRefreshing={isRefreshing || isLoadingLogs}
           />
         )}
 

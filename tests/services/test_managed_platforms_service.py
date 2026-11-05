@@ -9,6 +9,7 @@ expiry / recovery behaviour exactly as production exercises it.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -19,7 +20,7 @@ from app.services import managed_platforms as managed_service
 from app.services import platforms as platforms_service
 from app.services import users as users_service
 from app.services.audit import AuditContext
-from app.services.errors import BadRequestError, ConflictError
+from app.services.errors import BadRequestError, ConflictError, ManagedProviderUnavailableError
 from app.services.managed_identity import IdentityProbeOutcome
 
 _COOKIE = {"name": "sid", "value": "tok-1", "domain": ".oceanengine.com", "path": "/"}
@@ -152,6 +153,152 @@ def test_cookie_account_persists_with_initial_state(
     assert row.action == "MANAGED_ACCOUNT_CREATED"
     assert row.target_type == "managed_platform_account"
     assert row.target_id == result["id"]
+
+
+def test_password_recovery_policy_cannot_be_disabled_by_service_values(
+    service_db: Database, probe: ProbeStub,
+) -> None:
+    platform = _platform(service_db)
+    account = managed_service.create_account(service_db, {
+        "platform_id": platform["id"], "name": "强制自动恢复", "auth_mode": "server_login",
+        "username": "test-email", "password": "test-password", "auto_relogin": False,
+    })
+    assert account["autoRelogin"] is True
+    assert account["sessionStatus"] == "expired"
+    assert account["recoveryStatus"] == "pending"
+    updated = managed_service.update_account(service_db, account["id"], {"auto_relogin": False})
+    assert updated["autoRelogin"] is True
+    assert updated["recoveryStatus"] == "pending"
+    assert updated["nextRecoveryAt"] == account["nextRecoveryAt"]
+    assert updated["credentialVersion"] == account["credentialVersion"]
+
+
+def test_disabled_worker_rejects_new_password_credentials_without_disabling_account_policy(
+    service_db: Database, probe: ProbeStub, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account, user = _bound_account(service_db, auth_mode="server_login")
+    monkeypatch.setenv("VESTUS_MANAGED_RECOVERY_ENABLED", "0")
+    with pytest.raises(ManagedProviderUnavailableError, match="自动恢复服务未启用"):
+        managed_service.create_account(service_db, {
+            "platform_id": account["platformId"], "name": "服务关闭时的新账号", "auth_mode": "server_login",
+            "username": "new-user", "password": "new-password",
+        })
+    with pytest.raises(ManagedProviderUnavailableError, match="自动恢复服务未启用"):
+        managed_service.update_account(service_db, account["id"], {"password": "new-password"})
+    after = managed_service.get_account(service_db, account["id"])
+    assert after["autoRelogin"] is True
+    assert after["credentialVersion"] == account["credentialVersion"]
+    assert after["recoveryStatus"] == account["recoveryStatus"]
+    assert len(managed_service.list_accounts(service_db)) == 1
+    renamed = managed_service.update_account(service_db, account["id"], {"name": "只修改别名"})
+    assert renamed["autoRelogin"] is True
+    assert renamed["recoveryAttempts"] == account["recoveryAttempts"]
+    assert renamed["nextRecoveryAt"] == account["nextRecoveryAt"]
+
+
+def test_password_recovery_stops_at_retry_limit_and_only_new_credentials_restart_it(
+    service_db: Database, probe: ProbeStub, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.base import utc_now
+    from app.services import managed_recovery
+    from app.services.managed_platforms import ManagedLoginResult
+
+    account, user = _bound_account(service_db, auth_mode="server_login")
+    now = utc_now() + timedelta(seconds=1)
+    monkeypatch.setattr(managed_recovery, "utc_now", lambda: now)
+
+    class UnavailableProvider:
+        def verify(self, **kwargs: Any) -> ManagedLoginResult:
+            return ManagedLoginResult("unavailable", [])
+
+    for attempt in range(1, 4):
+        assert managed_recovery.run_recovery(service_db, account["id"], provider=UnavailableProvider()) is False
+        after = managed_service.get_account(service_db, account["id"])
+        assert after["recoveryAttempts"] == attempt
+        assert after["sessionStatus"] == "expired"
+        assert after["recoveryStatus"] == ("retry_wait" if attempt < 3 else "failed")
+        if attempt < 3:
+            assert after["nextRecoveryAt"] is not None
+            assert managed_recovery.run_recovery(service_db, account["id"], provider=UnavailableProvider()) is False
+            assert managed_service.get_account(service_db, account["id"])["recoveryAttempts"] == attempt
+        else:
+            assert after["nextRecoveryAt"] is None
+        now += timedelta(seconds=20)
+
+    renamed = managed_service.update_account(service_db, account["id"], {"name": "失败后的别名"})
+    assert renamed["autoRelogin"] is True
+    assert renamed["recoveryStatus"] == "failed"
+    assert renamed["recoveryAttempts"] == 3
+    assert managed_recovery.run_recovery(service_db, account["id"], provider=UnavailableProvider()) is False
+    rotated = managed_service.update_account(service_db, account["id"], {"password": "replacement-password"})
+    assert rotated["recoveryStatus"] == "pending"
+    assert rotated["recoveryAttempts"] == 0
+    assert rotated["credentialVersion"] == account["credentialVersion"] + 1
+    assert rotated["sessionStatus"] == "expired"
+
+
+@pytest.mark.parametrize("state", ["invalid_credentials", "needs_manual_verification"])
+def test_password_recovery_terminal_failure_is_not_reset_by_metadata_edits(
+    service_db: Database, probe: ProbeStub, state: str,
+) -> None:
+    from app.services.managed_platforms import ManagedLoginResult
+    from app.services.managed_recovery import run_recovery
+
+    account, user = _bound_account(service_db, auth_mode="server_login")
+
+    class Provider:
+        def verify(self, **kwargs: Any) -> ManagedLoginResult:
+            return ManagedLoginResult(state, [])
+
+    assert run_recovery(service_db, account["id"], provider=Provider()) is False
+    before = managed_service.get_account(service_db, account["id"])
+    after = managed_service.update_account(service_db, account["id"], {"name": "只改展示信息"})
+    for key in ("recoveryStatus", "recoveryAttempts", "lastError", "nextRecoveryAt", "credentialVersion"):
+        assert after[key] == before[key]
+    assert after["recoveryStatus"] == "failed"
+    assert after["autoRelogin"] is True
+    assert run_recovery(service_db, account["id"], provider=Provider()) is False
+
+
+@pytest.mark.parametrize("status", ["active", "invalid", "revoked"])
+def test_legacy_false_policy_normalization_does_not_restart_a_failed_attempt(
+    service_db: Database, probe: ProbeStub, status: str,
+) -> None:
+    account, user = _bound_account(service_db, auth_mode="server_login")
+    # Synthetic pre-migration row: changing policy alone must not erase terminal state.
+    with service_db.session() as session:
+        row = session.get(ManagedPlatformAccount, account["id"])
+        row.auto_relogin = False
+        row.status = status
+        row.recovery_status = "failed"
+        row.recovery_attempts = 3
+        row.last_error = "历史恢复失败"
+        row.next_recovery_at = None
+    before = managed_service.get_account(service_db, account["id"])
+    after = managed_service.update_account(service_db, account["id"], {"name": "历史账号改名"})
+    assert after["autoRelogin"] is True
+    for key in ("recoveryStatus", "recoveryAttempts", "lastError", "nextRecoveryAt", "credentialVersion", "sessionStatus"):
+        assert after[key] == before[key]
+
+
+def test_disabling_password_account_cancels_pending_recovery(
+    service_db: Database, probe: ProbeStub,
+) -> None:
+    account, user = _bound_account(service_db, auth_mode="server_login")
+    assert account["recoveryStatus"] == "pending"
+    disabled = managed_service.update_account(service_db, account["id"], {"status": "invalid"})
+    assert disabled["status"] == "invalid"
+    assert disabled["autoRelogin"] is True
+    assert disabled["recoveryStatus"] == "idle"
+    assert disabled["nextRecoveryAt"] is None
+
+    from app.services.managed_recovery import run_recovery
+
+    class Provider:
+        def verify(self, **kwargs: Any) -> Any:
+            raise AssertionError("disabled accounts must never attempt login")
+
+    assert run_recovery(service_db, account["id"], provider=Provider()) is False
 
 
 def test_alias_conflict_within_platform_is_conflict(

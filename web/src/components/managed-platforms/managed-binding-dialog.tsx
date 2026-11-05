@@ -236,7 +236,6 @@ export function ManagedBindingDialog({
         }
         if (parsedPayload.username !== originalUsername.current) updatePayload.username = parsedPayload.username;
         if (parsedPayload.password) updatePayload.password = parsedPayload.password;
-        updatePayload.autoRelogin = true;
       } else if (parsedPayload.cookieBundle && parsedPayload.cookieBundle.length > 0) {
         updatePayload.cookieBundle = parsedPayload.cookieBundle;
       }
@@ -358,7 +357,7 @@ export function ManagedBindingDialog({
                       {bindingToEdit.remoteDisplayName
                         ? `${bindingToEdit.remoteDisplayName}${
                             bindingToEdit.identityCheckedAt
-                              ? `（检测于 ${formatDate(bindingToEdit.identityCheckedAt)}）`
+                              ? `（身份校验成功于 ${formatDate(bindingToEdit.identityCheckedAt)}）`
                               : ""
                           }`
                         : "尚未探测"}

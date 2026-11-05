@@ -457,6 +457,14 @@ def _plain_cookie_bundle(value: Any) -> List[Dict[str, Any]]:
     return [_canonical_cookie(item) for item in value if isinstance(item, dict)]
 
 
+def _identity_check_fields(item: ManagedPlatformAccount) -> Dict[str, Any]:
+    return {
+        "lastIdentityCheckState": item.last_identity_check_state,
+        "lastIdentityCheckAt": iso_datetime(item.last_identity_check_at),
+        "lastIdentityCheckDetail": item.last_identity_check_detail,
+    }
+
+
 def _account_dict(item: ManagedPlatformAccount) -> Dict[str, Any]:
     return {
         "id": item.id,
@@ -473,6 +481,7 @@ def _account_dict(item: ManagedPlatformAccount) -> Dict[str, Any]:
         "remoteAccountId": item.remote_account_id,
         "remoteDisplayName": item.remote_display_name,
         "identityCheckedAt": iso_datetime(item.identity_checked_at),
+        **_identity_check_fields(item),
         "createdBy": item.created_by,
         "createdAt": iso_datetime(item.created_at),
         "updatedAt": iso_datetime(item.updated_at),
@@ -516,6 +525,7 @@ def _binding_dict(
         "remoteAccountId": account.remote_account_id,
         "remoteDisplayName": account.remote_display_name,
         "identityCheckedAt": iso_datetime(account.identity_checked_at),
+        **_identity_check_fields(account),
         "lastVerifiedAt": iso_datetime(account.last_verified_at),
         "lastError": account.last_error,
         **recovery_fields(account),
@@ -544,19 +554,25 @@ def _credential_values(item: ManagedPlatformAccount) -> tuple[Optional[str], Opt
     return username, password, _parse_cookie_bundle(item.encrypted_cookie_bundle)
 
 
+def _require_recovery_enabled() -> None:
+    if not get_settings().managed_recovery_enabled:
+        raise ManagedProviderUnavailableError("托管账号自动恢复服务未启用，请联系管理员检查服务配置")
+
+
 def _configure_recovery(
-    account: ManagedPlatformAccount, values: Dict[str, Any], *, credentials_changed: bool = False, new: bool = False
+    account: ManagedPlatformAccount, *, credentials_changed: bool = False, new: bool = False,
+    status_changed: bool = False,
 ) -> None:
-    was_enabled = bool(account.auto_relogin)
-    if not get_settings().managed_recovery_enabled or account.auth_mode != "server_login":
-        account.auto_relogin = False
-    elif values.get("auto_relogin") is not None:
-        account.auto_relogin = bool(values["auto_relogin"])
-    elif new or (credentials_changed and values.get("auth_mode") == "server_login"):
-        account.auto_relogin = True
-    if not account.auto_relogin or account.status != "active":
+    # Recovery is determined by credential mode, never by a caller-controlled flag.
+    account.auto_relogin = account.auth_mode == "server_login"
+    if account.auto_relogin and (credentials_changed or new):
+        _require_recovery_enabled()
+    if not account.auto_relogin:
         cancel_recovery(account)
-    elif credentials_changed or new or not was_enabled:
+    elif account.status != "active":
+        if credentials_changed or new or status_changed:
+            cancel_recovery(account)
+    elif credentials_changed or new:
         cancel_recovery(account)
         queue_recovery(account, reset=True)
 
@@ -602,28 +618,33 @@ def _identity_probe(
 
 
 def _probe_cookie_credentials(
-    platform: Platform, cookie_bundle: List[Dict[str, Any]]
+    platform: Platform, cookie_bundle: List[Dict[str, Any]], *, require_verified: bool = False
 ) -> Optional[IdentityProbeOutcome]:
-    """Probe freshly submitted cookie credentials before they are persisted.
-
-    A definitively dead session (upstream ``code != 0``) rejects the write so
-    a broken cookie can never enter the account pool.  Platforms without a
-    probe and network failures return instead of raising: saving credentials
-    must not depend on the probe being reachable.
-    """
+    """Reject dead credentials; restoring an expired account needs a verified probe."""
     outcome = _identity_probe(platform.url, cookie_bundle)
     if outcome is not None and outcome.state == "invalid":
         raise BadRequestError(f"Cookie 校验失败：{outcome.detail or '上游登录态已失效'}")
+    if require_verified and (outcome is None or outcome.state != "verified"):
+        raise ManagedProviderUnavailableError("新 Cookie 暂时无法验证，原会话仍已失效，请稍后重试")
     return outcome
+
+
+def _record_identity_check(
+    item: ManagedPlatformAccount, outcome: Optional[IdentityProbeOutcome], *, checked_at: Optional[datetime] = None
+) -> None:
+    item.last_identity_check_state = outcome.state if outcome is not None else None
+    item.last_identity_check_at = (checked_at or utc_now()) if outcome is not None else None
+    item.last_identity_check_detail = outcome.detail if outcome is not None else None
 
 
 def _apply_identity_outcome(
     item: ManagedPlatformAccount, outcome: Optional[IdentityProbeOutcome]
 ) -> None:
-    """Fill the remote identity fields from a successful probe."""
+    """Record the attempt separately; only success refreshes identity freshness."""
+    now = utc_now()
+    _record_identity_check(item, outcome, checked_at=now)
     if outcome is None or outcome.state != "verified":
         return
-    now = utc_now()
     item.remote_account_id = outcome.remote_account_id
     item.remote_display_name = outcome.remote_display_name
     item.identity_checked_at = now
@@ -700,16 +721,22 @@ def refresh_session_statuses(database: Database, user_id: int | str) -> None:
             continue
         pending.append((account.id, platform.id, version, platform.url, list(account.cookie_bundle or [])))
     for account_id, platform_id, version, platform_url, cookies in pending:
-        if cookies is None:
-            status = "expired"  # 缓存中的确定失效结论。
-        else:
-            outcome = _identity_probe(platform_url, cookies)
-            if outcome is None or outcome.state == "unavailable":
-                continue  # 未知：保持现状，本次不缓存。
+        outcome = None if cookies is None else _identity_probe(platform_url, cookies)
+        if cookies is not None:
+            if outcome is None:
+                continue
             status = "valid" if outcome.state == "verified" else "expired"
-        _session_probe_cache_store(account_id, version, status)
-        if status != "expired":
-            continue
+            if outcome.state != "unavailable":
+                _session_probe_cache_store(account_id, version, status)
+            if outcome.state != "invalid":
+                with _managed_transaction(database) as session:
+                    fresh = managed_repo.get_account_for_update(session, account_id)
+                    if (
+                        fresh is not None and fresh.credential_version == version
+                        and fresh.session_status == "valid" and fresh.status == "active"
+                    ):
+                        _apply_identity_outcome(fresh, outcome)
+                continue
         with _managed_transaction(database) as session:
             applied = managed_repo.expire_account_session(
                 session,
@@ -723,6 +750,8 @@ def refresh_session_statuses(database: Database, user_id: int | str) -> None:
             if applied:
                 expired = managed_repo.get_account_for_update(session, account_id)
                 if expired is not None:
+                    if outcome is not None:
+                        _record_identity_check(expired, outcome)
                     queue_recovery(expired)
 
 
@@ -770,7 +799,7 @@ def create_account(
                 created_by=values.get("created_by"),
             )
             _apply_identity_outcome(item, identity_outcome)
-            _configure_recovery(item, values, new=True)
+            _configure_recovery(item, new=True)
             session.add(item)
             session.flush()
         except IntegrityError as exc:
@@ -800,6 +829,8 @@ def update_account(
         item = managed_repo.get_account_for_update(session, account_id)
         if item is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+        was_expired = item.session_status == "expired"
+        status_changed = False
         credential_changed = False
         if "name" in values:
             item.name = str(values["name"]).strip()
@@ -833,6 +864,7 @@ def update_account(
         if "expires_at" in values:
             item.expires_at = parse_datetime(values.get("expires_at"), end_of_day=True)
         if "status" in values and values["status"] is not None:
+            status_changed = values["status"] != item.status
             item.status = values["status"]
         # Keep only the credential type used by the final authentication mode.
         # This avoids retaining an old password or Cookie after an administrator
@@ -863,15 +895,15 @@ def update_account(
             item.remote_account_id = None
             item.remote_display_name = None
             item.identity_checked_at = None
-            # 新凭据就是新会话：清除客户端上报的失效标记。
-            item.session_status = "valid"
+            _record_identity_check(item, None)
+            item.session_status = "expired" if was_expired else "valid"
         if credential_changed and item.auth_mode == "cookie":
-            platform = platforms_repo.get(session, item.platform_id)
-            if platform is not None:
-                _apply_identity_outcome(
-                    item, _probe_cookie_credentials(platform, _credential_values(item)[2])
-                )
-        _configure_recovery(item, values, credentials_changed=credential_changed)
+            platform = _require_platform(session, item.platform_id)
+            _apply_identity_outcome(
+                item, _probe_cookie_credentials(platform, _credential_values(item)[2], require_verified=was_expired)
+            )
+            item.session_status = "valid"
+        _configure_recovery(item, credentials_changed=credential_changed, status_changed=status_changed)
         try:
             session.flush()
         except IntegrityError as exc:
@@ -924,10 +956,9 @@ def check_account_identity(
 ) -> Dict[str, Any]:
     """Probe the stored cookie against the platform's user-info endpoint.
 
-    ``verified`` refreshes the remote identity and restores a client-reported
-    expired session (the cookie demonstrably still works); ``invalid`` marks
-    the session expired for the admins; a probe/network failure surfaces as
-    503 without touching stored state.
+    ``verified`` refreshes identity metadata but never revives an expired
+    credential. A failed attempt is persisted before returning 503, without
+    changing session validity or the successful identity's freshness.
     """
     with _managed_transaction(database) as session:
         item = managed_repo.get_account_for_update(session, account_id)
@@ -948,26 +979,20 @@ def check_account_identity(
         outcome = _identity_probe(platform.url, cookies)
         if outcome is None:
             raise BadRequestError("该平台暂不支持在线校验登录态（Cookie 需包含 sessionid）")
-        now = utc_now()
+        _apply_identity_outcome(item, outcome)
         if outcome.state == "verified":
-            item.remote_account_id = outcome.remote_account_id
-            item.remote_display_name = outcome.remote_display_name
-            item.identity_checked_at = now
-            item.last_verified_at = now
-            item.session_status = "valid"
-            item.last_error = None
-            cancel_recovery(item)
+            if item.session_status != "expired":
+                item.last_error = None
         elif outcome.state == "invalid":
             if item.session_status != "expired":
                 item.credential_version = int(item.credential_version) + 1
             item.session_status = "expired"
             item.last_error = outcome.detail or "上游登录态已失效"
             queue_recovery(item)
-        else:
-            raise ManagedProviderUnavailableError(
-                f"managed_identity_probe_unavailable: {outcome.detail or '登录态校验请求失败'}"
-            )
-        result = {"state": outcome.state, "detail": outcome.detail, "account": _account_dict(item)}
+        detail = outcome.detail
+        if outcome.state == "verified" and item.session_status == "expired":
+            detail = "身份接口可访问，但会话已标记失效，请替换 Cookie 或等待重新登录验证"
+        result = {"state": outcome.state, "detail": detail, "account": _account_dict(item)}
         record(
             session,
             audit,
@@ -978,7 +1003,12 @@ def check_account_identity(
             target_name=item.name,
             details={"state": outcome.state, "platformId": item.platform_id},
         )
-        return result
+    # Persist the failed attempt before returning 503; raising inside rolls it back.
+    if outcome.state == "unavailable":
+        raise ManagedProviderUnavailableError(
+            f"managed_identity_probe_unavailable: {outcome.detail or '登录态校验请求失败'}"
+        )
+    return result
 
 
 def bind_account(
@@ -1194,7 +1224,7 @@ def create_user_bound_account(
                 created_by=audit.actor_id if audit else None,
             )
             _apply_identity_outcome(account, identity_outcome)
-            _configure_recovery(account, values, new=True)
+            _configure_recovery(account, new=True)
             session.add(account)
             session.flush()
         except IntegrityError as exc:
@@ -1246,6 +1276,7 @@ def update_user_bound_account(
         if account is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
         platform = _require_platform(session, account.platform_id)
+        was_expired = account.session_status == "expired"
 
         credential_changed = False
         if values.get("name") is not None:
@@ -1301,14 +1332,16 @@ def update_user_bound_account(
             account.remote_account_id = None
             account.remote_display_name = None
             account.identity_checked_at = None
-            # 新凭据就是新会话：清除客户端上报的失效标记。
-            account.session_status = "valid"
+            _record_identity_check(account, None)
+            account.session_status = "expired" if was_expired else "valid"
         if credential_changed and account.auth_mode == "cookie":
             _apply_identity_outcome(
-                account, _probe_cookie_credentials(platform, _credential_values(account)[2])
+                account,
+                _probe_cookie_credentials(platform, _credential_values(account)[2], require_verified=was_expired),
             )
+            account.session_status = "valid"
 
-        _configure_recovery(account, values, credentials_changed=credential_changed)
+        _configure_recovery(account, credentials_changed=credential_changed)
         try:
             session.flush()
         except IntegrityError as exc:
@@ -1384,7 +1417,7 @@ def upsert_user_account(
                 created_by=audit.actor_id if audit else None,
             )
             _apply_identity_outcome(account, identity_outcome)
-            _configure_recovery(account, values, new=True)
+            _configure_recovery(account, new=True)
             session.add(account)
             session.flush()
             binding = ManagedPlatformBinding(
@@ -1397,6 +1430,7 @@ def upsert_user_account(
             session.flush()
         else:
             binding, account = pair
+            was_expired = account.session_status == "expired"
             account.auth_mode = auth_mode
             account.username = username if auth_mode == "server_login" else None
             account.password = password if auth_mode == "server_login" else None
@@ -1407,20 +1441,22 @@ def upsert_user_account(
             account.allowed_hosts = _platform_allowed_hosts(platform)
             account.expires_at = None
             account.status = "active"
-            account.session_status = "valid"
+            account.session_status = "expired" if was_expired else "valid"
             account.credential_version = int(account.credential_version) + 1
             account.last_verified_at = None
             account.last_error = None
             account.remote_account_id = None
             account.remote_display_name = None
             account.identity_checked_at = None
+            _record_identity_check(account, None)
             binding.status = "active"
             binding.updated_at = utc_now()
             if auth_mode == "cookie":
                 _apply_identity_outcome(
-                    account, _probe_cookie_credentials(platform, list(cookies or []))
+                    account, _probe_cookie_credentials(platform, list(cookies or []), require_verified=was_expired)
                 )
-            _configure_recovery(account, values, credentials_changed=True)
+                account.session_status = "valid"
+            _configure_recovery(account, credentials_changed=True)
             session.flush()
         result = _account_detail_dict(account, platform_name=platform.name)
         record(
@@ -1533,6 +1569,8 @@ def _load_bootstrap_context(
         if account.status != "active" or (account.expires_at is not None and account.expires_at <= utc_now()):
             raise ConflictError(MANAGED_ACCOUNT_INACTIVE)
         if account.session_status == "expired":
+            if account.auth_mode == "server_login":
+                _require_recovery_enabled()
             if account.auto_relogin and account.recovery_status in {"idle", "pending", "running", "retry_wait"}:
                 raise ConflictError("托管账号正在自动恢复登录，请稍后重试")
             raise ConflictError(account.last_error or MANAGED_ACCOUNT_SESSION_EXPIRED)
@@ -1566,6 +1604,8 @@ def issue_bootstrap(
     # when the upstream session needs refreshing.
     reuse_identity_outcome: Optional[IdentityProbeOutcome] = None
     if not cookies:
+        if account.auth_mode == "server_login":
+            _require_recovery_enabled()
         provider = provider or get_managed_login_provider()
         result = provider.verify(
             platform_url=platform.url,
@@ -1636,6 +1676,7 @@ def issue_bootstrap(
                             fresh.session_status = "expired"
                             fresh.credential_version = int(fresh.credential_version) + 1
                             fresh.last_error = reuse_identity_outcome.detail
+                            _record_identity_check(fresh, reuse_identity_outcome)
                             queue_recovery(fresh)
                     raise ConflictError(MANAGED_ACCOUNT_SESSION_EXPIRED)
     raw_token = secrets.token_urlsafe(32)
@@ -1906,6 +1947,8 @@ def list_all_bindings(
                     "credentialVersion": account.credential_version,
                     "expiresAt": iso_datetime(account.expires_at),
                     "lastVerifiedAt": iso_datetime(account.last_verified_at),
+                    "identityCheckedAt": iso_datetime(account.identity_checked_at),
+                    **_identity_check_fields(account),
                     "remoteDisplayName": account.remote_display_name,
                 }
             )

@@ -94,6 +94,16 @@ def _display_name(payload: Mapping[str, Any]) -> Optional[str]:
     return user_name or None
 
 
+def _reports_logged_out(payload: Mapping[str, Any]) -> bool:
+    message = str(payload.get("msg") or payload.get("message") or "").strip().lower()
+    return any(marker in message for marker in (
+        "未登录", "未登陆", "请先登录", "请先登陆", "请重新登录", "请重新登陆",
+        "登录已失效", "登录态已失效", "登录态失效", "登录已过期", "登录过期", "会话已失效", "会话已过期",
+        "not logged in", "not logged-in", "login required", "please log in", "please login",
+        "session expired", "session has expired", "invalid session", "unauthenticated",
+    ))
+
+
 def probe_remote_identity(
     platform_url: str, cookie_bundle: List[Dict[str, Any]]
 ) -> Optional[IdentityProbeOutcome]:
@@ -123,31 +133,45 @@ def probe_remote_identity(
     try:
         with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT_SECONDS) as response:
             body = response.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        return IdentityProbeOutcome(state="unavailable", detail=f"identity probe failed: {exc}")
+    except urllib.error.HTTPError as exc:
+        with exc:
+            if exc.code == 401:
+                return IdentityProbeOutcome(state="invalid", detail="上游登录态已失效，请更新登录凭据")
+            if exc.code == 403:
+                try:
+                    error_payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+                except (OSError, ValueError):
+                    error_payload = None
+                if isinstance(error_payload, Mapping) and _reports_logged_out(error_payload):
+                    return IdentityProbeOutcome(state="invalid", detail="上游登录态已失效，请更新登录凭据")
+                return IdentityProbeOutcome(
+                    state="unavailable", detail="上游拒绝校验请求，可能需要权限或安全验证（HTTP 403）"
+                )
+            return IdentityProbeOutcome(state="unavailable", detail=f"登录态校验暂不可用（HTTP {exc.code}）")
+    except (urllib.error.URLError, OSError, ValueError):
+        return IdentityProbeOutcome(state="unavailable", detail="登录态校验请求失败，请稍后重试")
 
     try:
         payload = json.loads(body)
         if not isinstance(payload, Mapping):
             raise ValueError("payload is not a JSON object")
-    except ValueError as exc:
-        return IdentityProbeOutcome(state="unavailable", detail=f"identity probe payload invalid: {exc}")
+    except ValueError:
+        return IdentityProbeOutcome(state="unavailable", detail="上游返回非预期数据，暂时无法确认登录态")
 
-    try:
-        code = int(payload.get("code", -1))
-    except (TypeError, ValueError):
-        code = -1
-    if code != 0:
-        message = str(payload.get("msg") or "上游返回未登录").strip()
-        return IdentityProbeOutcome(state="invalid", detail=message)
+    code = payload.get("code")
+    success = (type(code) is int and code == 0) or (isinstance(code, str) and code.strip() == "0")
+    if not success:
+        if _reports_logged_out(payload):
+            return IdentityProbeOutcome(state="invalid", detail="上游登录态已失效，请更新登录凭据")
+        return IdentityProbeOutcome(state="unavailable", detail="上游未能确认登录态，请稍后重试")
 
     data = payload.get("data")
     if not isinstance(data, Mapping):
-        return IdentityProbeOutcome(state="unavailable", detail="identity probe data missing")
+        return IdentityProbeOutcome(state="unavailable", detail="上游返回的身份数据不完整，暂时无法确认登录态")
     remote_account_id = str(data.get("userId") or "").strip() or None
     display_name = _display_name(data)
     if not remote_account_id and not display_name:
-        return IdentityProbeOutcome(state="unavailable", detail="identity probe returned no identity")
+        return IdentityProbeOutcome(state="unavailable", detail="上游未返回账号身份，暂时无法确认登录态")
     return IdentityProbeOutcome(
         state="verified",
         remote_account_id=remote_account_id,

@@ -249,4 +249,4 @@ def test_login_audit_row_keeps_the_device_id(api: Any) -> None:
         for entry in logs
         if entry["actorUsername"] == "device-audit-user" and entry["status"] == "SUCCESS"
     )
-    assert row["details"] == {"deviceId": MAC_NORMALIZED}
+    assert row["details"] == {"deviceId": MAC_NORMALIZED, "authSource": "desktop"}

@@ -199,19 +199,30 @@ npm run desktop:dev
 Linux x86_64（`.deb` / `.AppImage`）。随包 Chromium 不能跨平台也不能跨架构，因此每个目标都在
 对应 GitHub runner 上原生构建，构建时下载锁定版本（Playwright 1.63.0）的浏览器资源并打进安装包。
 
-`.github/workflows/release.yml` 的三种用法：
+**发版顺序：先展示本次中文版本说明 → 用户明确确认 → 校验并提交代码与说明 → 推 tag 打包。**
+说明保存在 `docs/releases/desktop-v<版本号>.md`，须包含目标环境/域名、更新、安装、后端配套、
+实际验证结果及已知限制；模板与完整规则见 [docs/releases/README.md](docs/releases/README.md)。
+普通提交不意味着发版或部署，未经确认不跳过说明直接推 tag。
+
+`.github/workflows/release.yml` 的用法：
 
 | 触发 | 行为 |
 | --- | --- |
-| 推送 `desktop-v1.2.3` 标签 | 四平台全部成功后自动创建 GitHub Release 并挂包；标签版本号写入 `tauri.conf.json` |
-| 手工运行 `Release` | 只构建不发版，产物在该次 Actions 的 Artifacts（保留 14 天）；可填 `api_base_url` 覆盖后端地址 |
-| 缺 `VESTUS_API_BASE_URL` 或使用 HTTP | 构建直接失败，不发布不可登录或明文传输凭据的包 |
+| 推送 `desktop-v1.2.3` 标签 | 先校验同一提交的版本说明，再构建四平台；全部成功后创建 GitHub Release 并挂包，正文直接取版本说明文件 |
+| 手工运行 `Release` | 必填 `version`（x.y.z），也需同一提交里的对应说明；只构建不发版，即使选择 tag 也只留 Artifacts（14 天）。可填 `api_base_url` 覆盖地址 |
+| 说明缺失、空白、版本不符或模板未完成 | 前置检查失败，四平台构建不启动 |
+| 标签构建缺 `VESTUS_API_BASE_URL` 或使用 HTTP | 构建失败，不发布不可登录或明文传输凭据的包 |
 
-本地复现某个平台的发布包（在对应操作系统上执行）：
+版本号经说明检查后统一写入 `tauri.conf.json` 与安装包文件名；前置检查、构建、发布都使用同一
+触发提交。CI 只能校验文档，不能代替用户在对话中的确认。历史 tag 不追补规则、不移动。
+
+本地复现某个平台的发布包（在对应操作系统上执行，先展示并确认版本说明）：
 
 ```bash
+node desktop/scripts/check-release-notes.mjs 0.2.13  # 示例，需先有对应说明文件
 cd desktop
 npm ci
+node scripts/stamp-version.mjs 0.2.13
 node scripts/prepare-chromium.mjs
 VESTUS_API_BASE_URL='https://api.example.com' npm run desktop:build
 ```

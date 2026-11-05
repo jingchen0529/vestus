@@ -23,7 +23,7 @@ def admin_login(
     response: Response,
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return perform_login(db, "admin", payload, request, response)
+    return perform_login(db, "admin", payload, request, response, auth_source="admin")
 
 
 @router.get("/api/admin/auth/me", tags=["admin-auth"])

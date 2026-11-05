@@ -6,7 +6,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { UserLogItem } from "@/types/log";
+import { Badge } from "@/components/ui/badge";
+import { getLogPresentation, UserLogItem } from "@/types/log";
 import { formatDate, cn } from "@/lib/utils";
 import { Copy, Check } from "lucide-react";
 import { toast } from "sonner";
@@ -85,6 +86,12 @@ export function LogDetailModal({
 }: LogDetailModalProps) {
   if (!log) return null;
   const details = getLogDetails(log);
+  const display = getLogPresentation(log);
+  const targetLabels: Record<string, string> = {
+    admin: "管理员", user: "桌面用户", role: "角色", system: "系统",
+    proxy: "代理节点", platform: "平台", browser: "浏览器",
+    desktop_faq: "桌面端帮助", managed_platform_account: "托管账号",
+  };
   const ok = log.status === "SUCCESS";
 
   return (
@@ -93,14 +100,14 @@ export function LogDetailModal({
         <div className="shrink-0 border-b border-border/70 px-6 pb-4 pt-5">
           <DialogTitle>审计日志详情 #{log.id}</DialogTitle>
           <DialogDescription className="mt-1.5 text-xs leading-relaxed">
-            系统与桌面端操作的安全审计全链路记录
+            管理端、桌面端与系统操作的安全审计记录
           </DialogDescription>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           {/* 状态行：不用盒子，靠一条基线把状态、动作、时间排在一行 */}
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-4">
-            <div className="flex min-w-0 items-center gap-2.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-2.5">
               <span
                 className={cn(
                   "flex shrink-0 items-center gap-1.5 text-[12px] font-medium",
@@ -115,9 +122,12 @@ export function LogDetailModal({
                 />
                 {ok ? "执行成功" : "执行失败"}
               </span>
-              <span className="truncate rounded-[6px] bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium tracking-wide text-foreground/80">
-                {log.action}
+              <span className="text-[13px] font-semibold text-foreground">
+                {display.actionLabel}
               </span>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                {display.categoryLabel}
+              </Badge>
             </div>
             <span className="shrink-0 text-[11.5px] tabular-nums text-muted-foreground">
               {formatDate(log.createdAt)}
@@ -127,10 +137,10 @@ export function LogDetailModal({
           {/* 主体信息：两列定义列表，靠细线分组而不是一层层边框 */}
           <div className="grid grid-cols-1 gap-x-6 gap-y-4 border-t border-border/60 pt-4 sm:grid-cols-2">
             <Field label="操作人主体">
-              <span className="font-medium">{log.actorUsername || "系统内部"}</span>
+              <span className="font-medium">{display.actorName}</span>
               <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
-                {log.actorType}
-                {log.actorRole ? ` · ${log.actorRole}` : ""}
+                {display.actorTypeLabel}
+                {display.actorRoleLabel ? ` · ${display.actorRoleLabel}` : ""}
               </span>
             </Field>
 
@@ -140,14 +150,14 @@ export function LogDetailModal({
 
             <Field label="关联目标对象">
               {log.targetType
-                ? `${log.targetType}: ${log.targetName || log.targetId || "—"}`
+                ? `${targetLabels[log.targetType] || "其他对象"}：${log.targetName || log.targetId || "未提供"}`
                 : "全局动作"}
             </Field>
 
             <div className="min-w-0">
               <div className="flex items-center gap-1">
-                <span className="text-[11px] text-muted-foreground">Request ID</span>
-                {log.requestId && <CopyChip value={log.requestId} label="Request ID" />}
+                <span className="text-[11px] text-muted-foreground">请求编号</span>
+                {log.requestId && <CopyChip value={log.requestId} label="请求编号" />}
               </div>
               <div
                 className="mt-1 truncate font-mono text-[12px] text-foreground"
@@ -156,6 +166,10 @@ export function LogDetailModal({
                 {log.requestId || "—"}
               </div>
             </div>
+
+            <Field label="事件代码" mono className="sm:col-span-2">
+              <span className="inline-block max-w-full align-middle" title={log.action}>{log.action}</span>
+            </Field>
           </div>
 
           {/* 操作摘要 */}
@@ -171,9 +185,9 @@ export function LogDetailModal({
             <div className="mt-5 border-t border-border/60 pt-4">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] text-muted-foreground">
-                  客户端 User-Agent
+                  客户端信息
                 </span>
-                <CopyChip value={log.userAgent} label="User-Agent" />
+                <CopyChip value={log.userAgent} label="客户端信息" />
               </div>
               <p className="mt-1.5 break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
                 {log.userAgent}

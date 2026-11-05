@@ -11,6 +11,7 @@ import hashlib
 import json
 from typing import Any, Dict, List, Optional
 
+from app.core.audit_events import ACTION_LABELS, CATEGORY_LABELS, audit_category
 from app.core.security import decrypt_proxy_password
 from app.core.uploads import is_inline_safe, normalize_upload_reference
 from app.db.base import ip_text, iso_datetime, utc_now
@@ -221,6 +222,8 @@ def desktop_lease_from_snapshot(
                 "sortOrder": platform.sort_order,
                 "status": platform.status,
                 "updatedAt": platform.updated_at.isoformat(timespec="microseconds"),
+                # Only authorization/runtime changes revoke managed sessions.
+                # Checks and display metadata update account.updated_at too.
                 "managedAccounts": [
                     {
                         "bindingId": binding.id,
@@ -230,7 +233,9 @@ def desktop_lease_from_snapshot(
                         "sessionStatus": account.session_status,
                         "credentialVersion": account.credential_version,
                         "expiresAt": iso_datetime(account.expires_at),
-                        "updatedAt": account.updated_at.isoformat(timespec="microseconds"),
+                        "authMode": account.auth_mode,
+                        "allowedHosts": list(account.allowed_hosts or []),
+                        "autoRelogin": bool(account.auto_relogin and account.auth_mode == "server_login"),
                     }
                     for binding, account in managed_accounts
                 ],
@@ -240,6 +245,7 @@ def desktop_lease_from_snapshot(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 def log_dict(item: UserLog) -> Dict[str, Any]:
+    category = audit_category(item.actor_type, item.action, item.details)
     return {
         "id": item.id,
         "requestId": item.request_id,
@@ -248,6 +254,9 @@ def log_dict(item: UserLog) -> Dict[str, Any]:
         "actorUsername": item.actor_username,
         "actorRole": item.actor_role,
         "action": item.action,
+        "actionLabel": ACTION_LABELS.get(item.action, "其他操作"),
+        "category": category,
+        "categoryLabel": CATEGORY_LABELS[category],
         "targetType": item.target_type,
         "targetId": item.target_id,
         "targetName": item.target_name,

@@ -8,6 +8,16 @@ export type ManagedAccountStatus = "active" | "expired" | "revoked" | "invalid";
 /** 上游登录会话（cookie）是否仍可用；expired 表示客户端上报了平台侧退出登录。 */
 export type ManagedSessionStatus = "valid" | "expired";
 
+export type ManagedIdentityCheckState = "verified" | "invalid" | "unavailable";
+
+/** 最近一次检查（包括未能确认的检查），独立于 identityCheckedAt 成功时间。 */
+export interface ManagedIdentityCheckMetadata {
+  lastIdentityCheckState?: ManagedIdentityCheckState | null;
+  lastIdentityCheckAt?: string | null;
+  /** 后端脱敏后的检查原因。 */
+  lastIdentityCheckDetail?: string | null;
+}
+
 /**
  * Cookie attributes accepted by the administrator API.
  *
@@ -40,7 +50,7 @@ export interface ManagedRecoveryState {
   lastError?: string | null;
 }
 
-export interface ManagedPlatformAccount extends ManagedRecoveryState {
+export interface ManagedPlatformAccount extends ManagedRecoveryState, ManagedIdentityCheckMetadata {
   id: number;
   platformId: number;
   name: string;
@@ -66,7 +76,6 @@ export interface CreateManagedPlatformAccountPayload {
   authMode: ManagedAuthMode;
   username?: string;
   password?: string;
-  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
   allowedHosts?: string[];
   expiresAt?: string | null;
@@ -78,7 +87,6 @@ export interface UpdateManagedPlatformAccountPayload {
   authMode?: ManagedAuthMode;
   username?: string;
   password?: string;
-  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
   allowedHosts?: string[];
   expiresAt?: string | null;
@@ -93,7 +101,7 @@ export interface ManagedPlatformBinding {
   status: "active" | "revoked";
 }
 
-export interface UserManagedAccountBinding extends ManagedRecoveryState {
+export interface UserManagedAccountBinding extends ManagedRecoveryState, ManagedIdentityCheckMetadata {
   id: number;
   userId: number;
   platformId: number;
@@ -118,7 +126,7 @@ export interface ManagedAccountVerification {
   verification?: "verified";
 }
 
-export interface UserManagedPlatformAccount extends ManagedRecoveryState {
+export interface UserManagedPlatformAccount extends ManagedRecoveryState, ManagedIdentityCheckMetadata {
   id?: number;
   name?: string;
   platformId: number;
@@ -136,7 +144,7 @@ export interface UserManagedPlatformAccount extends ManagedRecoveryState {
 }
 
 /** 「绑定托管」总览页的一行：用户 × 托管账号绑定及其会话状态。 */
-export interface ManagedBindingItem extends ManagedRecoveryState {
+export interface ManagedBindingItem extends ManagedRecoveryState, ManagedIdentityCheckMetadata {
   bindingId: number;
   userId: number;
   username: string;
@@ -175,7 +183,6 @@ export interface UserManagedPlatformAccountPayload {
   authMode: UserManagedAuthMode;
   username?: string;
   password?: string;
-  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
 }
 
@@ -188,7 +195,6 @@ export interface UpdateUserManagedAccountPayload {
   authMode?: UserManagedAuthMode;
   username?: string;
   password?: string;
-  autoRelogin?: boolean;
   cookieBundle?: ManagedCookieInput[];
 }
 

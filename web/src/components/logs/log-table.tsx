@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { UserLogItem } from "@/types/log";
+import { getLogPresentation, UserLogItem } from "@/types/log";
 import { cn, formatDate } from "@/lib/utils";
 import { Eye, CheckCircle2, XCircle, Clock, FileText } from "lucide-react";
 
@@ -49,15 +49,16 @@ export function LogTable({ logs, onViewDetail, isLoading, embedded = false }: Lo
           <TableRow>
             <TableHead className="w-[170px]">操作时间</TableHead>
             <TableHead className="w-[180px]">操作主体</TableHead>
-            <TableHead className="w-[150px]">动作类型</TableHead>
-            <TableHead>操作摘要说明</TableHead>
+            <TableHead>操作内容</TableHead>
             <TableHead className="w-[140px]">客户端 IP</TableHead>
             <TableHead className="w-[90px]">结果</TableHead>
             <TableHead className="w-[80px] text-right">详情</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {logs.map((log) => (
+          {logs.map((log) => {
+            const display = getLogPresentation(log);
+            return (
             <TableRow key={log.id} className="hover:bg-muted/40 transition-colors text-xs">
               {/* Time */}
               <TableCell className="font-mono text-muted-foreground whitespace-nowrap">
@@ -71,24 +72,25 @@ export function LogTable({ logs, onViewDetail, isLoading, embedded = false }: Lo
               <TableCell>
                 <div className="flex flex-col">
                   <span className="font-semibold text-foreground">
-                    {log.actorUsername || "系统内部"}
+                    {display.actorName}
                   </span>
                   <span className="text-[10px] text-muted-foreground">
-                    {log.actorType} {log.actorRole ? `· ${log.actorRole}` : ""}
+                    {display.actorTypeLabel} {display.actorRoleLabel ? `· ${display.actorRoleLabel}` : ""}
                   </span>
                 </div>
               </TableCell>
 
-              {/* Action */}
-              <TableCell>
-                <Badge variant="outline" className="font-mono text-[10px] uppercase">
-                  {log.action}
-                </Badge>
-              </TableCell>
-
-              {/* Summary */}
-              <TableCell className="font-medium text-foreground max-w-md truncate" title={log.summary}>
-                {log.summary || "—"}
+              {/* Action, category and summary share one content column. */}
+              <TableCell className="min-w-[240px] max-w-md">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-semibold text-foreground">{display.actionLabel}</span>
+                  <Badge variant="outline" className="text-[10px] font-normal whitespace-nowrap">
+                    {display.categoryLabel}
+                  </Badge>
+                </div>
+                <p className="mt-1 truncate text-[11px] text-muted-foreground" title={log.summary}>
+                  {log.summary || "无摘要说明"}
+                </p>
               </TableCell>
 
               {/* IP */}
@@ -123,7 +125,8 @@ export function LogTable({ logs, onViewDetail, isLoading, embedded = false }: Lo
                 </Button>
               </TableCell>
             </TableRow>
-          ))}
+            );
+          })}
         </TableBody>
       </Table>
     </div>

@@ -113,6 +113,8 @@ def run_recovery(database: Database, account_id: int, *, provider: Any = None) -
             "next_recovery_at": None, "last_recovered_at": now, "last_verified_at": now,
             "identity_checked_at": now, "remote_account_id": remote_id,
             "remote_display_name": remote_name, "last_error": None,
+            "last_identity_check_state": "verified", "last_identity_check_at": now,
+            "last_identity_check_detail": "重新登录验证成功",
         }
     else:
         terminal = state in {"invalid_credentials", "needs_manual_verification", "identity_mismatch", "unsupported"}

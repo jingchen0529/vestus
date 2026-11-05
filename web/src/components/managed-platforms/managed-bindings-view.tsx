@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { isManagedRecovering, managedRecoveryLabel } from "@/lib/managed-recovery";
+import { isManagedRecovering } from "@/lib/managed-recovery";
+import {
+  managedIdentityCheckErrorToast,
+  managedIdentityCheckToast,
+  managedIdentityDisplay,
+  type ManagedIdentityDisplay,
+} from "@/lib/managed-identity-display";
 import {
   CheckCircle2,
   Edit2,
@@ -153,20 +159,15 @@ export function ManagedBindingsView({
     setBusyKey(key);
     try {
       const result = await onCheckIdentity(item.managedAccountId);
-      if (result.state === "verified") {
-        toast.success(`登录态有效：${result.account.remoteDisplayName || "身份已刷新"}`);
-      } else {
-        toast.error("登录态已失效，会话已标记过期", {
-          description: result.detail || "上游返回未登录，请替换 Cookie",
-        });
-      }
-      onRefresh();
+      const notification = managedIdentityCheckToast(result);
+      toast[notification.level](notification.message, { description: notification.description });
     } catch (error) {
-      toast.error("检查登录态失败", {
-        description: error instanceof Error ? error.message : "请稍后重试",
-      });
+      const notification = managedIdentityCheckErrorToast(error);
+      toast[notification.level](notification.message, { description: notification.description });
     } finally {
       setBusyKey(null);
+      // unavailable 仍返回 503，但最近检查元数据已落库。
+      onRefresh();
     }
   };
 
@@ -187,29 +188,17 @@ export function ManagedBindingsView({
     );
   };
 
-  const sessionBadge = (item: ManagedBindingItem) => {
-    if (isManagedRecovering(item)) {
-      return <Badge variant="warning" className="gap-1 text-[10px]" title={item.lastError || undefined}>
-        <RefreshCw className="h-3 w-3 animate-spin" />{managedRecoveryLabel(item)}
-      </Badge>;
-    }
-    if (item.recoveryStatus === "failed") {
-      return <Badge variant="destructive" className="text-[10px]" title={item.lastError || undefined}>自动恢复失败</Badge>;
-    }
-    if (item.sessionStatus === "expired") {
-      return (
-        <Badge variant="destructive" className="gap-1 text-[10px]" title={item.lastError || undefined}>
-          <ShieldAlert className="h-3 w-3" />
-          会话已失效
-        </Badge>
-      );
-    }
-    return (
-      <Badge variant="outline" className="gap-1 text-[10px] text-muted-foreground">
-        会话正常
-      </Badge>
-    );
-  };
+  const sessionBadge = (display: ManagedIdentityDisplay) => (
+    <Badge
+      variant={display.variant}
+      className={`gap-1 text-[10px] ${display.variant === "outline" ? "text-muted-foreground" : ""}`}
+      title={display.detail || undefined}
+    >
+      {display.recovering ? <RefreshCw className="h-3 w-3 animate-spin" /> :
+        display.variant !== "outline" ? <ShieldAlert className="h-3 w-3" /> : null}
+      {display.label}
+    </Badge>
+  );
 
   return (
     <div className="space-y-4 p-1">
@@ -305,7 +294,7 @@ export function ManagedBindingsView({
               <TableHead>凭据版本</TableHead>
               <TableHead>绑定状态</TableHead>
               <TableHead>会话状态</TableHead>
-              <TableHead>最近状态</TableHead>
+              <TableHead>检查记录</TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -314,6 +303,7 @@ export function ManagedBindingsView({
               const rowKey = String(item.bindingId);
               const busy = busyKey === `${item.bindingId}:unbind`;
               const identityBusy = busyKey === `${item.bindingId}:identity`;
+              const identityDisplay = managedIdentityDisplay(item);
               return (
                 <TableRow key={rowKey}>
                   <TableCell className="whitespace-nowrap">
@@ -363,9 +353,22 @@ export function ManagedBindingsView({
                     v{item.credentialVersion}
                   </TableCell>
                   <TableCell>{bindingBadge(item)}</TableCell>
-                  <TableCell>{sessionBadge(item)}</TableCell>
-                  <TableCell className="whitespace-nowrap text-muted-foreground font-mono">
-                    {formatDate(item.lastVerifiedAt)}
+                  <TableCell>
+                    <div className="flex flex-col items-start gap-1">
+                      {sessionBadge(identityDisplay)}
+                      {identityDisplay.variant !== "outline" && identityDisplay.detail && (
+                        <span className="max-w-xs whitespace-normal break-words text-[11px] text-muted-foreground">
+                          {identityDisplay.detail}
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
+                    <div className="space-y-1 text-[11px]">
+                      <div>最近检查：<span className="font-mono">{formatDate(identityDisplay.checkedAt)}</span></div>
+                      <div>身份校验成功：<span className="font-mono">{formatDate(identityDisplay.verifiedAt)}</span></div>
+                      <div>凭据验证：<span className="font-mono">{formatDate(item.lastVerifiedAt)}</span></div>
+                    </div>
                   </TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <div className="flex justify-end gap-1.5">

@@ -56,6 +56,10 @@ class ManagedPlatformAccount(Base):
     remote_account_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     remote_display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     identity_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True, index=True)
+    # Latest attempt is independent from the successful identity's freshness.
+    last_identity_check_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    last_identity_check_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
+    last_identity_check_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by: Mapped[Optional[int]] = mapped_column(IdType, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(

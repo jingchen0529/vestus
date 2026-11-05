@@ -1,7 +1,7 @@
 name: Release
 
-# 推 desktop-v* 标签：四个平台原生打包并发布 GitHub Release。
-# 手动触发（workflow_dispatch）：只跑构建，产物留在 Actions Artifacts，不建 Release。
+# 推 desktop-v* 标签：先检查版本说明，再四个平台原生打包并发布 GitHub Release。
+# 手动触发（workflow_dispatch）：必须指定版本，只跑构建，不建 Release。
 #
 # 关键约束：
 # - 随包 Chromium 不能跨平台也不能跨架构，所以每个目标都要在对应 runner 上原生
@@ -15,6 +15,10 @@ on:
     tags: ["desktop-v*"]
   workflow_dispatch:
     inputs:
+      version:
+        description: "版本号（x.y.z；同一提交须包含 docs/releases/desktop-v<版本号>.md）"
+        required: true
+        type: string
       api_base_url:
         description: "后端 API 地址（留空则用 secrets.VESTUS_API_BASE_URL）"
         required: false
@@ -28,9 +32,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    name: Verify version release notes
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.notes.outputs.version }}
+      notes_path: ${{ steps.notes.outputs.notes_path }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify release notes before packaging
+        id: notes
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: node desktop/scripts/check-release-notes.mjs --github-actions
+
   build:
     name: Build ${{ matrix.label }}
+    needs: preflight
     runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +82,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
       - name: Install Linux system deps
         if: runner.os == 'Linux'
@@ -111,20 +141,18 @@ jobs:
           esac
           echo "VESTUS_API_BASE_URL=$api" >> "$GITHUB_ENV"
 
-      # 安装包文件名和「关于」里的版本都取自 tauri.conf.json，必须在 tauri build
-      # 之前按标签写入，否则发出去的包永远是仓库里硬编码的那个版本号。
-      - name: Stamp version from tag
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
-        shell: bash
-        working-directory: desktop
-        run: node scripts/stamp-version.mjs "${GITHUB_REF_NAME#desktop-v}"
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+
+      # tag 与手动构建都使用前置检查通过的版本，避免说明、文件名和应用版本脱节。
+      - name: Stamp validated version
+        shell: bash
+        working-directory: desktop
+        run: node scripts/stamp-version.mjs "$RELEASE_VERSION"
 
       - name: Install frontend deps
         working-directory: desktop
@@ -193,11 +221,7 @@ jobs:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME}"
-          case "$version" in
-            desktop-v*) version="${version#desktop-v}" ;;
-            *) version="dev" ;;
-          esac
+          version="$RELEASE_VERSION"
 
           bundle="desktop/src-tauri/target/$RUST_TARGET/release/bundle"
           out="release-assets"
@@ -240,14 +264,17 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-22.04
-    # 只有标签构建才发版；手动触发只留 Artifacts。四个平台全部成功才发，避免
-    # 放出缺平台的 Release。
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    # 只有推送标签才发版；手动选择 tag 也仅留 Artifacts。四个平台必须全部成功。
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -269,18 +296,4 @@ jobs:
           prerelease: false
           fail_on_unmatched_files: true
           files: release-assets/*
-          body: |
-            Vestus 桌面客户端 ${{ github.ref_name }}。安装包内置锁定版本的 Chromium，无需另装浏览器。
-
-            ### 下载
-
-            - **Windows (x86_64)**：`.exe`（NSIS 安装版）
-            - **macOS (Apple Silicon)**：`macos-aarch64.dmg`
-            - **macOS (Intel)**：`macos-x86_64.dmg`
-            - **Linux (x86_64)**：`.deb` / `.AppImage`
-
-            > macOS 包未做 Apple 签名和公证，首次打开需右键 →「打开」，或在
-            > 「系统设置 → 隐私与安全性」中允许运行。
-            >
-            > Linux 版的登录状态只保留在应用运行期间（未启用系统钥匙串后端），
-            > 重启客户端需要重新登录。
+          body_path: ${{ needs.preflight.outputs.notes_path }}

@@ -5,9 +5,10 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import LargeBinary, and_, case, cast, desc, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.audit_events import AUTH_ACTIONS, AuditLogCategory
 from app.db.base import ip_bytes, parse_datetime
 from app.db.models import UserLog
 
@@ -76,6 +77,26 @@ def visibility_condition(
     return or_(*clauses)
 
 
+def _category_expression() -> Any:
+    """SQL counterpart of audit_category, evaluated before count and paging."""
+
+    # MySQL's default collation is case-insensitive; byte comparisons preserve
+    # the exact actor/event vocabulary used by the Python serializer.
+    actor = cast(UserLog.actor_type, LargeBinary)
+    action = cast(UserLog.action, LargeBinary)
+    is_login = action.in_([value.encode("ascii") for value in AUTH_ACTIONS])
+    source = cast(UserLog.details["authSource"].as_string(), LargeBinary)
+    anonymous_login = and_(actor == b"system", is_login)
+    return case(
+        (actor == b"admin", case((is_login, "admin_login"), else_="admin_operation")),
+        (actor == b"user", case((is_login, "desktop_login"), else_="desktop_operation")),
+        (and_(anonymous_login, source == b"admin"), "admin_login"),
+        (and_(anonymous_login, source == b"desktop"), "desktop_login"),
+        (and_(actor == b"system", ~is_login), "system"),
+        else_="unknown",
+    )
+
+
 def list_page(
     session: Session,
     *,
@@ -84,6 +105,7 @@ def list_page(
     actor_type: Optional[str] = None,
     actor_id: Optional[int] = None,
     action: Optional[str] = None,
+    category: Optional[AuditLogCategory] = None,
     status: Optional[str] = None,
     target_id: Optional[int] = None,
     start_at: Any = None,
@@ -102,6 +124,8 @@ def list_page(
         conditions.append(UserLog.actor_id == actor_id)
     if action:
         conditions.append(UserLog.action == action)
+    if category:
+        conditions.append(_category_expression() == category)
     if status:
         conditions.append(UserLog.status == status)
     if target_id is not None:

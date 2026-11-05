@@ -24,7 +24,7 @@ def user_login(
     response: Response,
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    return perform_login(db, "user", payload, request, response)
+    return perform_login(db, "user", payload, request, response, auth_source="desktop")
 
 
 @router.get("/api/user/auth/me", tags=["user-auth"])
