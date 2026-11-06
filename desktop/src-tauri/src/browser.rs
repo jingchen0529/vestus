@@ -100,6 +100,29 @@ use crate::rt;
 mod process_tree;
 use process_tree::OwnedProcess;
 
+/// Isolated integration fixtures reuse OS process-tree ownership, not PID scans.
+#[cfg(test)]
+pub(crate) struct TestBrowserProcess(OwnedProcess);
+
+#[cfg(test)]
+impl TestBrowserProcess {
+    pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        OwnedProcess::spawn(command).map(Self)
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    pub(crate) fn has_exited(&self) -> std::io::Result<bool> {
+        self.0.has_exited()
+    }
+
+    pub(crate) fn terminate(&mut self) -> std::io::Result<()> {
+        self.0.terminate()
+    }
+}
+
 #[cfg(any(debug_assertions, test))]
 const CHROMIUM_PATH_ENV: &str = "VESTUS_CHROMIUM_PATH";
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(250);

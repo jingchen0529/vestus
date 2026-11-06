@@ -183,6 +183,17 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --all-targets
 
+      - name: Verify real Chromium control
+        timeout-minutes: 15
+        shell: bash
+        working-directory: desktop
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:control
+          else
+            npm run test:control
+          fi
+
       - name: Verify real Chromium persistence
         timeout-minutes: 15
         # Windows 上导航到本地 fixture 不提交、文档停留在初始 about:blank
@@ -198,6 +209,14 @@ jobs:
           else
             npm run test:persistence
           fi
+
+      - name: Upload control test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-control-${{ matrix.label }}
+          path: desktop/test-results/browser-control/
+          if-no-files-found: ignore
 
       - name: Upload persistence test results
         if: always()

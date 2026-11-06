@@ -1004,6 +1004,10 @@ impl Collector {
 }
 
 #[cfg(test)]
+#[path = "cdp/control_tests.rs"]
+mod control_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1905,78 +1909,5 @@ mod tests {
             Err(CdpError::Connect(_))
         ));
         assert!(started.elapsed() < CONTROL_COMMAND_TIMEOUT);
-    }
-
-    /// 用本机真浏览器把 Target 命令整条链路过一遍：已有页面 → 再来一次必须切回，
-    /// 不匹配的平台必须失败而不是新开标签。
-    /// 没装 Chrome 的环境（CI、Linux）直接通过，不阻塞其他测试。
-    #[test]
-    fn target_commands_work_against_a_real_browser() {
-        use std::process::{Command, Stdio};
-        use std::time::Duration;
-
-        let chrome =
-            std::path::Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
-        if !chrome.is_file() {
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!(
-            "vestus-cdp-smoke-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut child = Command::new(chrome)
-            .arg(format!("--user-data-dir={}", dir.display()))
-            .args([
-                "--remote-debugging-port=0",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ])
-            .arg("https://example.org/")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let port_file = dir.join("DevToolsActivePort");
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        let endpoint = loop {
-            if let Ok(text) = std::fs::read_to_string(&port_file) {
-                if let Some(endpoint) = crate::browser::parse_devtools_active_port(&text) {
-                    break endpoint;
-                }
-            }
-            if matches!(child.try_wait(), Ok(Some(_))) && !port_file.exists() {
-                panic!("浏览器提前退出");
-            }
-            assert!(std::time::Instant::now() < deadline, "等待调试端点超时");
-            std::thread::sleep(Duration::from_millis(100));
-        };
-
-        let outcome = crate::rt::runtime().block_on(async {
-            let first = open_or_activate_page(&endpoint, "https://example.org/").await;
-            let missing = open_or_activate_page(&endpoint, "https://other.example/").await;
-            let second = open_or_activate_page(&endpoint, "https://example.org/other/path").await;
-            (first, missing, second)
-        });
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let (first, missing, second) = outcome;
-        assert_eq!(first, Ok(PageOutcome::Activated), "已有页面应被激活");
-        assert_eq!(
-            missing,
-            Err(CdpError::NoMatchingPage),
-            "不匹配的平台必须失败"
-        );
-        assert_eq!(
-            second,
-            Ok(PageOutcome::Activated),
-            "同域再次打开应切回已有标签"
-        );
     }
 }
