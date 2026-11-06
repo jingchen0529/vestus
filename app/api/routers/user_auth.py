@@ -10,7 +10,7 @@ from app.api.deps import audit_context, get_db, user_auth
 from app.api.envelope import EnvelopeRoute
 from app.api.login import perform_login, perform_logout
 from app.db.session import Database
-from app.schemas.auth import ChangePasswordRequest, LoginRequest
+from app.schemas.auth import DesktopChangePasswordRequest, LoginRequest
 from app.services import auth as auth_service
 from app.services.serializers import user_dict
 
@@ -43,7 +43,7 @@ def user_logout(
 
 @router.post("/api/user/auth/change-password", tags=["user-auth"])
 def user_change_password(
-    payload: ChangePasswordRequest,
+    payload: DesktopChangePasswordRequest,
     request: Request,
     auth: Dict[str, Any] = Depends(user_auth),
     db: Database = Depends(get_db),

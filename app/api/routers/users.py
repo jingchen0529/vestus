@@ -10,7 +10,7 @@ from app.api.deps import admin_auth, audit_context, get_db, user_scope_admin_id
 from app.api.envelope import EnvelopeRoute
 from app.api.responses import collection
 from app.db.session import Database
-from app.schemas.auth import PasswordReset
+from app.schemas.auth import DesktopPasswordReset
 from app.schemas.users import UserCreate, UserUpdate
 from app.services import users as users_service
 from app.services.users import MISSING_USER_DETAIL
@@ -113,7 +113,7 @@ def disable_user(
 @router.post("/api/admin/users/{user_id}/password", include_in_schema=False)
 def reset_user_password(
     user_id: int,
-    payload: PasswordReset,
+    payload: DesktopPasswordReset,
     request: Request,
     auth: Dict[str, Any] = Depends(admin_auth),
     db: Database = Depends(get_db),

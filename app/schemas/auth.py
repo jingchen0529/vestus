@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.device import normalize_device_id
+from app.schemas.password_policy import validate_password_charset
 
 
 class LoginRequest(BaseModel):
@@ -39,6 +40,19 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(alias="newPassword", min_length=6, max_length=256)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-
 class PasswordReset(BaseModel):
     password: str = Field(min_length=6, max_length=256)
+
+
+class DesktopChangePasswordRequest(ChangePasswordRequest):
+    @field_validator("new_password")
+    @classmethod
+    def desktop_charset(cls, value: str) -> str:
+        return validate_password_charset(value)
+
+
+class DesktopPasswordReset(PasswordReset):
+    @field_validator("password")
+    @classmethod
+    def desktop_charset(cls, value: str) -> str:
+        return validate_password_charset(value)

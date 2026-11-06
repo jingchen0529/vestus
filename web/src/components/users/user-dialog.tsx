@@ -14,6 +14,8 @@ import { DesktopUser, CreateUserPayload, UpdateUserPayload } from "@/types/user"
 import { ProxyItem } from "@/types/proxy";
 import { AdminUser } from "@/types/admin";
 import { generateRandomPassword, cn } from "@/lib/utils";
+import { accountCharsetError, passwordCharsetError } from "@/lib/password-policy";
+import { restrictedCredentialInput } from "@/lib/credential-input";
 import { Sparkles, Copy, Check, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 
@@ -131,8 +133,17 @@ export function UserDialog({
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const credentialError = accountError || passwordError;
+  const changeUsername = (value: string) => { setUsername(value); setAccountError(null); };
+  const changePassword = (value: string) => { setPassword(value); setPasswordError(null); };
+  const usernameInput = restrictedCredentialInput("account", username, changeUsername, setAccountError);
+  const passwordInput = restrictedCredentialInput("password", password, changePassword, setPasswordError);
 
   useEffect(() => {
+    setAccountError(null);
+    setPasswordError(null);
     if (userToEdit) {
       setUsername(userToEdit.username || "");
       setPassword("");
@@ -165,6 +176,7 @@ export function UserDialog({
   const handleGeneratePassword = () => {
     const pwd = generateRandomPassword(12);
     setPassword(pwd);
+    setPasswordError(null);
     setShowPassword(true);
     toast.info("已生成随机强密码");
   };
@@ -188,6 +200,10 @@ export function UserDialog({
       return;
     }
 
+    if (!isEditing && credentialError) {
+      toast.error(credentialError);
+      return;
+    }
     setLoading(true);
     try {
       if (isEditing && userToEdit) {
@@ -212,6 +228,11 @@ export function UserDialog({
       } else {
         if (!username.trim() || !password) {
           toast.error("账号和初始密码不能为空");
+          return;
+        }
+        const charsetError = accountCharsetError(username) || passwordCharsetError(password);
+        if (charsetError) {
+          toast.error(charsetError);
           return;
         }
         await onSubmitCreate({
@@ -275,7 +296,11 @@ export function UserDialog({
                 <Input
                   id="u-username"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  {...usernameInput}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  maxLength={64}
                   placeholder="例如 client01"
                   className={`${FIELD} font-mono text-[13px]`}
                   disabled={isEditing || loading}
@@ -308,8 +333,13 @@ export function UserDialog({
                       id="u-password"
                       type={showPassword ? "text" : "password"}
                       value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="至少 6 位密码"
+                      {...passwordInput}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      autoComplete="new-password"
+                      maxLength={256}
+                      placeholder="至少 6 位密码（英文/数字/符号）"
                       className={`${FIELD} pr-[108px] font-mono text-[13px]`}
                       minLength={6}
                       required
@@ -354,7 +384,7 @@ export function UserDialog({
                     </div>
                   </div>
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
-                    创建后请把密码转交用户，并提醒其首次登录后自行修改
+                    至少 6 位，只能使用可见 ASCII 字符（不含中文、空格），与桌面端登录一致
                   </p>
                 </div>
               )}

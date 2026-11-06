@@ -7,10 +7,11 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.base import parse_datetime
+from app.schemas.password_policy import validate_password_charset
 
 
 class UserCreate(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._@-]+$")
     password: str = Field(min_length=6, max_length=256)
     name: str = Field(min_length=1, max_length=100)
     company: Optional[str] = Field(default=None, max_length=200)
@@ -25,6 +26,11 @@ class UserCreate(BaseModel):
     must_change_password: bool = Field(default=False, alias="mustChangePassword")
     remark: Optional[str] = Field(default=None, max_length=500)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @field_validator("password")
+    @classmethod
+    def desktop_charset(cls, value: str) -> str:
+        return validate_password_charset(value)
 
     @field_validator("username", "name")
     @classmethod
@@ -43,7 +49,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    username: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    username: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._@-]+$")
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     company: Optional[str] = Field(default=None, max_length=200)
     phone: Optional[str] = Field(default=None, max_length=32)

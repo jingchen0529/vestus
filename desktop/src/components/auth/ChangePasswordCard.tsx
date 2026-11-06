@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
+import { useRestrictedInput } from "@/hooks/useRestrictedInput";
+import { preventSpaceKeyDown } from "@/components/auth/authInputHelpers";
 
 interface ChangePasswordCardProps {
   username: string;
@@ -20,8 +22,8 @@ export const ChangePasswordCard: React.FC<ChangePasswordCardProps> = ({
 }) => {
   const { success, error } = useToast();
   const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmation, setConfirmation] = useState("");
+  const { value: newPassword, inputProps: newPasswordInputProps } = useRestrictedInput("password");
+  const { value: confirmation, inputProps: confirmationInputProps } = useRestrictedInput("password");
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -96,9 +98,9 @@ export const ChangePasswordCard: React.FC<ChangePasswordCardProps> = ({
               <label className="text-[11px] font-medium text-muted-foreground">新密码</label>
               <Input
                 type="password"
-                value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                placeholder="新密码（至少 6 个字符）"
+                {...newPasswordInputProps}
+                onKeyDown={preventSpaceKeyDown}
+                placeholder="新密码（至少 6 个字符，英文/数字/符号）"
                 icon={<KeyRound className="h-3.5 w-3.5" />}
                 className="h-8.5 text-xs"
                 disabled={submitting}
@@ -110,8 +112,8 @@ export const ChangePasswordCard: React.FC<ChangePasswordCardProps> = ({
               <label className="text-[11px] font-medium text-muted-foreground">确认新密码</label>
               <Input
                 type="password"
-                value={confirmation}
-                onChange={(event) => setConfirmation(event.target.value)}
+                {...confirmationInputProps}
+                onKeyDown={preventSpaceKeyDown}
                 placeholder="再次输入新密码"
                 icon={<KeyRound className="h-3.5 w-3.5" />}
                 className="h-8.5 text-xs"

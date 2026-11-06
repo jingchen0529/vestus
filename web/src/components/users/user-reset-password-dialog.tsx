@@ -10,6 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DesktopUser } from "@/types/user";
 import { generateRandomPassword } from "@/lib/utils";
+import { passwordCharsetError } from "@/lib/password-policy";
+import { restrictedCredentialInput } from "@/lib/credential-input";
 import { Sparkles, Copy, Check, Eye, EyeOff, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,9 +35,13 @@ export function UserResetPasswordDialog({
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showPassword, setShowPassword] = useState(true);
+  const [credentialError, setCredentialError] = useState<string | null>(null);
+  const changePassword = (value: string) => { setPassword(value); setCredentialError(null); };
+  const passwordInput = restrictedCredentialInput("password", password, changePassword, setCredentialError);
 
   useEffect(() => {
     if (open) {
+      setCredentialError(null);
       setPassword(generateRandomPassword(12));
     }
   }, [open]);
@@ -45,6 +51,7 @@ export function UserResetPasswordDialog({
   const handleGeneratePassword = () => {
     const pwd = generateRandomPassword(12);
     setPassword(pwd);
+    setCredentialError(null);
     setShowPassword(true);
   };
 
@@ -59,6 +66,11 @@ export function UserResetPasswordDialog({
     e.preventDefault();
     if (!password || password.length < 6) {
       toast.error("新密码至少需要 6 个字符");
+      return;
+    }
+    const charsetError = credentialError || passwordCharsetError(password);
+    if (charsetError) {
+      toast.error(charsetError);
       return;
     }
 
@@ -112,7 +124,12 @@ export function UserResetPasswordDialog({
                   id="reset-pwd"
                   type={showPassword ? "text" : "password"}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  {...passwordInput}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="new-password"
+                  maxLength={256}
                   className="h-10 pr-[108px] font-mono text-[13px]"
                   minLength={6}
                   required
@@ -157,7 +174,7 @@ export function UserResetPasswordDialog({
                 </div>
               </div>
               <p className="text-[11px] leading-relaxed text-muted-foreground">
-                至少 6 位。复制后请通过可靠渠道转交用户。
+                6–256 位，只能使用可见 ASCII 字符（不含中文、空格），与桌面端登录一致。复制后请通过可靠渠道转交用户。
               </p>
             </div>
           </div>
