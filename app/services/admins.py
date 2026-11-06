@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.db.base import utc_now
 from app.db.models import Admin
 from app.db.session import Database
@@ -20,6 +20,7 @@ from app.repositories import admins as admins_repo
 from app.repositories import users as users_repo
 from app.services.audit import AuditContext, record
 from app.services.errors import (
+    AuthenticationError,
     BadRequestError,
     ConflictError,
     LastSuperAdminError,
@@ -194,6 +195,44 @@ def disable_admin(
         return result
 
 
+def change_password(
+    database: Database,
+    admin_id: int | str,
+    current_password: str,
+    new_password: str,
+    *,
+    token_version: int,
+    audit: Optional[AuditContext] = None,
+) -> None:
+    """Verify and replace the current administrator's password in one transaction."""
+    failure: Optional[BadRequestError] = None
+    with database.session() as session:
+        item = admins_repo.get_active_for_update(session, admin_id)
+        if (
+            item is None or item.status != "active" or item.role != "super_admin"
+            or int(item.token_version or 1) != token_version
+        ):
+            raise AuthenticationError("登录状态已失效，请重新登录")
+        if not verify_password(current_password, item.password_hash):
+            failure = BadRequestError("当前密码错误")
+        elif new_password == current_password:
+            failure = BadRequestError("新密码不能与当前密码相同")
+        else:
+            _apply_changes(session, item, {"password": new_password})
+        record(
+            session,
+            audit,
+            "CHANGE_PASSWORD",
+            "修改密码失败" if failure else "修改密码成功",
+            status="FAILED" if failure else "SUCCESS",
+            target_type="admin",
+            target_id=item.id,
+            target_name=item.username,
+        )
+    if failure is not None:
+        raise failure
+
+
 def reset_password(
     database: Database,
     admin_id: int | str,
@@ -262,6 +301,7 @@ def delete_admin(
 
 
 __all__ = [
+    "change_password",
     "create_admin",
     "delete_admin",
     "disable_admin",

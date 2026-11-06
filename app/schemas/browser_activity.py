@@ -227,6 +227,9 @@ class BrowserActivityReport(BaseModel):
     managed_account_id: Optional[int] = Field(
         default=None, alias="managedAccountId", ge=1, le=2**63 - 1
     )
+    bootstrap_session_id: Optional[str] = Field(
+        default=None, alias="bootstrapSessionId", pattern=r"^[1-9][0-9]{0,18}$", max_length=19,
+    )
     direct_mode: bool = Field(default=False, alias="directMode")
     client_version: Optional[str] = Field(default="", alias="clientVersion", max_length=50)
     #: Machine identifier of the reporting desktop; optional so uploads from
@@ -236,6 +239,13 @@ class BrowserActivityReport(BaseModel):
     dropped_pages: int = Field(default=0, alias="droppedPages", ge=0, le=2**31 - 1)
     pages: List[BrowserPageReport] = Field(min_length=1, max_length=MAX_PAGES_PER_REPORT)
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @field_validator("bootstrap_session_id")
+    @classmethod
+    def valid_bootstrap_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and int(value) > 2**63 - 1:
+            raise ValueError("bootstrapSessionId is out of range")
+        return value
 
     @field_validator("device_id")
     @classmethod

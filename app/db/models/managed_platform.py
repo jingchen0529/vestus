@@ -113,6 +113,12 @@ class ManagedBrowserSession(Base):
     device_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, index=True)
     consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
+    # Frozen only when this grant is consumed, while the account/version is locked.
+    remote_account_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    remote_display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    managed_account_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    identity_snapshot_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
+    identity_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)
 
 

@@ -57,6 +57,7 @@ def create_session(
     device_id: Optional[str] = None,
     ip: Optional[str],
     started_at: datetime,
+    identity_snapshot: Optional[Dict[str, Any]] = None,
 ) -> BrowserSession:
     item = BrowserSession(
         user_id=user_id,
@@ -73,6 +74,7 @@ def create_session(
         ip_address=ip_bytes(ip),
         started_at=started_at,
         last_report_at=started_at,
+        **(identity_snapshot or {}),
     )
     session.add(item)
     session.flush()
@@ -115,8 +117,8 @@ def merge_page(
     input_snapshot_at: Optional[datetime],
     submit_snapshot: Optional[dict],
     submit_snapshot_at: Optional[datetime],
-) -> bool:
-    """Add one address's deltas.  Returns whether the address was new."""
+) -> Tuple[int, bool]:
+    """Add one address's deltas and return its ID plus whether it was new."""
 
     digest = url_hash(url, url_params)
     stmt = select(BrowserPageVisit).where(
@@ -124,33 +126,24 @@ def merge_page(
     )
     item = session.scalars(stmt).one_or_none()
     if item is None:
-        session.add(
-            BrowserPageVisit(
-                session_id=session_id,
-                url=url,
-                url_params=url_params,
-                url_hash=digest,
-                input_snapshot=(
-                    input_snapshot if input_snapshot_at is not None else None
-                ),
-                input_snapshot_at=(
-                    input_snapshot_at if input_snapshot is not None else None
-                ),
-                submit_snapshot=(
-                    submit_snapshot if submit_snapshot_at is not None else None
-                ),
-                submit_snapshot_at=(
-                    submit_snapshot_at if submit_snapshot is not None else None
-                ),
-                first_seen_at=first_seen_at,
-                last_seen_at=last_seen_at,
-                **{name: int(deltas.get(name, 0)) for name in _COUNTERS},
-            )
+        item = BrowserPageVisit(
+            session_id=session_id,
+            url=url,
+            url_params=url_params,
+            url_hash=digest,
+            input_snapshot=input_snapshot if input_snapshot_at is not None else None,
+            input_snapshot_at=input_snapshot_at if input_snapshot is not None else None,
+            submit_snapshot=submit_snapshot if submit_snapshot_at is not None else None,
+            submit_snapshot_at=submit_snapshot_at if submit_snapshot is not None else None,
+            first_seen_at=first_seen_at,
+            last_seen_at=last_seen_at,
+            **{name: int(deltas.get(name, 0)) for name in _COUNTERS},
         )
+        session.add(item)
         # Later rows in this batch may normalize to this same address. Sessions
         # disable autoflush, so make the inserted row visible before their reads.
         session.flush()
-        return True
+        return item.id, True
     for name in _COUNTERS:
         setattr(item, name, int(getattr(item, name) or 0) + int(deltas.get(name, 0)))
     item.first_seen_at = min(item.first_seen_at, first_seen_at)
@@ -165,7 +158,7 @@ def merge_page(
     ):
         item.submit_snapshot = submit_snapshot
         item.submit_snapshot_at = submit_snapshot_at
-    return False
+    return item.id, False
 
 
 def list_sessions_page(

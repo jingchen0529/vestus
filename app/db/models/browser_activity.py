@@ -51,6 +51,12 @@ class BrowserSession(Base):
     #: ``NULL`` keeps reports from older desktop clients readable.
     managed_account_id: Mapped[Optional[int]] = mapped_column(IdType, nullable=True, index=True)
     managed_account_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    bootstrap_session_id: Mapped[Optional[int]] = mapped_column(IdType, nullable=True, index=True)
+    remote_account_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    remote_display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    credential_version: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    identity_snapshot_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
+    identity_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime6, nullable=True)
     #: Also copied at report time; the platform may be renamed or removed later.
     platform_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     direct_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

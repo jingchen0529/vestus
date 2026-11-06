@@ -230,6 +230,19 @@ pub async fn open_browser<R: Runtime>(
         });
     }
 
+    // This is the identity on the exact ManagedSession injected below. Reused
+    // browsers returned above and keep their original collector/grant identity.
+    let bootstrap_session_id = managed_session
+        .as_ref()
+        .map(|session| {
+            session
+                .identity
+                .as_ref()
+                .and_then(|identity| identity.session_id.parse::<i64>().ok())
+                .filter(|id| *id > 0)
+                .ok_or_else(|| CommandError::new("托管会话票据 ID 无效", "managed_session_invalid"))
+        })
+        .transpose()?;
     let browser_id = state.mark_browser_opened(direct_mode).ok_or_else(|| {
         CommandError::new("请先同步并测试代理，通过后才能打开浏览器", "not_ready")
     })?;
@@ -246,6 +259,7 @@ pub async fn open_browser<R: Runtime>(
         browser_id,
         platform_id,
         managed_account_id,
+        bootstrap_session_id,
         direct_mode,
     };
     let initial_url = if managed_session.is_some() {

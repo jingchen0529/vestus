@@ -27,13 +27,16 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.device import normalize_device_id
 from app.db.base import iso_datetime, utc_now
-from app.db.models import ManagedPlatformAccount, ManagedPlatformBinding
+from app.db.models import ManagedBrowserSession, ManagedPlatformAccount, ManagedPlatformBinding
 from app.db.session import Database
+from app.repositories import advertiser_accounts as advertiser_repo
 from app.repositories import browser_activity as activity_repo
 from app.repositories import platforms as platforms_repo
 from app.repositories import users as users_repo
 from app.schemas.browser_activity import BrowserActivityReport, BrowserActivityReportV2, BrowserPageReport
+from app.services.advertiser_identity import extract_advertiser
 from app.services.errors import ConflictError, ForbiddenFieldError, NotFoundError
 from app.services.serializers import browser_page_visit_dict, browser_session_dict
 
@@ -121,6 +124,38 @@ def _managed_account_name(
     )
 
 
+def _report_identity(
+    session: Session, report: BrowserActivityReport, user_id: int,
+) -> tuple[Optional[str], Dict[str, Any]]:
+    if report.bootstrap_session_id is None:
+        return None, {}
+    ticket = session.get(ManagedBrowserSession, int(report.bootstrap_session_id))
+    if (
+        ticket is None or ticket.consumed_at is None or ticket.user_id != user_id
+        or ticket.platform_id != report.platform_id or ticket.managed_account_id != report.managed_account_id
+        or normalize_device_id(ticket.device_id) != report.device_id
+    ):
+        raise ForbiddenFieldError("浏览器活动启动票据与当前会话身份不一致")
+    return ticket.managed_account_name, {
+        "bootstrap_session_id": ticket.id,
+        "remote_account_id": ticket.remote_account_id,
+        "remote_display_name": ticket.remote_display_name,
+        "credential_version": ticket.credential_version,
+        "identity_snapshot_at": ticket.identity_snapshot_at,
+        "identity_verified_at": ticket.identity_verified_at,
+    }
+
+
+def _check_session_identity(item: Any, report: BrowserActivityReport) -> None:
+    bootstrap_id = int(report.bootstrap_session_id) if report.bootstrap_session_id is not None else None
+    if (
+        item.managed_account_id != report.managed_account_id or item.platform_id != report.platform_id
+        or item.bootstrap_session_id != bootstrap_id
+        or (bootstrap_id is not None and item.device_id != report.device_id)
+    ):
+        raise ForbiddenFieldError("同一浏览器会话不能切换平台、托管账号或启动身份")
+
+
 def _session_for_report(
     session: Session,
     report: BrowserActivityReport,
@@ -142,8 +177,7 @@ def _session_for_report(
         session, user_id=user_id, session_key=report.session_key
     )
     if existing is not None:
-        if existing.managed_account_id != report.managed_account_id:
-            raise ForbiddenFieldError("同一浏览器会话不能切换托管账号")
+        _check_session_identity(existing, report)
         _managed_account_name(
             session,
             user_id=user_id,
@@ -158,6 +192,9 @@ def _session_for_report(
         platform_id=report.platform_id,
         managed_account_id=report.managed_account_id,
     )
+    snapshot_name, identity_snapshot = _report_identity(session, report, user_id)
+    if identity_snapshot:
+        managed_account_name = snapshot_name
     started_at = min(
         (_server_time(page.first_seen_at_ms, now) for page in report.pages), default=now
     )
@@ -179,6 +216,7 @@ def _session_for_report(
                 device_id=report.device_id,
                 ip=ip,
                 started_at=started_at,
+                identity_snapshot=identity_snapshot,
             )
     except IntegrityError:
         adopted = activity_repo.get_session_by_key(
@@ -186,6 +224,7 @@ def _session_for_report(
         )
         if adopted is None:
             raise
+        _check_session_identity(adopted, report)
         return adopted
 
 
@@ -203,9 +242,12 @@ def record_activity(
         raise ForbiddenFieldError("浏览器活动所属账号与当前登录账号不一致")
     digest = ""
     if isinstance(report, BrowserActivityReportV2):
+        hash_payload = report.model_dump(mode="json", by_alias=True)
+        # Keep the hash of pre-upgrade batches identical when this optional field is absent.
+        if report.bootstrap_session_id is None:
+            hash_payload.pop("bootstrapSessionId", None)
         canonical_payload = json.dumps(
-            report.model_dump(mode="json", by_alias=True),
-            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+            hash_payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
         )
         digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
     now = utc_now()
@@ -239,7 +281,7 @@ def record_activity(
             last_seen = max(first_seen, _server_time(page.last_seen_at_ms, now))
             input_snapshot_at = _snapshot_time(page.input_snapshot_at_ms, now)
             submit_snapshot_at = _snapshot_time(page.submit_snapshot_at_ms, now)
-            if activity_repo.merge_page(
+            page_id, created = activity_repo.merge_page(
                 session,
                 session_id=item.id,
                 url=page.url,
@@ -251,8 +293,12 @@ def record_activity(
                 input_snapshot_at=input_snapshot_at,
                 submit_snapshot=(page.submit_snapshot if submit_snapshot_at is not None else None),
                 submit_snapshot_at=submit_snapshot_at,
-            ):
+            )
+            if created:
                 new_pages += 1
+            extraction = extract_advertiser(page.url, page.url_params)
+            if extraction.advertiser_id is not None:
+                advertiser_repo.ensure_index(session, page_id, extraction.advertiser_id)
         activity_repo.add_session_totals(
             item,
             deltas=totals,

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { SessionTable } from "./session-table";
+import { AdvertiserAccountsView } from "./advertiser-accounts-view";
 import { DailyTable } from "./daily-table";
 import { SessionDetailModal } from "./session-detail-modal";
+import { SessionAdvertiserDialog } from "./session-advertiser-dialog";
 import {
   BrowserSessionDetail,
   BrowserSessionFilters,
@@ -80,12 +82,13 @@ export function ActivityView({
 }: ActivityViewProps) {
   const [selectedSession, setSelectedSession] = useState<BrowserSessionItem | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [advertiserSession, setAdvertiserSession] = useState<BrowserSessionItem | null>(null);
   const [isExportingCsv, setIsExportingCsv] = useState(false);
   const [isExportingJson, setIsExportingJson] = useState(false);
   const [isExportingAdvids, setIsExportingAdvids] = useState(false);
 
   // 「按天汇总」视图的数据由本组件自己取：它和会话明细共用筛选，但分页独立。
-  const [viewMode, setViewMode] = useState<"sessions" | "daily">("sessions");
+  const [viewMode, setViewMode] = useState<"sessions" | "daily" | "advertisers">("sessions");
   const [dailyRows, setDailyRows] = useState<DailyActivityItem[]>([]);
   const [totalDaily, setTotalDaily] = useState(0);
   const [dailyPage, setDailyPage] = useState(1);
@@ -123,7 +126,7 @@ export function ActivityView({
   }, [viewMode, dailyPage, loadDaily]);
 
   const handleViewModeChange = (mode: string) => {
-    setViewMode(mode === "daily" ? "daily" : "sessions");
+    setViewMode(mode === "advertisers" ? "advertisers" : mode === "daily" ? "daily" : "sessions");
     setDailyPage(1);
   };
 
@@ -375,10 +378,13 @@ export function ActivityView({
               <TabsTrigger value="daily" className="text-xs px-3 h-7">
                 按天汇总
               </TabsTrigger>
+              <TabsTrigger value="advertisers" className="text-xs px-3 h-7">
+                广告账户
+              </TabsTrigger>
             </TabsList>
           </Tabs>
 
-          <PageToolbarActions>
+          {viewMode !== "advertisers" && <PageToolbarActions>
             <Button
               variant="outline"
               size="sm"
@@ -459,9 +465,10 @@ export function ActivityView({
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-          </PageToolbarActions>
+          </PageToolbarActions>}
         </PageToolbar>
 
+        {viewMode === "advertisers" ? <AdvertiserAccountsView users={users} platforms={platforms} onLoadDetail={onLoadDetail} /> : <>
         {/* 二级筛选栏：多维过滤条件独立成行，避免与左侧导出按钮在中屏下互相挤压 */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-border/60 bg-muted/5">
           <div className="flex flex-wrap items-center gap-2">
@@ -561,6 +568,7 @@ export function ActivityView({
           <SessionTable
             sessions={sessions}
             onViewDetail={handleViewDetail}
+            onViewAdvertisers={setAdvertiserSession}
             isLoading={isRefreshing}
             embedded
           />
@@ -579,8 +587,13 @@ export function ActivityView({
           onPageSizeChange={onPageSizeChange}
           disabled={isRefreshing || isDailyLoading}
         />
+        </>}
       </DataCard>
 
+      {advertiserSession && (
+        <SessionAdvertiserDialog key={advertiserSession.id} session={advertiserSession}
+          onClose={() => setAdvertiserSession(null)} onLoadDetail={onLoadDetail} />
+      )}
       <SessionDetailModal
         open={detailOpen}
         onOpenChange={setDetailOpen}

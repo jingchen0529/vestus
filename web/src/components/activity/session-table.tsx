@@ -10,11 +10,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BrowserSessionItem } from "@/types/browser-activity";
 import { cn, formatDate, formatDuration } from "@/lib/utils";
-import { Activity, Eye, Clock, AlertTriangle, Server, Unplug } from "lucide-react";
+import { Activity, Eye, Clock, AlertTriangle, Server, Unplug, List } from "lucide-react";
 
 interface SessionTableProps {
   sessions: BrowserSessionItem[];
   onViewDetail: (session: BrowserSessionItem) => void;
+  onViewAdvertisers?: (session: BrowserSessionItem) => void;
   isLoading?: boolean;
   embedded?: boolean;
 }
@@ -22,6 +23,7 @@ interface SessionTableProps {
 export function SessionTable({
   sessions,
   onViewDetail,
+  onViewAdvertisers,
   isLoading,
   embedded = false,
 }: SessionTableProps) {
@@ -63,7 +65,7 @@ export function SessionTable({
             <TableHead className="w-[130px] min-w-[125px] p-2 py-2.5 text-center whitespace-nowrap">设备码</TableHead>
             <TableHead className="w-[138px] min-w-[135px] p-1.5 py-2.5 text-center whitespace-nowrap">会话时间</TableHead>
             <TableHead className="w-[125px] min-w-[120px] p-1.5 py-2.5 text-center whitespace-nowrap">上报时间</TableHead>
-            <TableHead className="w-[68px] min-w-[65px] p-2 py-2.5 text-center whitespace-nowrap sticky right-0 bg-muted/95 backdrop-blur-sm z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] border-l border-border/30">详情</TableHead>
+            <TableHead className={cn("p-2 py-2.5 text-center whitespace-nowrap sticky right-0 bg-muted/95 backdrop-blur-sm z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] border-l border-border/30", onViewAdvertisers ? "w-[200px] min-w-[195px]" : "w-[68px] min-w-[65px]")}>详情</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -186,7 +188,7 @@ export function SessionTable({
 
               {/* 详情 */}
               <TableCell className="text-center whitespace-nowrap p-2 py-2.5 sticky right-0 bg-card group-hover:bg-muted/60 transition-colors z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] border-l border-border/30">
-                <div className="flex justify-center">
+                <div className="flex justify-center gap-1.5">
                   <Button
                     variant="table-action"
                     size="xs"
@@ -195,6 +197,12 @@ export function SessionTable({
                     <Eye className="h-3.5 w-3.5 text-muted-foreground" />
                     <span>查看</span>
                   </Button>
+                  {onViewAdvertisers && (
+                    <Button variant="table-action" size="xs" onClick={() => onViewAdvertisers(session)}>
+                      <List className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span>广告账户列表</span>
+                    </Button>
+                  )}
                 </div>
               </TableCell>
             </TableRow>

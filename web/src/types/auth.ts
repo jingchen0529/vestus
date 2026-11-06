@@ -13,6 +13,11 @@ export interface AdminProfile {
   updatedAt?: string;
 }
 
+export interface ChangeAdminPasswordPayload {
+  currentPassword: string;
+  newPassword: string;
+}
+
 export interface LoginResponse {
   /** 桌面端存这个；控制台同时拿到会话 Cookie，所以两条路都能鉴权。 */
   accessToken?: string;

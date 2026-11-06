@@ -1,5 +1,6 @@
 import {
   AdminProfile,
+  ChangeAdminPasswordPayload,
   LoginResponse,
 } from "@/types/auth";
 import {
@@ -54,7 +55,20 @@ import {
   DesktopFaqTemplateResponse,
   UserDesktopFaqResponse,
 } from "@/types/desktop-faq";
+import type {
+  AdvertiserAccountItem, AdvertiserAccountOptions, AdvertiserAccountOptionsQuery, AdvertiserAccountQuery,
+  AdvertiserAssociation, AdvertiserPage, AdvertiserSource,
+} from "@/types/advertiser-account";
 import { API_CODE_OK, ApiCollection, ApiEnvelope, SystemHealth } from "@/types/api";
+
+function advertiserSearch(params: AdvertiserAccountQuery): string {
+  const search = new URLSearchParams();
+  for (const key of ["page", "pageSize", "userId", "sessionId", "platformId", "directMode", "startAt", "endAt", "advertiserId", "managedAccountId"] as const) {
+    const value = params[key];
+    if (value !== undefined && value !== "") search.set(key, String(value));
+  }
+  return search.size ? `?${search}` : "";
+}
 
 const REQUEST_FAILED_MESSAGE = "请求失败，请稍后重试";
 
@@ -166,6 +180,15 @@ export const api = {
 
   async getMe(): Promise<AdminProfile> {
     return request<AdminProfile>("/api/admin/auth/me");
+  },
+
+  async changeAdminPassword({ currentPassword, newPassword }: ChangeAdminPasswordPayload): Promise<void> {
+    await request<null>("/api/admin/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    // 服务端已清除 Cookie 并使旧 token 失效，不能再调用 logout。
+    setAuthToken(null);
   },
 
   async logout(): Promise<void> {
@@ -536,6 +559,34 @@ export const api = {
 
   async getLog(id: number): Promise<UserLogItem> {
     return request<UserLogItem>(`/api/admin/user-logs/${id}`);
+  },
+
+  // Advertiser access records (scope-filtered, never credential endpoints).
+  async listAdvertiserAccounts(params: AdvertiserAccountQuery = {}): Promise<AdvertiserPage<AdvertiserAccountItem>> {
+    return request(`/api/admin/advertiser-accounts${advertiserSearch({ page: 1, pageSize: 30, ...params })}`);
+  },
+
+  async fetchAllAdvertiserAccounts(params: AdvertiserAccountQuery = {}): Promise<AdvertiserAccountItem[]> {
+    const items: AdvertiserAccountItem[] = [];
+    for (let page = 1; ; page++) {
+      const result = await this.listAdvertiserAccounts({ ...params, page, pageSize: 200 });
+      items.push(...result.items);
+      if (!result.items.length || items.length >= result.total || page >= result.pages) return items;
+    }
+  },
+
+  async getAdvertiserAccountOptions(params: AdvertiserAccountOptionsQuery = {}): Promise<AdvertiserAccountOptions> {
+    const query = new URLSearchParams(advertiserSearch({ ...params, page: params.page ?? 1, pageSize: params.pageSize ?? 100 }));
+    if (params.search) query.set("search", params.search);
+    return request(`/api/admin/advertiser-accounts/options?${query}`);
+  },
+
+  async listAdvertiserAssociations(platformId: number, advertiserId: string, params: AdvertiserAccountQuery = {}): Promise<AdvertiserPage<AdvertiserAssociation>> {
+    return request(`/api/admin/advertiser-accounts/${platformId}/${encodeURIComponent(advertiserId)}/associations${advertiserSearch({ page: 1, pageSize: 10, ...params })}`);
+  },
+
+  async listAdvertiserSources(platformId: number, advertiserId: string, params: AdvertiserAccountQuery = {}): Promise<AdvertiserPage<AdvertiserSource>> {
+    return request(`/api/admin/advertiser-accounts/${platformId}/${encodeURIComponent(advertiserId)}/sources${advertiserSearch({ page: 1, pageSize: 10, ...params })}`);
   },
 
   // Browser activity

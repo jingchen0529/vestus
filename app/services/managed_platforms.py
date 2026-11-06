@@ -1785,8 +1785,18 @@ def consume_bootstrap(
         _username, _password, cookies = _credential_values(account)
         if not cookies:
             raise ConflictError(MANAGED_GRANT_INVALID)
-        if not managed_repo.consume_session(session, row, utc_now()):
+        consumed_at = utc_now()
+        if not managed_repo.consume_session(session, row, consumed_at):
             raise ConflictError(MANAGED_GRANT_INVALID)
+        # The CAS above and these fields commit together under the same grant,
+        # binding and account locks. Never probe upstream or use live metadata
+        # later to reconstruct the identity of the credential actually launched.
+        row.managed_account_name = account.remote_display_name or account.name
+        row.identity_snapshot_at = consumed_at
+        row.identity_verified_at = account.identity_checked_at
+        if account.identity_checked_at is not None:
+            row.remote_account_id = account.remote_account_id
+            row.remote_display_name = account.remote_display_name
         result = {
             "sessionId": str(row.id),
             "managedAccountId": row.managed_account_id,

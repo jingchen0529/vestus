@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { AdminProfile } from "@/types/auth";
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
+import { AdminProfile, ChangeAdminPasswordPayload } from "@/types/auth";
 import { api, setAuthToken } from "@/lib/api-client";
 
 interface AuthContextType {
@@ -8,6 +8,7 @@ interface AuthContextType {
   isSuperAdmin: boolean;
   login: (username: string, password: string) => Promise<AdminProfile>;
   logout: () => Promise<void>;
+  changePassword: (payload: ChangeAdminPasswordPayload) => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
@@ -16,17 +17,22 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AdminProfile | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  // 会话变化后，忽略仍在途的旧身份请求。
+  const sessionVersion = useRef(0);
 
   const checkAuth = useCallback(async () => {
+    const version = sessionVersion.current;
     setIsLoading(true);
     try {
       const profile = await api.getMe();
-      setUser(profile);
+      if (version === sessionVersion.current) setUser(profile);
     } catch {
-      setUser(null);
-      setAuthToken(null);
+      if (version === sessionVersion.current) {
+        setUser(null);
+        setAuthToken(null);
+      }
     } finally {
-      setIsLoading(false);
+      if (version === sessionVersion.current) setIsLoading(false);
     }
   }, []);
 
@@ -53,12 +59,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const changePassword = async (payload: ChangeAdminPasswordPayload) => {
+    await api.changeAdminPassword(payload);
+    sessionVersion.current += 1;
+    setUser(null);
+    setIsLoading(false);
+  };
+
   const refreshUser = async () => {
+    const version = sessionVersion.current;
     try {
       const profile = await api.getMe();
-      setUser(profile);
+      if (version === sessionVersion.current) setUser(profile);
     } catch {
-      setUser(null);
+      if (version === sessionVersion.current) setUser(null);
     }
   };
 
@@ -72,6 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isSuperAdmin,
         login,
         logout,
+        changePassword,
         refreshUser,
       }}
     >

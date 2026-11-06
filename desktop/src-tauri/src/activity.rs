@@ -52,6 +52,8 @@ pub struct SessionKey {
     pub browser_id: u64,
     pub platform_id: i64,
     pub managed_account_id: Option<i64>,
+    /// Consumed grant for the credential actually injected; never replaced on reuse.
+    pub bootstrap_session_id: Option<i64>,
     pub direct_mode: bool,
 }
 
@@ -85,6 +87,8 @@ struct ActivityReport {
     platform_id: i64,
     #[serde(default)]
     managed_account_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bootstrap_session_id: Option<String>,
     direct_mode: bool,
     client_version: String,
     /// 操作系统暴露的机器标识。读不到时为 None，服务端按可空处理——采集失败
@@ -669,6 +673,7 @@ fn activity_report(
         browser_id: key.browser_id,
         platform_id: key.platform_id,
         managed_account_id: key.managed_account_id,
+        bootstrap_session_id: key.bootstrap_session_id.map(|id| id.to_string()),
         direct_mode: key.direct_mode,
         client_version: CLIENT_VERSION.to_string(),
         device_id: crate::device::wire_device_id(),
@@ -723,6 +728,14 @@ mod tests {
             Self { root, queue }
         }
         fn stage(&self, owner: &ActivityOwner, clicks: u32) {
+            self.stage_with_bootstrap(owner, clicks, None);
+        }
+        fn stage_with_bootstrap(
+            &self,
+            owner: &ActivityOwner,
+            clicks: u32,
+            bootstrap_session_id: Option<i64>,
+        ) {
             let mut row = large_row(1);
             row.clicks = clicks;
             row.input_snapshot = None;
@@ -730,7 +743,8 @@ mod tests {
                 &SessionKey {
                     browser_id: 1,
                     platform_id: 2,
-                    managed_account_id: None,
+                    managed_account_id: bootstrap_session_id.map(|_| 9),
+                    bootstrap_session_id,
                     direct_mode: false,
                 },
                 "stable-session",
@@ -752,45 +766,54 @@ mod tests {
 
     #[test]
     fn response_loss_and_restart_replay_the_exact_batch_before_new_observations() {
-        rt::runtime().block_on(async {
-            let fixture = DurableFixture::new();
-            let owner = ActivityOwner::new("https://server.test", "user-7", 7);
-            fixture.stage(&owner, 2);
-            let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-            let attempts = received.clone();
-            let failed = deliver_with_sender(fixture.queue.clone(), &owner, move |payload| {
-                attempts.lock().unwrap().push(payload);
-                async { Err("server committed, response was lost".into()) }
-            })
-            .await;
-            assert!(failed.is_err());
-            let original = fixture.queue.next(&owner.namespace).unwrap().unwrap();
-            fixture.stage(&owner, 3);
-            let reopened =
-                Arc::new(crate::activity_outbox::ActivityOutbox::open(&fixture.root).unwrap());
-            let attempts = received.clone();
-            deliver_with_sender(reopened.clone(), &owner, move |payload| {
-                attempts.lock().unwrap().push(payload);
-                async { Ok(()) }
-            })
-            .await
-            .unwrap();
-            let received = received.lock().unwrap();
-            assert_eq!(received.len(), 3);
-            assert_eq!(received[0], original);
-            assert_eq!(
-                received[1], original,
-                "retry payload/ID cannot merge new events"
-            );
-            assert_ne!(received[1]["batchId"], received[2]["batchId"]);
-            assert_eq!(received[0]["pages"][0]["clicks"], 2);
-            assert_eq!(received[2]["pages"][0]["clicks"], 3);
-            assert_eq!(
-                received[2]["clientVersion"], "0.1.7",
-                "upgrading must not relabel captured data"
-            );
-            assert!(reopened.next(&owner.namespace).unwrap().is_none());
-        });
+        for bootstrap_session_id in [None, Some(i64::MAX)] {
+            rt::runtime().block_on(async {
+                let fixture = DurableFixture::new();
+                let owner = ActivityOwner::new("https://server.test", "user-7", 7);
+                fixture.stage_with_bootstrap(&owner, 2, bootstrap_session_id);
+                let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+                let attempts = received.clone();
+                let failed = deliver_with_sender(fixture.queue.clone(), &owner, move |payload| {
+                    attempts.lock().unwrap().push(payload);
+                    async { Err("server committed, response was lost".into()) }
+                })
+                .await;
+                assert!(failed.is_err());
+                let original = fixture.queue.next(&owner.namespace).unwrap().unwrap();
+                fixture.stage_with_bootstrap(&owner, 3, bootstrap_session_id);
+                let reopened =
+                    Arc::new(crate::activity_outbox::ActivityOutbox::open(&fixture.root).unwrap());
+                let attempts = received.clone();
+                deliver_with_sender(reopened.clone(), &owner, move |payload| {
+                    attempts.lock().unwrap().push(payload);
+                    async { Ok(()) }
+                })
+                .await
+                .unwrap();
+                let received = received.lock().unwrap();
+                assert_eq!(received.len(), 3);
+                assert_eq!(received[0], original);
+                assert_eq!(
+                    received[1], original,
+                    "retry payload/ID cannot merge new events"
+                );
+                assert_ne!(received[1]["batchId"], received[2]["batchId"]);
+                assert_eq!(received[0]["pages"][0]["clicks"], 2);
+                assert_eq!(received[2]["pages"][0]["clicks"], 3);
+                assert_eq!(
+                    received[2]["clientVersion"], "0.1.7",
+                    "upgrading must not relabel captured data"
+                );
+                for payload in received.iter() {
+                    if bootstrap_session_id.is_some() {
+                        assert_eq!(payload["bootstrapSessionId"], "9223372036854775807");
+                    } else {
+                        assert!(payload.get("bootstrapSessionId").is_none());
+                    }
+                }
+                assert!(reopened.next(&owner.namespace).unwrap().is_none());
+            });
+        }
     }
 
     #[test]
@@ -854,7 +877,8 @@ mod tests {
         let key = SessionKey {
             browser_id: 1,
             platform_id: 2,
-            managed_account_id: None,
+            managed_account_id: Some(9),
+            bootstrap_session_id: Some(i64::MAX),
             direct_mode: false,
         };
         let events = (0..MAX_TRACKED_PAGES)
@@ -882,6 +906,7 @@ mod tests {
             assert!(serde_json::to_vec(&payload).unwrap().len() <= MAX_ACTIVITY_REPORT_BYTES);
             assert_eq!(payload["batchId"].as_str().unwrap().len(), 64);
             assert_eq!(payload["protocolVersion"], 2);
+            assert_eq!(payload["bootstrapSessionId"], "9223372036854775807");
         }
     }
 
@@ -891,6 +916,7 @@ mod tests {
             browser_id: 1,
             platform_id: 2,
             managed_account_id: None,
+            bootstrap_session_id: None,
             direct_mode: false,
         };
         let events = (0..500)
@@ -966,6 +992,7 @@ mod tests {
             browser_id: 1,
             platform_id: 2,
             managed_account_id: None,
+            bootstrap_session_id: None,
             direct_mode: false,
         };
         let rows = (0..501)
@@ -983,6 +1010,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![500, 1]
         );
+    }
+
+    #[test]
+    fn activity_reports_preserve_bootstrap_identity_and_accept_legacy_outbox() {
+        let legacy = wire_rows(Vec::new());
+        assert!(legacy.get("bootstrapSessionId").is_none());
+        let parsed: ActivityReport = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), legacy);
+
+        let mut current = legacy;
+        current["bootstrapSessionId"] = serde_json::json!("9223372036854775807");
+        let parsed: ActivityReport = serde_json::from_value(current.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), current);
     }
 
     /// 上报的版本号必须是安装包自己的版本号。换回 `CARGO_PKG_VERSION` 会在这里
@@ -1022,6 +1062,7 @@ mod tests {
             browser_id: 1,
             platform_id: 2,
             managed_account_id: None,
+            bootstrap_session_id: None,
             direct_mode: false,
             reported_at_ms: 3,
             dropped_pages: 0,
@@ -1061,6 +1102,7 @@ mod tests {
                 browser_id: 1,
                 platform_id: 2,
                 managed_account_id: None,
+                bootstrap_session_id: None,
                 direct_mode: false,
             },
             "session",
@@ -1093,6 +1135,7 @@ mod tests {
             browser_id: 1,
             platform_id: 2,
             managed_account_id: None,
+            bootstrap_session_id: None,
             direct_mode: false,
         };
         let mut reports = split_activity_reports(
@@ -1281,6 +1324,7 @@ mod tests {
             browser_id: 7,
             platform_id: 3,
             managed_account_id: Some(9),
+            bootstrap_session_id: Some("42".into()),
             direct_mode: true,
             client_version: "0.1.8".into(),
             device_id: Some("a1b2c3d4e5f67890abcdef1234567890".into()),
@@ -1312,6 +1356,7 @@ mod tests {
         assert_eq!(json["browserId"], 7);
         assert_eq!(json["platformId"], 3);
         assert_eq!(json["managedAccountId"], 9);
+        assert_eq!(json["bootstrapSessionId"], "42");
         assert_eq!(json["directMode"], true);
         assert_eq!(json["clientVersion"], "0.1.8");
         assert_eq!(json["reportedAtMs"], 1_700_000_000_000_u64);
@@ -1339,6 +1384,7 @@ mod tests {
             browser_id: 1,
             platform_id: 3,
             managed_account_id: None,
+            bootstrap_session_id: None,
             direct_mode: false,
         }
         .wire_key();
@@ -1346,6 +1392,7 @@ mod tests {
             browser_id: 2,
             platform_id: 3,
             managed_account_id: None,
+            bootstrap_session_id: None,
             direct_mode: false,
         }
         .wire_key();

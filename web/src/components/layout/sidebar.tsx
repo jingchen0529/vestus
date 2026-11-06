@@ -17,6 +17,7 @@ import {
   Shield,
   Layers,
   LogOut,
+  KeyRound,
   ChevronsUpDown,
   Sun,
   Moon,
@@ -63,6 +64,7 @@ interface SidebarProps {
   onTabChange: (tab: NavTab) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  onChangePassword: () => void;
   userStatsTotal?: number;
   platformsTotal?: number;
   proxiesTotal?: number;
@@ -74,6 +76,7 @@ export function Sidebar({
   onTabChange,
   collapsed,
   onToggleCollapse,
+  onChangePassword,
   userStatsTotal,
   platformsTotal,
   proxiesTotal,
@@ -589,6 +592,16 @@ export function Sidebar({
             </div>
 
             <DropdownMenuSeparator className="my-2" />
+
+            {isSuperAdmin && (
+              <DropdownMenuItem
+                onSelect={onChangePassword}
+                className="text-xs gap-2 py-2 px-2.5 rounded-lg cursor-pointer font-medium"
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                <span>修改密码</span>
+              </DropdownMenuItem>
+            )}
 
             {/* Logout Action */}
             <DropdownMenuItem

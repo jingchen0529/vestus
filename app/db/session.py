@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional, cast
 
-from sqlalchemy import CursorResult, create_engine, desc, insert, select, text, update
+from sqlalchemy import CursorResult, create_engine, desc, event, insert, select, text, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
@@ -63,6 +63,12 @@ class Database:
         if self.url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
         self.engine: Engine = create_engine(self.url, **kwargs)
+        if self.engine.dialect.name == "sqlite":
+            @event.listens_for(self.engine, "connect")
+            def enable_foreign_keys(connection: Any, _record: Any) -> None:
+                cursor = connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False, future=True)
         self.available = True
         self.initialization_error: Optional[str] = None

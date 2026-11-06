@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Sidebar, NavTab } from "./sidebar";
 import { Header } from "./header";
+import { ChangePasswordDialog } from "@/components/auth/change-password-dialog";
 
 interface AdminLayoutProps {
   currentTab: NavTab;
@@ -26,6 +27,7 @@ export function AdminLayout({
   children,
 }: AdminLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
@@ -35,11 +37,14 @@ export function AdminLayout({
         onTabChange={onTabChange}
         collapsed={collapsed}
         onToggleCollapse={() => setCollapsed(!collapsed)}
+        onChangePassword={() => setChangePasswordOpen(true)}
         userStatsTotal={userStatsTotal}
         platformsTotal={platformsTotal}
         proxiesTotal={proxiesTotal}
         expiredBindingsCount={expiredBindingsCount}
       />
+
+      <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
 
       {/* Main Container */}
       <div className="flex flex-1 flex-col overflow-hidden">

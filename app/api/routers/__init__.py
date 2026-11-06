@@ -16,6 +16,7 @@ from fastapi import APIRouter
 from app.api.routers import (
     admin_auth,
     admins,
+    advertiser_accounts,
     browser_activity,
     client,
     desktop,
@@ -49,6 +50,7 @@ ROUTERS: List[APIRouter] = [
     managed_platforms.router,
     logs.router,
     browser_activity.router,
+    advertiser_accounts.router,
     client.router,
 ]
 
