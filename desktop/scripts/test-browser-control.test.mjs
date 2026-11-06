@@ -138,6 +138,14 @@ test("import is inert and CLI guard resolves temporary directory aliases", (t) =
   assert.equal(JSON.parse(readFileSync(join(root, "desktop/test-results/browser-control/control.json"), "utf8")).passed, false);
 });
 
+test("Apple Silicon release runner uses the supported macOS 15 ARM64 image", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8")
+    .replace(/\r\n?/g, "\n");
+  assert.match(workflow, /label: macos-aarch64\n\s+os: macos-15\n\s+rust_target: aarch64-apple-darwin/);
+  assert.doesNotMatch(workflow, /os: macos-14\b/);
+  assert.match(workflow, /label: macos-x86_64\n\s+os: macos-15-intel\n\s+rust_target: x86_64-apple-darwin/);
+});
+
 test("release gates real control on every platform between core and unchanged persistence policy", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8").replace(/\r\n?/g, "\n");
   const control = workflow.match(/      - name: Verify real Chromium control\n([\s\S]*?)(?=      - name:)/)?.[1];

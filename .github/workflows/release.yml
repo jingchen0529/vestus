@@ -66,8 +66,9 @@ jobs:
           - label: windows-x86_64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
+          # macOS 14 runners retired on 2026-11-02; pin the supported ARM64 image.
           - label: macos-aarch64
-            os: macos-14
+            os: macos-15
             rust_target: aarch64-apple-darwin
           # Intel 构建使用 GitHub 当前的标准 x86_64 标签；macos-13 已退役。
           - label: macos-x86_64
