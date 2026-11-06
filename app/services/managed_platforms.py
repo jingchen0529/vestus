@@ -1314,12 +1314,11 @@ def update_user_bound_account(
             account.encrypted_password = None
             if account.cookie_bundle is None and account.encrypted_cookie_bundle is None:
                 raise BadRequestError("cookie 模式必须提供 Cookie 包")
-        elif account.auth_mode == "server_login":
-            if (
-                (account.username is None and account.encrypted_username is None)
-                or (account.password is None and account.encrypted_password is None)
-            ):
-                raise BadRequestError("server_login 必须提供账号和密码")
+        elif account.auth_mode == "server_login" and (
+            (account.username is None and account.encrypted_username is None)
+            or (account.password is None and account.encrypted_password is None)
+        ):
+            raise BadRequestError("server_login 必须提供账号和密码")
 
         account.allowed_hosts = _platform_allowed_hosts(platform)
         account.status = "active"

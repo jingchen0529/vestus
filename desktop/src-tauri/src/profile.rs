@@ -1272,8 +1272,14 @@ mod tests {
             acquire_profile_lease(&profile),
             Err(ProfileCheckError::Busy)
         ));
+        // A concurrent Unix fork can inherit this open-file description. Closing
+        // only the parent's file does not release the lock until exec; mirror
+        // LeaseFile's explicit unlock and retain a duplicate to exercise it.
+        let duplicate = retained_file.try_clone().unwrap();
+        fs2::FileExt::unlock(&retained_file).unwrap();
         drop(retained_file);
         drop(acquire_profile_lease(&profile).unwrap());
+        drop(duplicate);
         std::fs::remove_dir_all(root).unwrap();
     }
 
