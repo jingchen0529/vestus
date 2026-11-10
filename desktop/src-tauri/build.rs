@@ -1,4 +1,19 @@
+mod windows_manifest;
+
 fn main() {
+    // tauri-winres links resources to binaries only. Library tests that build a
+    // MockRuntime also import Common-Controls v6; embed its manifest as Tauri's
+    // own tests do, otherwise Windows exits before the harness (0xc0000139).
+    let manifest =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("windows-app-manifest.xml");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    for argument in windows_manifest::link_arguments(
+        &std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default(),
+        &std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default(),
+        &manifest,
+    ) {
+        println!("{argument}");
+    }
     println!("cargo:rerun-if-env-changed=VESTUS_API_BASE_URL");
     println!("cargo:rerun-if-env-changed=VESTUS_ALLOW_INSECURE_API");
     export_client_version();
