@@ -22,6 +22,8 @@ test("Windows MSVC tests get the common-controls manifest without dropping non-W
     assert.match(build, /CARGO_CFG_TARGET_OS/);
     assert.match(build, /CARGO_CFG_TARGET_ENV/);
     assert.doesNotMatch(build, /cfg!\(test\)/, "build scripts are not compiled with cfg(test) for cargo test");
+    assert.match(build, /WindowsAttributes::new_without_app_manifest\(\)/,
+      "the MSVC linker manifest must replace, not duplicate, tauri-winres' manifest resource");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

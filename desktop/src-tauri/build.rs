@@ -49,9 +49,19 @@ fn main() {
         .map(|value| value != "false")
         .unwrap_or(false);
     std::env::remove_var("STATIC_VCRUNTIME");
-    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(
-        tauri_build::WindowsAttributes::new().static_vc_runtime(static_vc_runtime),
-    ))
+    // MSVC's linker now embeds the manifest for every executable, including
+    // library tests. Keep Tauri's icon/version resources but not a second manifest.
+    let windows = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        tauri_build::WindowsAttributes::new_without_app_manifest()
+    } else {
+        tauri_build::WindowsAttributes::new()
+    };
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .windows_attributes(windows.static_vc_runtime(static_vc_runtime)),
+    )
     .expect("tauri build 失败")
 }
 
