@@ -149,6 +149,11 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
+      - name: Verify build API matches release notes
+        shell: bash
+        working-directory: desktop
+        run: node scripts/check-release-notes.mjs "$RELEASE_VERSION" --check-api
+
       # tag 与手动构建都使用前置检查通过的版本，避免说明、文件名和应用版本脱节。
       - name: Stamp validated version
         shell: bash

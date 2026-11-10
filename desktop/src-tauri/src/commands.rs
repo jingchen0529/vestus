@@ -30,3 +30,6 @@ pub(crate) use system::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod config_sync_tests;

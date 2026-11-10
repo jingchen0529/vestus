@@ -31,13 +31,12 @@ test("lease changes auto-resync the desktop config without manual refresh", () =
   const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const handler = statusHandler(app);
   assert.match(handler, /desktop_config_changed/);
-  // 自动重同步在前；只有重同步失败才降级为需要人工处理的旧提示。
-  assert.match(handler, /await syncDesktopConfig\(false\)/);
+  // Failures retain the last config; only a successful, current sync may announce success.
+  assert.match(handler, /syncDesktopConfig\(false, true\)\.then\(\(synced\) =>/);
+  assert.match(handler, /if \(synced && isActive\(\)\)/);
   assert.match(handler, /配置已自动同步/);
   const tail = handler.slice(handler.indexOf("desktop_config_changed"));
-  const syncAt = tail.indexOf("await syncDesktopConfig(false)");
-  const fallbackAt = tail.indexOf("请重新同步后继续使用");
-  assert.ok(syncAt !== -1 && fallbackAt !== -1 && syncAt < fallbackAt);
+  assert.doesNotMatch(tail, /setDesktopConfig\(null\)/);
 });
 
 test("guard failures expose an independent event and monitor-only payload", () => {
@@ -96,7 +95,7 @@ test("connection-loss faults close the browser and return before credential repo
   const reportAt = watch.indexOf(".report_managed_session_expired(");
   assert.ok(lostStart >= 0 && eventAt > lostStart, "断连故障必须发 guard-failed 事件");
   const lostBranch = watch.slice(lostStart, watch.indexOf("return;", eventAt) + "return;".length);
-  assert.match(lostBranch, /kill_managed_browser\(context\.browsers\.clone\(\), context\.browser_id\)/);
+  assert.match(lostBranch, /kill_managed_browser_with_reason\(\s*context\.browsers\.clone\(\),\s*context\.browser_id,\s*CloseReason::MonitorDisconnected/);
   assert.match(lostBranch, /current_identity\(\)/);
   assert.match(lostBranch, /generation == context\.auth_generation/);
   assert.match(lostBranch, /"browserClosed": closed/);
@@ -114,7 +113,7 @@ test("expired signals run the full credential reporting flow", () => {
   const expiredAt = watch.indexOf("ManagedSignal::Expired");
   assert.ok(expiredAt >= 0);
   const flow = watch.slice(expiredAt);
-  assert.match(flow, /kill_managed_browser\(context\.browsers\.clone\(\), context\.browser_id\)/);
+  assert.match(flow, /kill_browser_with_reason\(\s*browser_id,\s*CloseReason::ManagedLogout\s*\)/);
   assert.match(flow, /report_managed_session_expired/);
   assert.match(flow, /"managed-session-expired"/);
   assert.match(flow, /wait_managed_recovery/);
@@ -143,8 +142,8 @@ test("guard failure listeners ignore inactive effects and clean up late subscrip
   const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const subscription = guardFailedSubscription(app);
   assert.match(app, /let unlistenGuardFailedFn: \(\(\) => void\) \| undefined;/);
-  assert.match(subscription, /\.onManagedSessionGuardFailed\(\(payload\) => \{\s*if \(!active\) return;/);
-  assert.match(subscription, /\.then\(\(unlisten\) => \{\s*if \(active\) unlistenGuardFailedFn = unlisten;\s*else unlisten\(\);\s*\}\)/);
+  assert.match(subscription, /\.onManagedSessionGuardFailed\(\(payload\) => \{\s*if \(!isActive\(\)\) return;/);
+  assert.match(subscription, /\.then\(\(unlisten\) => \{\s*if \(isActive\(\)\) unlistenGuardFailedFn = unlisten;\s*else unlisten\(\);\s*\}\)/);
   assert.match(subscription, /\.catch\(\(\) => \{/);
 
   const cleanupStart = app.indexOf("\n    return () => {", app.indexOf(".onManagedSessionGuardFailed"));

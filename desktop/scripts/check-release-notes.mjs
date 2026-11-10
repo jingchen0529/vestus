@@ -127,9 +127,10 @@ export function validateReleaseNotes(version, source) {
   if (!/^https?:$/.test(api.protocol) || !api.hostname || api.username || api.password || /[?#]/.test(apiBase)) {
     throw new Error("发布信息的 API 地址必须是无凭据、查询参数和片段的 HTTP(S) 地址");
   }
+  return apiBase;
 }
 
-export function checkReleaseNotes(version, root = repositoryRoot) {
+export function checkReleaseNotes(version, root = repositoryRoot, expectedApi) {
   const relativePath = releaseNotesPath(version);
   const path = resolve(root, relativePath);
   let source;
@@ -142,13 +143,24 @@ export function checkReleaseNotes(version, root = repositoryRoot) {
     }
     throw error;
   }
-  validateReleaseNotes(version, source);
+  const documentedApi = validateReleaseNotes(version, source);
+  if (expectedApi !== undefined) {
+    const normalize = (value) => new URL(value).href.replace(/\/+$/, "");
+    let matches = false;
+    try {
+      matches = Boolean(expectedApi) && normalize(expectedApi) === normalize(documentedApi);
+    } catch {
+      // Never print the configured value: it may contain accidental credentials.
+    }
+    if (!matches) throw new Error("构建 API 与已确认版本说明不一致，请核对构建配置后重试");
+  }
   return relativePath;
 }
 
 function run() {
   const args = process.argv.slice(2);
-  if (args.length !== 1) throw new Error("用法：node desktop/scripts/check-release-notes.mjs <x.y.z | --github-actions>");
+  const checkApi = args.length === 2 && args[1] === "--check-api";
+  if (args.length !== 1 && !checkApi) throw new Error("用法：node desktop/scripts/check-release-notes.mjs <x.y.z | --github-actions> [--check-api]");
   const actions = args[0] === "--github-actions";
   const version = actions
     ? releaseVersionForEvent({
@@ -157,7 +169,7 @@ function run() {
         inputVersion: process.env.INPUT_VERSION,
       })
     : args[0];
-  const notesPath = checkReleaseNotes(version);
+  const notesPath = checkReleaseNotes(version, repositoryRoot, checkApi ? process.env.VESTUS_API_BASE_URL ?? "" : undefined);
   if (actions) {
     if (!process.env.GITHUB_OUTPUT) throw new Error("GitHub Actions 缺少 GITHUB_OUTPUT");
     appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nnotes_path=${notesPath}\n`);

@@ -17,7 +17,7 @@
 //! # 关闭
 //!
 //! 通常关闭先发 `Browser.close` 或 SIGTERM / WM_CLOSE，让普通持久环境落盘；到
-//! [`GRACEFUL_CLOSE_TIMEOUT`] 才强杀。托管登出调用 [`BrowserSessionManager::kill_browser`]
+//! [`GRACEFUL_CLOSE_TIMEOUT`] 才强杀。托管登出调用 [`BrowserSessionManager::kill_browser_with_reason`]
 //! 则不走任何优雅退出路径：仅强杀本次启动的进程组/Windows Job。两种路径都确认整个
 //! 子树退出后才清理托管目录，再显式释放 lease；失败保留会话和 lease、禁止重开。
 //! 用户自己关窗口也走同一个幂等 finalizer，因此旧监控线程不能删除后来新开的环境。
@@ -87,7 +87,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -97,7 +97,10 @@ use crate::cdp;
 use crate::profile::{self, ProfileSpec, DEVTOOLS_PORT_FILE};
 use crate::rt;
 
+mod lifecycle_log;
 mod process_tree;
+pub(crate) use lifecycle_log::CloseReason;
+use lifecycle_log::LifecycleLog;
 use process_tree::OwnedProcess;
 
 /// Isolated integration fixtures reuse OS process-tree ownership, not PID scans.
@@ -212,6 +215,7 @@ pub struct BrowserSessionManager {
 struct BrowserSessionInner {
     accepting_launches: AtomicBool,
     sessions: Mutex<HashMap<u64, Arc<ManagedBrowser>>>,
+    lifecycle_log: LifecycleLog,
 }
 
 struct ManagedBrowser {
@@ -220,6 +224,8 @@ struct ManagedBrowser {
     endpoint: EndpointSlot,
     ephemeral: bool,
     closing: AtomicBool,
+    /// First close cause wins even if the process monitor runs the finalizer.
+    close_reason: OnceLock<CloseReason>,
     /// Serializes every exit path. The sole lease is released explicitly only
     /// after all owned processes and profile cleanup have completed, never by a
     /// delayed monitor/callback dropping an extra lease Arc.
@@ -295,6 +301,7 @@ impl Default for BrowserSessionManager {
             inner: Arc::new(BrowserSessionInner {
                 accepting_launches: AtomicBool::new(true),
                 sessions: Mutex::new(HashMap::new()),
+                lifecycle_log: LifecycleLog::default(),
             }),
         }
     }
@@ -415,6 +422,30 @@ impl BrowserSessionManager {
     }
 
     #[cfg(test)]
+    pub(crate) fn launch_test_process<F>(
+        &self,
+        session_id: u64,
+        executable: &Path,
+        profile_dir: PathBuf,
+        on_exit: F,
+    ) -> Result<u64, BrowserError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.launch_process(
+            session_id,
+            executable,
+            profile_dir,
+            None,
+            "about:blank",
+            None,
+            false,
+            |_| {},
+            on_exit,
+        )
+    }
+
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn launch_process<F, G>(
         &self,
@@ -529,6 +560,7 @@ impl BrowserSessionManager {
                 endpoint: Arc::clone(&endpoint),
                 ephemeral,
                 closing: AtomicBool::new(false),
+                close_reason: OnceLock::new(),
                 finish: Mutex::new(BrowserFinish { lease: Some(lease) }),
                 finished: Condvar::new(),
             });
@@ -557,6 +589,7 @@ impl BrowserSessionManager {
                 }
             })
         {
+            self.note_close(session_id, &session, CloseReason::MonitorStartupFailed);
             self.finish_session(session_id, &session)?;
             return Err(BrowserError::Spawn(format!(
                 "无法创建浏览器监控线程：{error}"
@@ -568,22 +601,51 @@ impl BrowserSessionManager {
     /// Close every Chromium process owned by this desktop session. Ordinary
     /// profiles keep graceful persistence; managed directories are erased by
     /// the lifecycle finalizer before their leases are released.
+    #[cfg(test)]
     pub async fn close_all(&self) -> usize {
-        let sessions = self.closing_sessions(true, |_| true, false);
+        self.close_all_with_reason(CloseReason::Unspecified).await
+    }
+
+    /// Initialize the local-only diagnostic sink; failures never prevent cleanup.
+    pub(crate) fn initialize_lifecycle_log(&self, root: &Path) {
+        self.inner.lifecycle_log.initialize(root);
+    }
+
+    /// Includes sessions whose process exited but protected cleanup/lease release failed.
+    pub(crate) fn has_sessions_pending_cleanup(&self) -> bool {
+        !self
+            .inner
+            .sessions
+            .lock()
+            .expect("浏览器会话锁已中毒")
+            .is_empty()
+    }
+
+    pub(crate) async fn close_all_with_reason(&self, reason: CloseReason) -> usize {
+        let sessions = self.closing_sessions_with_reason(true, |_| true, false, reason);
         let count = sessions.len();
         self.close_gracefully(sessions).await;
         count
     }
 
-    /// No Browser.close, SIGTERM or WM_CLOSE: kill this session's owned tree,
-    /// verify exit, then finish protected cleanup. Failure retains the session
-    /// and lease and cannot be reused by running_browser or a cold launch.
-    pub fn kill_browser(&self, session_id: u64) -> Result<bool, BrowserError> {
-        let Some(session) = self.closing_session(session_id) else {
+    pub(crate) fn kill_browser_with_reason(
+        &self,
+        session_id: u64,
+        reason: CloseReason,
+    ) -> Result<bool, BrowserError> {
+        let Some(session) = self.closing_session_with_reason(session_id, reason) else {
             return Ok(false);
         };
         self.finish_session(session_id, &session)?;
         Ok(true)
+    }
+
+    /// No Browser.close, SIGTERM or WM_CLOSE: kill this session's owned tree,
+    /// verify exit, then finish protected cleanup. Failure retains the session
+    /// and lease and cannot be reused by running_browser or a cold launch.
+    #[cfg(test)]
+    pub fn kill_browser(&self, session_id: u64) -> Result<bool, BrowserError> {
+        self.kill_browser_with_reason(session_id, CloseReason::Unspecified)
     }
 
     /// Retire only older versions in this exact managed account/platform/mode.
@@ -595,7 +657,7 @@ impl BrowserSessionManager {
         managed_account_id: u64,
         keep_profile: &Path,
     ) -> usize {
-        let sessions = self.closing_sessions(
+        let sessions = self.closing_sessions_with_reason(
             true,
             |session| {
                 session.ephemeral
@@ -609,6 +671,7 @@ impl BrowserSessionManager {
                     )
             },
             false,
+            CloseReason::ManagedCredentialRotated,
         );
         let count = sessions.len();
         self.close_gracefully(sessions).await;
@@ -619,7 +682,8 @@ impl BrowserSessionManager {
     /// finalizers stay in the table holding their lease; shutdown never treats
     /// an unverified termination as a successful release.
     pub fn shutdown(&self) -> usize {
-        let sessions = self.closing_sessions(true, |_| true, true);
+        let sessions =
+            self.closing_sessions_with_reason(true, |_| true, true, CloseReason::AppExit);
         let count = sessions.len();
         if tokio::runtime::Handle::try_current().is_ok() {
             for (id, session) in sessions {
@@ -630,21 +694,50 @@ impl BrowserSessionManager {
         } else if count > 0 {
             rt::runtime().block_on(self.close_gracefully(sessions));
         }
+        // Cleanup is already complete (or retained for retry); diagnostics get
+        // at most 200 ms to drain and can never hold a browser/profile lease.
+        let _ = self.inner.lifecycle_log.flush();
         count
     }
 
+    #[cfg(test)]
     fn closing_session(&self, session_id: u64) -> Option<Arc<ManagedBrowser>> {
+        self.closing_session_with_reason(session_id, CloseReason::Unspecified)
+    }
+
+    fn closing_session_with_reason(
+        &self,
+        session_id: u64,
+        reason: CloseReason,
+    ) -> Option<Arc<ManagedBrowser>> {
         let sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
         let session = Arc::clone(sessions.get(&session_id)?);
+        self.note_close(session_id, &session, reason);
         session.closing.store(true, Ordering::Release);
         Some(session)
     }
 
+    #[cfg(test)]
     fn closing_sessions(
+        &self,
+        include_closing: bool,
+        matches: impl FnMut(&ManagedBrowser) -> bool,
+        stop_accepting: bool,
+    ) -> Vec<BrowserCloseEntry> {
+        self.closing_sessions_with_reason(
+            include_closing,
+            matches,
+            stop_accepting,
+            CloseReason::Unspecified,
+        )
+    }
+
+    fn closing_sessions_with_reason(
         &self,
         include_closing: bool,
         mut matches: impl FnMut(&ManagedBrowser) -> bool,
         stop_accepting: bool,
+        reason: CloseReason,
     ) -> Vec<BrowserCloseEntry> {
         let sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
         if stop_accepting {
@@ -656,10 +749,18 @@ impl BrowserSessionManager {
             .iter()
             .filter(|(_, session)| matches(session))
             .filter_map(|(id, session)| {
+                self.note_close(*id, session, reason);
                 let was_closing = session.closing.swap(true, Ordering::AcqRel);
                 (include_closing || !was_closing).then(|| (*id, Arc::clone(session)))
             })
             .collect()
+    }
+
+    fn note_close(&self, id: u64, session: &ManagedBrowser, reason: CloseReason) -> CloseReason {
+        *session.close_reason.get_or_init(|| {
+            self.inner.lifecycle_log.record_requested(id, reason);
+            reason
+        })
     }
 
     async fn close_gracefully(&self, sessions: Vec<BrowserCloseEntry>) {
@@ -716,34 +817,41 @@ impl BrowserSessionManager {
         session_id: u64,
         session: &Arc<ManagedBrowser>,
     ) -> Result<(), BrowserError> {
+        let reason = self.note_close(session_id, session, CloseReason::ProcessExited);
         session.closing.store(true, Ordering::Release);
         let mut finish = session.finish.lock().expect("浏览器结束锁已中毒");
         if finish.lease.is_none() {
             return Ok(());
         }
-        // Stop the owned process tree before cleanup. A failed termination
-        // retains the lease (ProcessTermination) so a retry can finish the
-        // job instead of unlocking a live browser.
-        stop_process(&session.process)?;
-        if session.ephemeral {
-            finish
-                .lease
-                .as_ref()
-                .expect("lease checked above")
-                .clear_managed_profile()?;
-        }
-        let mut sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
-        if sessions
-            .get(&session_id)
-            .is_some_and(|current| Arc::ptr_eq(current, session))
-        {
-            sessions.remove(&session_id);
-        }
-        // Explicit completion point. The monitor Arc may still exist, but it
-        // holds no extra lease and cannot clean this directory again.
-        drop(finish.lease.take());
-        session.finished.notify_all();
-        Ok(())
+        let result = (|| {
+            // Stop the owned process tree before cleanup. A failed termination
+            // retains the lease (ProcessTermination) so a retry can finish the
+            // job instead of unlocking a live browser.
+            stop_process(&session.process)?;
+            if session.ephemeral {
+                finish
+                    .lease
+                    .as_ref()
+                    .expect("lease checked above")
+                    .clear_managed_profile()?;
+            }
+            let mut sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
+            if sessions
+                .get(&session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, session))
+            {
+                sessions.remove(&session_id);
+            }
+            // Explicit completion point. The monitor Arc may still exist, but it
+            // holds no extra lease and cannot clean this directory again.
+            drop(finish.lease.take());
+            session.finished.notify_all();
+            Ok(())
+        })();
+        self.inner
+            .lifecycle_log
+            .record_result(session_id, reason, &result);
+        result
     }
 
     #[cfg(test)]
@@ -1522,6 +1630,125 @@ mod tests {
             |_| {},
             || {},
         )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manager_close_diagnostic_keeps_reason_through_finalizer_and_is_idempotent() {
+        let root = scratch_dir("close-diagnostic");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
+        let manager = BrowserSessionManager::default();
+        let log_dir = root.join("diagnostics");
+        manager.initialize_lifecycle_log(&log_dir);
+        let dir = profile::profile_dir(
+            &root,
+            &ProfileSpec {
+                api_base: "https://private-url.example.test",
+                profile_key: "private-profile::managed-account-9::credential-version-1",
+                platform_id: 7,
+                direct_mode: false,
+            },
+        );
+        let (exited_tx, exited_rx) = std::sync::mpsc::channel();
+        manager
+            .launch_process(
+                42,
+                &executable,
+                dir.clone(),
+                Some("http://proxy-user:private-password@127.0.0.1:12345"),
+                "https://private-url.example.test/?jwt=private-jwt",
+                None,
+                false,
+                |_| {},
+                move || {
+                    let _ = exited_tx.send(());
+                },
+            )
+            .unwrap();
+        std::fs::write(dir.join("Cookies"), b"private-cookie").unwrap();
+        assert_eq!(
+            rt::runtime().block_on(manager.close_all_with_reason(CloseReason::UserReset)),
+            1,
+        );
+        exited_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!dir.exists());
+        assert!(!manager
+            .kill_browser_with_reason(42, CloseReason::ManagedLogout)
+            .unwrap());
+
+        let log_path = log_dir.join("browser-lifecycle.log");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let records = loop {
+            let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let records: Vec<serde_json::Value> = text
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            if records.iter().any(|record| record["result"] == "completed") {
+                break records;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "manager close result was not logged"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            records.len(),
+            2,
+            "one request and one completed finalizer only"
+        );
+        assert_eq!(records[0]["result"], "requested");
+        assert_eq!(records[1]["result"], "completed");
+        for record in &records {
+            assert_eq!(record["source"], "browser_command");
+            assert_eq!(record["reason"], "user_reset");
+            assert_eq!(record["session_id"], 42);
+        }
+        let text = serde_json::to_string(&records).unwrap();
+        for secret in [
+            "private-cookie",
+            "private-password",
+            "private-jwt",
+            "private-url",
+            "private-profile",
+            dir.to_str().unwrap(),
+        ] {
+            assert!(!text.contains(secret));
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manager_cleanup_succeeds_when_diagnostic_path_is_unwritable() {
+        let root = scratch_dir("diagnostic-write-failure");
+        let executable = fake_chromium(&root, "#!/bin/sh\nexec sleep 30\n");
+        let manager = BrowserSessionManager::default();
+        let blocked_log_root = root.join("not-a-directory");
+        std::fs::write(&blocked_log_root, b"keep").unwrap();
+        manager.initialize_lifecycle_log(&blocked_log_root);
+        let dir = profile::profile_dir(
+            &root,
+            &ProfileSpec {
+                api_base: "https://diagnostic.example.test",
+                profile_key: "test::managed-account-9::credential-version-1",
+                platform_id: 7,
+                direct_mode: false,
+            },
+        );
+        launch_fake(&manager, 7, &executable, &dir).unwrap();
+        std::fs::write(dir.join("Cookies"), b"must-delete").unwrap();
+        assert!(manager
+            .kill_browser_with_reason(7, CloseReason::MonitorDisconnected)
+            .unwrap());
+        assert!(!dir.exists());
+        assert!(profile::acquire_profile_lease(&dir).is_ok());
+        assert!(!manager.is_running(7));
+        // The writer acknowledges its failed attempt, not a successful log.
+        assert!(manager.inner.lifecycle_log.flush());
+        assert_eq!(std::fs::read(&blocked_log_root).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// 关浏览器不等于删环境：进程收走之后 profile 里的数据必须原样留着。

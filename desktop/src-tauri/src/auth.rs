@@ -16,7 +16,10 @@ use reqwest::{Client, StatusCode, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
 
-use crate::{browser::BrowserSessionManager, state::AppState};
+use crate::{
+    browser::{BrowserSessionManager, CloseReason},
+    state::AppState,
+};
 
 #[cfg(any(debug_assertions, test))]
 const DEFAULT_API_BASE_URL: &str = "http://127.0.0.1:8000";
@@ -397,6 +400,8 @@ pub struct DesktopAuthState {
     session: Arc<Mutex<SessionState>>,
     operation: Arc<tokio::sync::Mutex<()>>,
     credentials: Arc<dyn CredentialStore>,
+    #[cfg(test)]
+    clock: Arc<Mutex<Option<time::OffsetDateTime>>>,
 }
 
 impl Default for DesktopAuthState {
@@ -436,7 +441,17 @@ impl DesktopAuthState {
             session: Arc::new(Mutex::new(SessionState::default())),
             operation: Arc::new(tokio::sync::Mutex::new(())),
             credentials,
+            #[cfg(test)]
+            clock: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn now(&self) -> time::OffsetDateTime {
+        #[cfg(test)]
+        if let Some(now) = *self.clock.lock().unwrap() {
+            return now;
+        }
+        time::OffsetDateTime::now_utc()
     }
 
     /// Whether Rust currently holds a server-validated desktop-user session.
@@ -447,7 +462,7 @@ impl DesktopAuthState {
     pub fn is_authenticated(&self) -> bool {
         self.session
             .lock()
-            .map(|state| session_is_current(&state))
+            .map(|state| session_is_current(&state, self.now()))
             .unwrap_or(false)
     }
 
@@ -471,14 +486,10 @@ impl DesktopAuthState {
     /// Return the Rust-owned desktop identity without exposing the bearer token.
     pub(crate) fn current_identity(&self) -> AuthResult<(i64, Option<String>, u64)> {
         let state = self.session_guard()?;
-        let user = state.user.as_ref().filter(|user| {
-            user.role == "client"
-                && user.status == "active"
-                && state.token.is_some()
-                && state
-                    .expires_at_unix
-                    .is_some_and(|expiry| expiry > now_unix())
-        });
+        let user = state
+            .user
+            .as_ref()
+            .filter(|_| session_is_current(&state, self.now()));
         user.map(|user| (user.id, state.profile_key.clone(), state.generation))
             .ok_or_else(|| DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录"))
     }
@@ -503,7 +514,7 @@ impl DesktopAuthState {
                     "登录用户已发生变化",
                 ));
             }
-            if !session_is_current(&state) {
+            if !session_is_current(&state, self.now()) {
                 drop(state);
                 self.clear_local_session()?;
                 return Err(DesktopAuthError::new(
@@ -761,7 +772,7 @@ impl DesktopAuthState {
                 "登录用户已发生变化",
             ));
         }
-        if !session_is_current(&state) {
+        if !session_is_current(&state, self.now()) {
             return Err(DesktopAuthError::new(
                 "unauthenticated",
                 "桌面登录已失效，请重新登录",
@@ -991,12 +1002,12 @@ impl DesktopAuthState {
 
     fn activity_token(&self, owner_user_id: i64, owner_profile_key: &str) -> AuthResult<String> {
         let state = self.session_guard()?;
-        let matches = state.user.as_ref().is_some_and(|user| {
-            user.id == owner_user_id && user.role == "client" && user.status == "active"
-        }) && state.profile_key.as_deref() == Some(owner_profile_key)
-            && state
-                .expires_at_unix
-                .is_some_and(|expiry| expiry > now_unix());
+        let matches = state
+            .user
+            .as_ref()
+            .is_some_and(|user| user.id == owner_user_id)
+            && state.profile_key.as_deref() == Some(owner_profile_key)
+            && session_is_current(&state, self.now());
         if !matches {
             return Err(DesktopAuthError::new(
                 "session_changed",
@@ -1146,15 +1157,53 @@ fn token_expiry(token: &str) -> AuthResult<u64> {
     Ok(metadata.exp)
 }
 
-fn session_is_current(state: &SessionState) -> bool {
+fn user_expiry_is_current(expires_at: Option<&str>, now: time::OffsetDateTime) -> bool {
+    let Some(raw) = expires_at.filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    // user_dict currently emits only a calendar date. Match parse_datetime's
+    // UTC end_of_day=True; a DB time omitted by that response cannot be recovered.
+    let raw = raw.trim();
+    let deadline = if raw.len() == 10 {
+        time::Date::parse(
+            raw,
+            time::macros::format_description!("[year]-[month]-[day]"),
+        )
+        .ok()
+        .and_then(|date| date.with_hms_micro(23, 59, 59, 999_999).ok())
+        .map(time::PrimitiveDateTime::assume_utc)
+    } else {
+        let normalized = raw.replacen(' ', "T", 1);
+        time::OffsetDateTime::parse(&normalized, &time::format_description::well_known::Rfc3339)
+            .ok()
+            .or_else(|| {
+                // Backend datetimes without an offset are UTC, never local time.
+                [
+                    time::macros::format_description!(
+                        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond]"
+                    ),
+                    time::macros::format_description!(
+                        "[year]-[month]-[day]T[hour]:[minute]:[second]"
+                    ),
+                ]
+                .into_iter()
+                .find_map(|format| time::PrimitiveDateTime::parse(&normalized, format).ok())
+                .map(time::PrimitiveDateTime::assume_utc)
+            })
+    };
+    deadline.is_some_and(|deadline| now < deadline)
+}
+
+fn session_is_current(state: &SessionState, now: time::OffsetDateTime) -> bool {
     state.token.as_ref().is_some_and(|token| !token.is_empty())
-        && state
-            .user
-            .as_ref()
-            .is_some_and(|user| user.role == "client" && user.status == "active")
+        && state.user.as_ref().is_some_and(|user| {
+            user.role == "client"
+                && user.status == "active"
+                && user_expiry_is_current(user.expires_at.as_deref(), now)
+        })
         && state
             .expires_at_unix
-            .is_some_and(|expiry| expiry > now_unix())
+            .is_some_and(|expiry| i128::from(expiry) * 1_000_000_000 > now.unix_timestamp_nanos())
 }
 
 #[tauri::command]
@@ -1184,7 +1233,9 @@ pub async fn desktop_login<R: Runtime>(
     // An account switch must never leave the previous user's browser active
     // while the new login request is in flight.
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
-    app.state::<BrowserSessionManager>().close_all().await;
+    app.state::<BrowserSessionManager>()
+        .close_all_with_reason(CloseReason::AccountSwitch)
+        .await;
     proxy_state.teardown();
     state.login(username, password).await
 }
@@ -1210,7 +1261,9 @@ pub async fn desktop_restore_session<R: Runtime>(
     // change auth generation underneath a published adapter or browser.
     let browsers = app.state::<BrowserSessionManager>().inner().clone();
     perform_desktop_restore(proxy_state.inner(), state.inner(), async move {
-        browsers.close_all().await;
+        browsers
+            .close_all_with_reason(CloseReason::SessionRestore)
+            .await;
     })
     .await
 }
@@ -1237,7 +1290,9 @@ pub async fn desktop_logout<R: Runtime>(
     // best-effort server revoke, and prevent a late adapter publication.
     let browsers = app.state::<BrowserSessionManager>().inner().clone();
     perform_desktop_logout(proxy_state.inner(), state.inner(), async move {
-        browsers.close_all().await;
+        browsers
+            .close_all_with_reason(CloseReason::DesktopLogout)
+            .await;
     })
     .await
 }
@@ -1253,7 +1308,9 @@ pub async fn desktop_change_password<R: Runtime>(
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
     let result = state.change_password(current_password, new_password).await;
     if result.is_ok() {
-        app.state::<BrowserSessionManager>().close_all().await;
+        app.state::<BrowserSessionManager>()
+            .close_all_with_reason(CloseReason::PasswordChanged)
+            .await;
         proxy_state.teardown();
     }
     result
@@ -1408,8 +1465,19 @@ fn api_error_message(body: &[u8]) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn authenticated_state(api_base: &str) -> DesktopAuthState {
+        let state = DesktopAuthState::with_credentials(
+            api_base,
+            Arc::new(MemoryCredentialStore::default()),
+        );
+        state
+            .persist_session(valid_test_token(), client_user())
+            .unwrap();
+        state
+    }
 
     #[test]
     fn parses_bootstrap_grant_in_server_camel_case() {
@@ -1491,6 +1559,95 @@ mod tests {
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&payload).unwrap());
         format!("{encoded}.test-signature")
+    }
+
+    fn expiry_state(
+        expires_at: Option<&str>,
+        token_deadline: time::OffsetDateTime,
+    ) -> DesktopAuthState {
+        let state = DesktopAuthState::with_credentials(
+            DEFAULT_API_BASE_URL,
+            Arc::new(MemoryCredentialStore::default()),
+        );
+        let mut user = client_user();
+        user.expires_at = expires_at.map(str::to_owned);
+        state
+            .set_memory(
+                test_token("user", token_deadline.unix_timestamp() as u64),
+                user,
+            )
+            .unwrap();
+        state
+    }
+
+    fn assert_identity_at(state: &DesktopAuthState, now: time::OffsetDateTime, active: bool) {
+        *state.clock.lock().unwrap() = Some(now);
+        assert_eq!(state.is_authenticated(), active, "session at {now}");
+        assert_eq!(
+            state.current_identity().is_ok(),
+            active,
+            "identity at {now}"
+        );
+    }
+
+    #[test]
+    fn account_expiry_date_uses_backend_utc_end_of_day() {
+        use time::macros::datetime;
+        let state = expiry_state(Some("2099-12-30"), datetime!(2100-01-02 0:00 UTC));
+        assert_identity_at(&state, datetime!(2099-12-30 12:00 UTC), true);
+        assert_identity_at(&state, datetime!(2099-12-30 23:59:59.999998 UTC), true);
+        assert_identity_at(&state, datetime!(2099-12-30 23:59:59.999999 UTC), false);
+        assert_identity_at(&state, datetime!(2099-12-31 0:00 UTC), false);
+    }
+
+    #[test]
+    fn account_expiry_datetime_honors_utc_and_offsets_without_rounding() {
+        use time::macros::datetime;
+        for expires_at in [
+            "2099-12-30T04:34:56.123456Z",
+            "2099-12-30T12:34:56.123456+08:00",
+            "2099-12-29T23:34:56.123456-05:00",
+            "2099-12-30T04:34:56.123456",
+            "2099-12-30 04:34:56.123456",
+        ] {
+            let state = expiry_state(Some(expires_at), datetime!(2100-01-02 0:00 UTC));
+            assert_identity_at(&state, datetime!(2099-12-30 04:34:56.123455 UTC), true);
+            assert_identity_at(&state, datetime!(2099-12-30 04:34:56.123456 UTC), false);
+        }
+    }
+
+    #[test]
+    fn account_expiry_never_extends_an_earlier_jwt_deadline() {
+        use time::macros::datetime;
+        for expires_at in [
+            None,
+            Some(""),
+            Some("2100-01-03"),
+            Some("2100-01-03T01:02:03Z"),
+        ] {
+            let state = expiry_state(expires_at, datetime!(2100-01-02 0:00 UTC));
+            assert_identity_at(&state, datetime!(2100-01-01 23:59:59.999999 UTC), true);
+            assert_identity_at(&state, datetime!(2100-01-02 0:00 UTC), false);
+        }
+    }
+
+    #[test]
+    fn account_expiry_malformed_or_expired_values_fail_closed_for_identity_and_tokens() {
+        use time::macros::datetime;
+        for expires_at in [
+            "not-a-date",
+            "2099-02-29",
+            "2099-13-01",
+            " ",
+            "2099-12-29",
+            "2099-12-30T04:34:56.123456Z",
+        ] {
+            let state = expiry_state(Some(expires_at), datetime!(2100-01-02 0:00 UTC));
+            state.set_profile_key(7, "profile-a".into()).unwrap();
+            assert_identity_at(&state, datetime!(2099-12-30 04:34:56.123456 UTC), false);
+            assert!(state.managed_report_token(7, 1).is_err());
+            assert!(state.activity_token(7, "profile-a").is_err());
+        }
     }
 
     #[test]

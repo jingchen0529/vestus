@@ -7,13 +7,13 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
 
 use crate::auth::{resolve_uploaded_asset_url, DesktopAuthState};
-use crate::browser::BrowserSessionManager;
+use crate::browser::{BrowserSessionManager, CloseReason};
 use crate::bypass::DirectHosts;
 use crate::config::{self, DesktopPlatform, ManagedAccountView, ProxyForm, ValidatedConfig};
 use crate::probe;
 use crate::profile::{self};
 use crate::rt;
-use crate::state::{AppState, Session};
+use crate::state::{AppState, AppliedDesktopConfig, Session};
 use crate::{adapter, upstream::UpstreamProxy};
 
 use super::*;
@@ -334,14 +334,23 @@ pub async fn sync_desktop_config<R: Runtime>(
     require_desktop_auth(&auth)?;
     let (user_id, _, auth_generation) = auth.current_identity().map_err(auth_command_error)?;
 
-    // A refresh is fail-closed: no old proxy/browser may keep running if the
-    // server rejects this token or the new assignment cannot be validated.
-    browsers.close_all().await;
-    state.teardown();
-
     let wire = match auth.fetch_desktop_config::<DesktopConfigWire>().await {
         Ok(wire) => wire,
         Err(error) => {
+            let reason = if error.code == "unauthenticated" {
+                Some(CloseReason::AuthenticationInvalid)
+            } else if matches!(
+                error.code.as_str(),
+                "network" | "server" | "session_changed"
+            ) {
+                None
+            } else {
+                Some(CloseReason::LeaseValidationFailed)
+            };
+            if let Some(reason) = reason {
+                invalidate_config_runtime(&state, &browsers, user_id, auth_generation, reason)
+                    .await;
+            }
             emit_status(&app, &state);
             return Err(auth_command_error(error));
         }
@@ -350,20 +359,70 @@ pub async fn sync_desktop_config<R: Runtime>(
     let validated = match validate_desktop_config(wire, &api_base) {
         Ok(config) => config,
         Err(error) => {
+            invalidate_config_runtime(
+                &state,
+                &browsers,
+                user_id,
+                auth_generation,
+                CloseReason::LeaseValidationFailed,
+            )
+            .await;
             emit_status(&app, &state);
             return Err(error);
         }
     };
 
     // Reject a late response if logout/login happened while the request was in flight.
-    let (current_user_id, _, current_generation) =
-        auth.current_identity().map_err(auth_command_error)?;
+    let (current_user_id, _, current_generation) = match auth.current_identity() {
+        Ok(identity) => identity,
+        Err(error) => {
+            invalidate_config_runtime(
+                &state,
+                &browsers,
+                user_id,
+                auth_generation,
+                CloseReason::AuthenticationInvalid,
+            )
+            .await;
+            emit_status(&app, &state);
+            return Err(auth_command_error(error));
+        }
+    };
     if current_user_id != user_id || current_generation != auth_generation {
         return Err(CommandError::new(
             "登录用户已发生变化，请重新同步桌面配置",
             "session_changed",
         ));
     }
+    if let Some(applied) = state.refresh_desktop_assignment(
+        user_id,
+        auth_generation,
+        &validated.profile_key,
+        &validated.lease,
+        &validated.platforms,
+    ) {
+        return Ok(DesktopConfigSyncReport {
+            proxy_assigned: applied.proxy_assigned,
+            proxy_ip: applied.proxy_ip,
+            platforms: platform_views(&validated.platforms),
+            direct_hosts: applied.direct_hosts,
+        });
+    }
+
+    // Only a new assignment replaces the runtime. Ordinary focus/list refreshes
+    // keep the existing browser processes, proxy port and lease watchdog.
+    browsers
+        .close_all_with_reason(CloseReason::ConfigChanged)
+        .await;
+    if browsers.has_sessions_pending_cleanup() {
+        state.mark_browser_cleanup_pending();
+        emit_status(&app, &state);
+        return Err(CommandError::new(
+            "浏览器会话清理未完成，请关闭相关浏览器后重试",
+            "browser_cleanup_pending",
+        ));
+    }
+    state.teardown();
     auth.set_profile_key(user_id, validated.profile_key.clone())
         .map_err(auth_command_error)?;
 
@@ -382,6 +441,20 @@ pub async fn sync_desktop_config<R: Runtime>(
     let platform_views = platform_views(&validated.platforms);
 
     let Some(proxy_config) = validated.proxy else {
+        if !state.mark_desktop_config_applied(
+            assignment_revision,
+            AppliedDesktopConfig {
+                lease: validated.lease.clone(),
+                proxy_assigned: false,
+                proxy_ip: None,
+                direct_hosts: Vec::new(),
+            },
+        ) {
+            return Err(CommandError::new(
+                "客户端正在退出或配置已变化",
+                "session_changed",
+            ));
+        }
         // Platform-only configurations still need lease monitoring so a
         // revoked platform allowlist closes any direct browser sessions.
         if should_spawn_session_watchdog(&validated) {
@@ -511,6 +584,20 @@ pub async fn sync_desktop_config<R: Runtime>(
         ));
     }
 
+    if !state.mark_desktop_config_applied(
+        assignment_revision,
+        AppliedDesktopConfig {
+            lease: validated.lease.clone(),
+            proxy_assigned: true,
+            proxy_ip: Some(proxy_ip.clone()),
+            direct_hosts: direct_host_view.clone(),
+        },
+    ) {
+        return Err(CommandError::new(
+            "客户端正在退出或配置已变化",
+            "session_changed",
+        ));
+    }
     spawn_session_watchdog(
         app.clone(),
         state.inner().clone(),
@@ -529,6 +616,34 @@ pub async fn sync_desktop_config<R: Runtime>(
     })
 }
 
+async fn invalidate_config_runtime(
+    state: &AppState,
+    browsers: &BrowserSessionManager,
+    user_id: i64,
+    auth_generation: u64,
+    reason: CloseReason,
+) {
+    let Some(revision) = state.desktop_assignment_revision(user_id, auth_generation) else {
+        return;
+    };
+    browsers.close_all_with_reason(reason).await;
+    if browsers.has_sessions_pending_cleanup() {
+        state.mark_browser_cleanup_pending();
+        return;
+    }
+    match reason {
+        CloseReason::AuthenticationInvalid => {
+            state.invalidate_desktop_session(user_id, auth_generation, revision);
+        }
+        CloseReason::ConfigChanged => {
+            state.invalidate_desktop_configuration(user_id, auth_generation, revision);
+        }
+        _ => {
+            state.invalidate_desktop_config_validation(user_id, auth_generation, revision);
+        }
+    }
+}
+
 pub(crate) fn spawn_session_watchdog<R: Runtime>(
     app: AppHandle<R>,
     state: AppState,
@@ -539,55 +654,100 @@ pub(crate) fn spawn_session_watchdog<R: Runtime>(
     expected_lease: String,
 ) {
     rt::runtime().spawn(async move {
-        let mut transient_failures = 0u8;
         loop {
             tokio::time::sleep(SESSION_WATCHDOG_INTERVAL).await;
-            if !state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
-                break;
-            }
-
-            match auth
-                .validate_desktop_lease(user_id, auth_generation, &expected_lease)
-                .await
+            if !check_desktop_session(
+                &app,
+                &state,
+                &auth,
+                user_id,
+                auth_generation,
+                assignment_revision,
+                &expected_lease,
+            )
+            .await
             {
-                Ok(true) => transient_failures = 0,
-                Ok(false) => {
-                    let _lifecycle_guard = state.lock_desktop_sync().await;
-                    if state.invalidate_desktop_configuration(
-                        user_id,
-                        auth_generation,
-                        assignment_revision,
-                    ) {
-                        let browsers = app.state::<BrowserSessionManager>().inner().clone();
-                        browsers.close_all().await;
-                        let _ = app.emit("status-changed", state.snapshot());
-                    }
-                    break;
-                }
-                Err(error) if error.code == "session_changed" => break,
-                Err(error)
-                    if matches!(error.code.as_str(), "network" | "server")
-                        && transient_failures < 2 =>
-                {
-                    // 间隔缩短后允许连续两次网络抖动，避免一次断网就把会话拆掉。
-                    transient_failures += 1;
-                }
-                Err(_) => {
-                    let _lifecycle_guard = state.lock_desktop_sync().await;
-                    if state.invalidate_desktop_session(
-                        user_id,
-                        auth_generation,
-                        assignment_revision,
-                    ) {
-                        let browsers = app.state::<BrowserSessionManager>().inner().clone();
-                        browsers.close_all().await;
-                        let _ = app.emit("status-changed", state.snapshot());
-                    }
-                    break;
-                }
+                break;
             }
         }
     });
+}
+
+/// One watchdog poll, also used by command-boundary regressions without timers.
+/// Unreachability is not a server decision to revoke an otherwise valid session.
+pub(crate) async fn check_desktop_session<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AppState,
+    auth: &DesktopAuthState,
+    user_id: i64,
+    auth_generation: u64,
+    assignment_revision: u64,
+    expected_lease: &str,
+) -> bool {
+    if !state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
+        return false;
+    }
+    let result = auth
+        .validate_desktop_lease(user_id, auth_generation, expected_lease)
+        .await;
+    let _lifecycle_guard = state.lock_desktop_sync().await;
+    if !state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
+        return false;
+    }
+    if state.browser_cleanup_pending() {
+        invalidate_config_runtime(
+            state,
+            app.state::<BrowserSessionManager>().inner(),
+            user_id,
+            auth_generation,
+            CloseReason::LeaseValidationFailed,
+        )
+        .await;
+        let _ = app.emit("status-changed", state.snapshot());
+        return state.browser_cleanup_pending();
+    }
+    match result {
+        Ok(true) => {
+            if state.set_desktop_service_unavailable(
+                user_id,
+                auth_generation,
+                assignment_revision,
+                false,
+            ) {
+                let _ = app.emit("status-changed", state.snapshot());
+            }
+            true
+        }
+        Err(error) if matches!(error.code.as_str(), "network" | "server") => {
+            if state.set_desktop_service_unavailable(
+                user_id,
+                auth_generation,
+                assignment_revision,
+                true,
+            ) {
+                let _ = app.emit("status-changed", state.snapshot());
+            }
+            true
+        }
+        Err(error) if error.code == "session_changed" => false,
+        result => {
+            let reason = match result {
+                Ok(false) => CloseReason::ConfigChanged,
+                Err(error) if error.code == "unauthenticated" => CloseReason::AuthenticationInvalid,
+                _ => CloseReason::LeaseValidationFailed,
+            };
+            invalidate_config_runtime(
+                state,
+                app.state::<BrowserSessionManager>().inner(),
+                user_id,
+                auth_generation,
+                reason,
+            )
+            .await;
+            let _ = app.emit("status-changed", state.snapshot());
+            state.browser_cleanup_pending()
+        }
+    }
 }
 
 /// Probe the upstream without publishing a browser-ready local adapter. The

@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::activity::{ActivityCollector, ActivityOwner, SessionKey as ActivitySessionKey};
 use crate::auth::DesktopAuthState;
-use crate::browser::{BrowserError, BrowserSessionManager};
+use crate::browser::{BrowserError, BrowserSessionManager, CloseReason};
 use crate::cdp;
 use crate::device;
 use crate::managed_cdp;
@@ -424,7 +424,7 @@ pub async fn reset_browser_profiles<R: Runtime>(
         .map_err(browser_command_error)?;
 
     // 本实例里开着的浏览器都属于当前账号：换账号必先关掉全部浏览器。
-    browsers.close_all().await;
+    browsers.close_all_with_reason(CloseReason::UserReset).await;
     let removed = rt::runtime()
         .spawn_blocking(move || profile::remove_account(&account_dir))
         .await

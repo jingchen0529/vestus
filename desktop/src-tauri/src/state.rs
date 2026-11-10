@@ -53,6 +53,15 @@ struct DesktopAssignment {
     revision: u64,
     profile_key: String,
     platforms: Vec<DesktopPlatform>,
+    applied: Option<AppliedDesktopConfig>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AppliedDesktopConfig {
+    pub lease: String,
+    pub proxy_assigned: bool,
+    pub proxy_ip: Option<String>,
+    pub direct_hosts: Vec<String>,
 }
 
 /// Immutable data needed to construct one browser window. Upstream credentials
@@ -82,6 +91,8 @@ struct Inner {
     next_desktop_revision: u64,
     next_browser_id: u64,
     direct_browser_ids: HashSet<u64>,
+    desktop_service_unavailable: bool,
+    browser_cleanup_pending: bool,
 }
 
 /// 全局状态，注册进 Tauri 的 `manage`。
@@ -104,6 +115,8 @@ impl Default for AppState {
                 next_desktop_revision: 0,
                 next_browser_id: 0,
                 direct_browser_ids: HashSet::new(),
+                desktop_service_unavailable: false,
+                browser_cleanup_pending: false,
             })),
             desktop_sync_gate: Arc::new(AsyncMutex::new(())),
         }
@@ -179,6 +192,7 @@ impl AppState {
         if guard.shutting_down {
             return 0;
         }
+        guard.desktop_service_unavailable = false;
         guard.next_desktop_revision = guard.next_desktop_revision.wrapping_add(1).max(1);
         let revision = guard.next_desktop_revision;
         guard.desktop = Some(DesktopAssignment {
@@ -187,8 +201,98 @@ impl AppState {
             revision,
             profile_key,
             platforms,
+            applied: None,
         });
         revision
+    }
+
+    pub(crate) fn mark_desktop_config_applied(
+        &self,
+        revision: u64,
+        applied: AppliedDesktopConfig,
+    ) -> bool {
+        let mut guard = self.inner.lock().expect("状态锁已中毒");
+        if guard.shutting_down || (applied.proxy_assigned && guard.session.is_none()) {
+            return false;
+        }
+        let Some(desktop) = guard
+            .desktop
+            .as_mut()
+            .filter(|desktop| desktop.revision == revision)
+        else {
+            return false;
+        };
+        desktop.applied = Some(applied);
+        true
+    }
+
+    /// A metadata refresh does not replace the assignment revision: its lease
+    /// watchdog and every open browser still belong to the same runtime.
+    pub(crate) fn refresh_desktop_assignment(
+        &self,
+        user_id: i64,
+        auth_generation: u64,
+        profile_key: &str,
+        lease: &str,
+        platforms: &[DesktopPlatform],
+    ) -> Option<AppliedDesktopConfig> {
+        let mut guard = self.inner.lock().expect("状态锁已中毒");
+        if guard.shutting_down || guard.browser_cleanup_pending {
+            return None;
+        }
+        let desktop = guard.desktop.as_ref()?;
+        let applied = desktop.applied.as_ref()?;
+        if desktop.user_id != user_id
+            || desktop.auth_generation != auth_generation
+            || desktop.profile_key != profile_key
+            || applied.lease != lease
+            || (applied.proxy_assigned
+                && (guard.session.is_none() || !guard.phase.can_open_browser()))
+            || !same_platform_permissions(&desktop.platforms, platforms)
+        {
+            return None;
+        }
+        let applied = applied.clone();
+        guard.desktop.as_mut()?.platforms = platforms.to_vec();
+        guard.desktop_service_unavailable = false;
+        Some(applied)
+    }
+
+    pub(crate) fn set_desktop_service_unavailable(
+        &self,
+        user_id: i64,
+        auth_generation: u64,
+        revision: u64,
+        unavailable: bool,
+    ) -> bool {
+        let mut guard = self.inner.lock().expect("状态锁已中毒");
+        if guard.shutting_down
+            || !guard.desktop.as_ref().is_some_and(|desktop| {
+                desktop.user_id == user_id
+                    && desktop.auth_generation == auth_generation
+                    && desktop.revision == revision
+            })
+            || guard.desktop_service_unavailable == unavailable
+        {
+            return false;
+        }
+        guard.desktop_service_unavailable = unavailable;
+        true
+    }
+
+    pub(crate) fn desktop_assignment_revision(
+        &self,
+        user_id: i64,
+        auth_generation: u64,
+    ) -> Option<u64> {
+        let guard = self.inner.lock().expect("状态锁已中毒");
+        guard
+            .desktop
+            .as_ref()
+            .filter(|desktop| {
+                desktop.user_id == user_id && desktop.auth_generation == auth_generation
+            })
+            .map(|desktop| desktop.revision)
     }
 
     pub fn desktop_assignment_matches(
@@ -214,24 +318,13 @@ impl AppState {
         auth_generation: u64,
         revision: u64,
     ) -> bool {
-        let mut guard = self.inner.lock().expect("状态锁已中毒");
-        let matches = guard.desktop.as_ref().is_some_and(|desktop| {
-            desktop.user_id == user_id
-                && desktop.auth_generation == auth_generation
-                && desktop.revision == revision
-        });
-        if !matches {
-            return false;
-        }
-        if let Some(old) = guard.session.take() {
-            old.adapter.stop();
-        }
-        guard.direct_browser_ids.clear();
-        guard.desktop = None;
-        guard.phase = Phase::Unconfigured;
-        guard.message = "登录已失效，代理和浏览器已关闭".into();
-        guard.error_code = Some("unauthenticated".into());
-        true
+        self.invalidate_assignment(
+            user_id,
+            auth_generation,
+            revision,
+            "登录已失效，代理和浏览器已关闭",
+            "unauthenticated",
+        )
     }
 
     /// Stop a running route when the administrator changes/revokes its proxy
@@ -243,13 +336,44 @@ impl AppState {
         auth_generation: u64,
         revision: u64,
     ) -> bool {
+        self.invalidate_assignment(
+            user_id,
+            auth_generation,
+            revision,
+            "管理员已更新全局桌面配置，代理和浏览器已关闭，请重新同步",
+            "desktop_config_changed",
+        )
+    }
+
+    pub(crate) fn invalidate_desktop_config_validation(
+        &self,
+        user_id: i64,
+        auth_generation: u64,
+        revision: u64,
+    ) -> bool {
+        self.invalidate_assignment(
+            user_id,
+            auth_generation,
+            revision,
+            "无法验证桌面配置，浏览器已关闭，请重新同步",
+            "desktop_config_invalid",
+        )
+    }
+
+    fn invalidate_assignment(
+        &self,
+        user_id: i64,
+        auth_generation: u64,
+        revision: u64,
+        message: &str,
+        error_code: &str,
+    ) -> bool {
         let mut guard = self.inner.lock().expect("状态锁已中毒");
-        let matches = guard.desktop.as_ref().is_some_and(|desktop| {
+        if !guard.desktop.as_ref().is_some_and(|desktop| {
             desktop.user_id == user_id
                 && desktop.auth_generation == auth_generation
                 && desktop.revision == revision
-        });
-        if !matches {
+        }) {
             return false;
         }
         if let Some(old) = guard.session.take() {
@@ -257,9 +381,11 @@ impl AppState {
         }
         guard.direct_browser_ids.clear();
         guard.desktop = None;
+        guard.desktop_service_unavailable = false;
+        guard.browser_cleanup_pending = false;
         guard.phase = Phase::Unconfigured;
-        guard.message = "管理员已更新全局桌面配置，代理和浏览器已关闭，请重新同步".into();
-        guard.error_code = Some("desktop_config_changed".into());
+        guard.message = message.into();
+        guard.error_code = Some(error_code.into());
         true
     }
 
@@ -275,7 +401,7 @@ impl AppState {
         direct_mode: bool,
     ) -> Option<BrowserLaunchInfo> {
         let guard = self.inner.lock().expect("状态锁已中毒");
-        if guard.shutting_down {
+        if guard.shutting_down || guard.browser_cleanup_pending {
             return None;
         }
         let desktop = guard.desktop.as_ref()?;
@@ -316,7 +442,7 @@ impl AppState {
     /// `commands::open_browser`).
     pub fn mark_browser_opened(&self, direct_mode: bool) -> Option<u64> {
         let mut guard = self.inner.lock().expect("状态锁已中毒");
-        if guard.shutting_down {
+        if guard.shutting_down || guard.browser_cleanup_pending {
             return None;
         }
         if !direct_mode && (!guard.phase.can_open_browser() || guard.session.is_none()) {
@@ -367,6 +493,30 @@ impl AppState {
         }
     }
 
+    /// Block new launches without pretending an unconfirmed close succeeded.
+    pub(crate) fn mark_browser_cleanup_pending(&self) {
+        let mut guard = self.inner.lock().expect("状态锁已中毒");
+        if let Some(session) = guard.session.take() {
+            session.adapter.stop();
+            guard.direct_browser_ids.extend(session.browser_ids);
+        }
+        if let Some(desktop) = guard.desktop.as_mut() {
+            desktop.applied = None;
+        }
+        guard.browser_cleanup_pending = true;
+        guard.desktop_service_unavailable = false;
+        guard.phase = Phase::Unconfigured;
+        guard.message = "浏览器关闭或会话清理尚未确认，请关闭相关浏览器后重新同步".into();
+        guard.error_code = Some("browser_cleanup_pending".into());
+    }
+
+    pub(crate) fn browser_cleanup_pending(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("状态锁已中毒")
+            .browser_cleanup_pending
+    }
+
     /// 彻底拆除当前会话：停适配器、清出口 IP、回到未配置之外的安全态。
     pub fn teardown(&self) {
         let mut guard = self.inner.lock().expect("状态锁已中毒");
@@ -375,6 +525,8 @@ impl AppState {
         }
         guard.direct_browser_ids.clear();
         guard.desktop = None;
+        guard.desktop_service_unavailable = false;
+        guard.browser_cleanup_pending = false;
         guard.phase = Phase::Unconfigured;
         guard.message = "已停止代理适配器".into();
         guard.error_code = None;
@@ -389,6 +541,8 @@ impl AppState {
         }
         guard.direct_browser_ids.clear();
         guard.desktop = None;
+        guard.desktop_service_unavailable = false;
+        guard.browser_cleanup_pending = false;
         guard.phase = Phase::Unconfigured;
         guard.message = "客户端正在退出".into();
         guard.error_code = None;
@@ -402,19 +556,54 @@ impl AppState {
 
     pub fn snapshot(&self) -> StatusView {
         let guard = self.inner.lock().expect("状态锁已中毒");
-        let browser_open = guard
-            .session
-            .as_ref()
-            .is_some_and(|session| !session.browser_ids.is_empty())
+        let browser_open = guard.browser_cleanup_pending
+            || guard
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.browser_ids.is_empty())
             || !guard.direct_browser_ids.is_empty();
 
+        let unavailable = guard.desktop_service_unavailable && guard.error_code.is_none();
         StatusView {
             phase: guard.phase,
-            message: guard.message.clone(),
+            message: if unavailable {
+                "暂时无法连接桌面服务，现有浏览器保持运行，正在重试".into()
+            } else {
+                guard.message.clone()
+            },
             browser_open,
-            error_code: guard.error_code.clone(),
+            error_code: if unavailable {
+                Some("desktop_service_unavailable".into())
+            } else {
+                guard.error_code.clone()
+            },
         }
     }
+}
+
+/// Effective account expiry can change without changing the server's lease.
+/// Only display/recovery metadata is safe to refresh in-place.
+fn same_platform_permissions(current: &[DesktopPlatform], next: &[DesktopPlatform]) -> bool {
+    current.len() == next.len()
+        && current.iter().all(|platform| {
+            next.iter()
+                .find(|candidate| candidate.id == platform.id)
+                .is_some_and(|candidate| {
+                    platform.url == candidate.url
+                        && platform.managed_accounts.len() == candidate.managed_accounts.len()
+                        && platform.managed_accounts.iter().all(|account| {
+                            candidate
+                                .managed_accounts
+                                .iter()
+                                .find(|next| next.id == account.id)
+                                .is_some_and(|next| {
+                                    account.status == next.status
+                                        && account.credential_version == next.credential_version
+                                        && account.session_status == next.session_status
+                                })
+                        })
+                })
+        })
 }
 
 #[cfg(test)]

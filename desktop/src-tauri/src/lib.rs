@@ -51,9 +51,12 @@ pub fn run() {
         .manage(ActivityCollector::default())
         .setup(|app| {
             match app.path().app_local_data_dir() {
-                Ok(root) => app
-                    .state::<ActivityCollector>()
-                    .initialize(&root, app.state::<DesktopAuthState>().inner().clone()),
+                Ok(root) => {
+                    app.state::<BrowserSessionManager>()
+                        .initialize_lifecycle_log(&root);
+                    app.state::<ActivityCollector>()
+                        .initialize(&root, app.state::<DesktopAuthState>().inner().clone());
+                }
                 Err(error) => eprintln!("activity queue unavailable: {error}"),
             }
             // 旧版本的临时 profile 只会在崩溃后残留（审计 F-13）。放到后台线程清：

@@ -236,6 +236,29 @@ test("Release preflight blocks all matrix builds until version notes are checked
   }
 });
 
+test("build API must match the reviewed notes without exposing a mismatched value", () => {
+  withFixture((fixture) => {
+    const matched = runCli(fixture, [version, "--check-api"], {
+      VESTUS_API_BASE_URL: "https://vestus-dev.quanyuos.com/",
+    });
+    assert.equal(matched.status, 0, matched.stderr);
+    for (const address of ["", "https://different.example.test", "https://user:secret@different.example.test"]) {
+      const result = runCli(fixture, [version, "--check-api"], { VESTUS_API_BASE_URL: address });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /构建 API/);
+      assert.doesNotMatch(result.stderr, /different\.example\.test|user:secret/);
+    }
+  });
+});
+
+test("Release checks the resolved build API before stamping or packaging", () => {
+  const build = workflowJob("build");
+  const verifyAt = build.indexOf('node scripts/check-release-notes.mjs "$RELEASE_VERSION" --check-api');
+  assert.ok(verifyAt > build.indexOf("actions/setup-node@"));
+  assert.ok(verifyAt > build.indexOf("Resolve backend API URL"));
+  assert.ok(verifyAt < build.indexOf("node scripts/stamp-version.mjs"));
+});
+
 test("publish reads checked notes from the trigger SHA and never publishes a manual run", () => {
   const publish = workflowJob("publish");
   assert.match(publish, /^    needs: \[preflight, build\]$/m);

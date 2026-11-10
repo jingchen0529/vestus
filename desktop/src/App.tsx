@@ -8,6 +8,7 @@ import { PlatformLauncher } from "@/components/browser/PlatformLauncher";
 import { FaqView } from "@/components/faq/FaqView";
 import { SystemSettings } from "@/components/settings/SystemSettings";
 import { authService, UserAccount } from "@/services/authService";
+import { createDesktopConfigSync } from "@/services/desktopConfigSync";
 import {
   DesktopConfigView,
   isTauri,
@@ -53,6 +54,80 @@ function MainLayout() {
     browser_open: false,
   });
 
+  // Each login (including the same account logging in again) owns its own async results.
+  const loginGenerationRef = useRef(0);
+  const configSyncRef = useRef<ReturnType<typeof createDesktopConfigSync> | null>(null);
+  const focusSyncRef = useRef<(() => void) | null>(null);
+  const lastFocusSyncAtRef = useRef(0);
+
+  const invalidateConfigSync = () => {
+    loginGenerationRef.current += 1;
+    configSyncRef.current?.invalidate();
+    lastFocusSyncAtRef.current = 0;
+    setDesktopConfigLoading(false);
+    return loginGenerationRef.current;
+  };
+
+  const replaceCurrentUser = (user: UserAccount | null) => {
+    invalidateConfigSync();
+    setDesktopConfig(null);
+    setDesktopConfigError(null);
+    setCurrentUser(user);
+  };
+
+  const expireSession = async (message: string) => {
+    const generation = invalidateConfigSync();
+    setAuthNotice(message);
+    setDesktopConfig(null);
+    setDesktopConfigError(null);
+    try {
+      await authService.logout();
+    } catch (reason) {
+      if (generation === loginGenerationRef.current) {
+        setAuthNotice(
+          `${message}；${reason instanceof Error ? reason.message : "本地凭据清理失败"}`
+        );
+      }
+    } finally {
+      if (generation === loginGenerationRef.current) setCurrentUser(null);
+    }
+  };
+
+  if (!configSyncRef.current) {
+    configSyncRef.current = createDesktopConfigSync({
+      syncConfig: () => tauriBridge.syncDesktopConfig(),
+      getStatus: () => tauriBridge.getStatus(),
+      onConfig: setDesktopConfig,
+      onStatus: setStatus,
+      onLoading: (loading) => {
+        setDesktopConfigLoading(loading);
+        if (loading) setDesktopConfigError(null);
+      },
+      onSuccess: (config, announce) => {
+        if (!config.proxy_assigned) {
+          setDesktopConfigError("系统当前没有启用的全局代理；如需继续访问，请切换为直连模式");
+        } else if (config.platforms.length === 0) {
+          setDesktopConfigError("代理已就绪，但系统当前没有已启用的平台入口");
+        } else if (announce) {
+          success("桌面配置已同步", `已加载 ${config.platforms.length} 个平台入口`);
+        }
+      },
+      onError: (reason, announce) => {
+        const err = reason as { code?: string; message?: string } | null;
+        const message = err?.message || (typeof reason === "string" ? reason : "无法获取全局桌面配置");
+        // Transient network/server failures leave the last usable config intact.
+        setDesktopConfigError(message);
+        if (err?.code === "unauthenticated") void expireSession(message);
+        if (announce) error("同步配置失败", message);
+      },
+    });
+  }
+
+  useEffect(() => () => {
+    loginGenerationRef.current += 1;
+    configSyncRef.current?.invalidate();
+  }, []);
+
   // A session is only considered valid after the server confirms the token.
   useEffect(() => {
     if (!desktopRuntime) {
@@ -63,7 +138,7 @@ function MainLayout() {
     authService
       .restoreSession()
       .then((user) => {
-        if (mounted) setCurrentUser(user);
+        if (mounted) replaceCurrentUser(user);
       })
       .finally(() => {
         if (mounted) setAuthReady(true);
@@ -98,6 +173,8 @@ function MainLayout() {
       return;
     }
     let active = true;
+    const generation = loginGenerationRef.current;
+    const isActive = () => active && generation === loginGenerationRef.current;
     let unlistenFn: (() => void) | undefined;
     let unlistenExpiredFn: (() => void) | undefined;
     let unlistenRecoveredFn: (() => void) | undefined;
@@ -106,7 +183,7 @@ function MainLayout() {
     void tauriBridge
       .getStatus()
       .then((initialStatus) => {
-        if (active) setStatus(initialStatus);
+        if (isActive()) setStatus(initialStatus);
       })
       .catch(() => {
         // Config synchronization below reports actionable initialization errors.
@@ -114,46 +191,21 @@ function MainLayout() {
 
     tauriBridge
       .onStatusChange((newStatus) => {
-        if (!active) return;
+        if (!isActive()) return;
         setStatus(newStatus);
         if (newStatus.error_code === "unauthenticated") {
-          const notice = "登录已失效，代理和浏览器已关闭，请重新登录";
-          setAuthNotice(notice);
-          void authService
-            .logout()
-            .catch((reason) => {
-              if (active) {
-                setAuthNotice(
-                  `${notice}；${reason instanceof Error ? reason.message : "本地凭据清理失败"}`
-                );
-              }
-            })
-            .finally(() => {
-              if (!active) return;
-              setCurrentUser(null);
-              setDesktopConfig(null);
-              setDesktopConfigError(null);
-            });
+          void expireSession("登录已失效，代理和浏览器已关闭，请重新登录");
         } else if (newStatus.error_code === "desktop_config_changed") {
-          // 看门狗发现租约变化（管理员轮换托管凭据、标记会话失效、修改代理或平台等）。
-          // 尝试静默重同步，用户无需手动刷新；失败才降级为需要人工重新同步。
-          void (async () => {
-            try {
-              await syncDesktopConfig(false);
-              if (active) {
-                info("配置已自动同步", "管理员更新了全局配置或托管账号凭据，已自动生效");
-              }
-            } catch {
-              if (active) {
-                setDesktopConfig(null);
-                setDesktopConfigError("管理员已更新全局桌面配置，请重新同步后继续使用");
-              }
+          // A lease change discovered by this sync needs one fresh request after it settles.
+          void syncDesktopConfig(false, true).then((synced) => {
+            if (synced && isActive()) {
+              info("配置已自动同步", "管理员更新了全局配置或托管账号凭据，已自动生效");
             }
-          })();
+          });
         }
       })
       .then((unlisten) => {
-        if (active) unlistenFn = unlisten;
+        if (isActive()) unlistenFn = unlisten;
         else unlisten();
       })
       .catch(() => {
@@ -163,7 +215,7 @@ function MainLayout() {
     // 服务端回执后再刷新，不能让旧 watcher 的通知把新凭据显示为失效。
     tauriBridge
       .onManagedSessionExpired((payload) => {
-        if (!active) return;
+        if (!isActive()) return;
         if (!payload.browserClosed) {
           error("托管浏览器清理未完成", "请关闭对应浏览器后重试；系统没有确认该会话已完全关闭");
         } else if (!payload.reported) {
@@ -178,7 +230,7 @@ function MainLayout() {
         }
       })
       .then((unlisten) => {
-        if (active) unlistenExpiredFn = unlisten;
+        if (isActive()) unlistenExpiredFn = unlisten;
         else unlisten();
       })
       .catch(() => {
@@ -188,16 +240,16 @@ function MainLayout() {
     // 服务端自动登录完成：刷新配置后按当前本机偏好自动重新打开托管浏览器。
     tauriBridge
       .onManagedSessionRecovered((payload) => {
-        if (!active) return;
+        if (!isActive()) return;
         if (!payload.recovered) {
           error("自动恢复登录未完成", payload.detail || "请联系管理员检查账号凭据");
           void syncDesktopConfig(false);
           return;
         }
-        info("托管登录已自动恢复", "正在重新打开该平台的托管浏览器");
         void (async () => {
           try {
-            await syncDesktopConfig(false);
+            if (!(await syncDesktopConfig(false)) || !isActive()) return;
+            info("托管登录已自动恢复", "正在重新打开该平台的托管浏览器");
             let proxyStored = true;
             let sandboxStored = true;
             try {
@@ -212,16 +264,16 @@ function MainLayout() {
               !proxyStored,
               !sandboxStored,
             );
-            if (active) success("托管浏览器已恢复", "已用新的登录状态重新打开平台");
+            if (isActive()) success("托管浏览器已恢复", "已用新的登录状态重新打开平台");
           } catch (reopenError) {
-            if (active) {
+            if (isActive()) {
               error("自动恢复后重新打开失败", reopenError instanceof Error ? reopenError.message : "请手动重新打开平台");
             }
           }
         })();
       })
       .then((unlisten) => {
-        if (active) unlistenRecoveredFn = unlisten;
+        if (isActive()) unlistenRecoveredFn = unlisten;
         else unlisten();
       })
       .catch(() => {
@@ -231,7 +283,7 @@ function MainLayout() {
     // 安全监控中断不代表凭据失效；这里只提示，浏览器退出状态由 status-changed 更新。
     tauriBridge
       .onManagedSessionGuardFailed((payload) => {
-        if (!active) return;
+        if (!isActive()) return;
         const cause =
           payload.reason === "monitor_disconnected" ? "安全监控连接断开" : "安全监控中断";
         if (payload.browserClosed) {
@@ -241,7 +293,7 @@ function MainLayout() {
         }
       })
       .then((unlisten) => {
-        if (active) unlistenGuardFailedFn = unlisten;
+        if (isActive()) unlistenGuardFailedFn = unlisten;
         else unlisten();
       })
       .catch(() => {
@@ -255,14 +307,12 @@ function MainLayout() {
       if (unlistenRecoveredFn) unlistenRecoveredFn();
       if (unlistenGuardFailedFn) unlistenGuardFailedFn();
     };
-  }, [desktopRuntime, authReady, currentUser?.id]);
+  }, [desktopRuntime, authReady, currentUser]);
 
   // 管理员处理完凭据（如重新保存 Cookie）后，用户切回本窗口即自动同步一次
   // 登录状态，免去手动点「刷新」；60 秒节流，避免频繁触发服务端会话探测。
-  const focusSyncRef = useRef<(() => void) | null>(null);
-  const lastFocusSyncAtRef = useRef(0);
   focusSyncRef.current = () => {
-    if (!desktopRuntime || !currentUser || !authService.isAuthenticated()) return;
+    if (!desktopRuntime || !authReady || !currentUser || !authService.isAuthenticated()) return;
     const now = Date.now();
     if (now - lastFocusSyncAtRef.current < 60_000) return;
     lastFocusSyncAtRef.current = now;
@@ -275,54 +325,19 @@ function MainLayout() {
     return () => window.removeEventListener("focus", onFocus);
   }, [desktopRuntime]);
 
-  const syncDesktopConfig = async (announce = false) => {
+  const syncDesktopConfig = (announce = false, afterPending = false): Promise<boolean> => {
     if (
       !desktopRuntime ||
+      !authReady ||
       !currentUser ||
+      authService.getCurrentUser() !== currentUser ||
       !authService.isAuthenticated()
-    )
-      return;
-    setDesktopConfigLoading(true);
-    setDesktopConfigError(null);
-    try {
-      const config = await tauriBridge.syncDesktopConfig();
-      setDesktopConfig(config);
-      try {
-        setStatus(await tauriBridge.getStatus());
-      } catch {
-        // The status event normally updates this view; a failed refresh is non-fatal.
-      }
-      if (!config.proxy_assigned) {
-        setDesktopConfigError("系统当前没有启用的全局代理；如需继续访问，请切换为直连模式");
-      } else if (config.platforms.length === 0) {
-        setDesktopConfigError("代理已就绪，但系统当前没有已启用的平台入口");
-      } else if (announce) {
-        success(
-          "桌面配置已同步",
-          `已加载 ${config.platforms.length} 个平台入口`
-        );
-      }
-    } catch (err: any) {
-      const message = err?.message || "无法获取全局桌面配置";
-      setDesktopConfig(null);
-      setDesktopConfigError(message);
-      if (err?.code === "unauthenticated") {
-        setAuthNotice(message);
-        try {
-          await authService.logout();
-        } catch (logoutReason) {
-          setAuthNotice(
-            `${message}；${
-              logoutReason instanceof Error ? logoutReason.message : "本地凭据清理失败"
-            }`
-          );
-        }
-        setCurrentUser(null);
-      }
-      if (announce) error("同步配置失败", message);
-    } finally {
-      setDesktopConfigLoading(false);
+    ) {
+      return Promise.resolve(false);
     }
+    return afterPending
+      ? configSyncRef.current!.syncAfterPending()
+      : configSyncRef.current!.sync(announce);
   };
 
   // Desktop users receive proxy credentials and allowed platform entries through
@@ -337,20 +352,22 @@ function MainLayout() {
       return;
     }
     void syncDesktopConfig(false);
-  }, [desktopRuntime, authReady, currentUser?.id]);
+  }, [desktopRuntime, authReady, currentUser]);
 
   const handleLoginSuccess = (user: UserAccount) => {
     setAuthNotice(null);
-    setCurrentUser(user);
+    replaceCurrentUser(user);
   };
 
   const handleLogout = async () => {
+    const generation = invalidateConfigSync();
     let failure: string | null = null;
     try {
       await authService.logout();
     } catch (reason) {
       failure = reason instanceof Error ? reason.message : "本地登录凭据清理失败";
     }
+    if (generation !== loginGenerationRef.current) return;
     setCurrentUser(null);
     setDesktopConfig(null);
     setDesktopConfigError(null);

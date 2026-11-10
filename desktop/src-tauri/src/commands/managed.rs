@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::auth::DesktopAuthState;
-use crate::browser::BrowserSessionManager;
+use crate::browser::{BrowserSessionManager, CloseReason};
 use crate::managed_cdp;
 use crate::rt;
 
@@ -114,8 +114,21 @@ pub(crate) async fn kill_managed_browser(
     browsers: BrowserSessionManager,
     browser_id: u64,
 ) -> CmdResult<()> {
+    kill_managed_browser_with_reason(
+        browsers,
+        browser_id,
+        CloseReason::ManagedInitializationFailed,
+    )
+    .await
+}
+
+async fn kill_managed_browser_with_reason(
+    browsers: BrowserSessionManager,
+    browser_id: u64,
+    reason: CloseReason,
+) -> CmdResult<()> {
     rt::runtime()
-        .spawn_blocking(move || browsers.kill_browser(browser_id))
+        .spawn_blocking(move || browsers.kill_browser_with_reason(browser_id, reason))
         .await
         .map_err(|error| CommandError::new(format!("浏览器关闭任务失败：{error}"), "internal"))?
         .map_err(browser_command_error)?;
@@ -170,9 +183,13 @@ pub(crate) async fn run_managed_watch<R: Runtime>(
             if !running {
                 return;
             }
-            let closed = kill_managed_browser(context.browsers.clone(), context.browser_id)
-                .await
-                .is_ok();
+            let closed = kill_managed_browser_with_reason(
+                context.browsers.clone(),
+                context.browser_id,
+                CloseReason::MonitorDisconnected,
+            )
+            .await
+            .is_ok();
             if context
                 .auth
                 .current_identity()
@@ -198,7 +215,9 @@ pub(crate) async fn run_managed_watch<R: Runtime>(
     let browsers = context.browsers.clone();
     let browser_id = context.browser_id;
     let closed = match rt::runtime()
-        .spawn_blocking(move || browsers.kill_browser(browser_id))
+        .spawn_blocking(move || {
+            browsers.kill_browser_with_reason(browser_id, CloseReason::ManagedLogout)
+        })
         .await
     {
         Ok(Ok(closed)) => closed,
