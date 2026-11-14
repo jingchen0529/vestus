@@ -54,6 +54,8 @@ ACTION_LABELS = {
     "MANAGED_SESSION_BOOTSTRAP_ISSUED": "签发托管登录票据",
     "MANAGED_SESSION_BOOTSTRAP_CONSUMED": "使用托管登录票据",
     "MANAGED_SESSION_EXPIRED": "上报托管会话失效",
+    "MANAGED_SESSION_RECOVERED": "托管账号自动登录成功",
+    "MANAGED_SESSION_RECOVERY_FAILED": "托管账号自动登录失败",
     "BROWSER_ACTIVITY_REPORT": "上报浏览器活动",
     "DESKTOP_CONFIG_READ": "读取桌面配置",
     "DESKTOP_FAQ_READ": "读取帮助内容",

@@ -9,6 +9,7 @@ expiry / recovery behaviour exactly as production exercises it.
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
@@ -382,3 +383,104 @@ def test_refresh_queues_recovery_for_logged_in_server_login_account(
     assert item.session_status == "expired"
     assert item.recovery_status == "pending"
     assert item.next_recovery_at is not None
+
+def test_recovery_success_writes_audit_with_version_transition(
+    service_db: Database, probe: ProbeStub,
+) -> None:
+    from app.services.managed_platforms import ManagedLoginResult
+    from app.services.managed_recovery import run_recovery
+
+    account, _user = _bound_account(service_db, auth_mode="server_login")
+
+    class Provider:
+        def verify(self, **kwargs: Any) -> ManagedLoginResult:
+            return ManagedLoginResult(
+                "verified",
+                [{"name": "sid", "value": "fresh-recovery-token", "domain": ".oceanengine.com"}],
+                remote_account_id="remote-1",
+                remote_display_name="远端一号",
+            )
+
+    assert run_recovery(service_db, account["id"], provider=Provider()) is True
+    with service_db.session() as session:
+        rows = session.query(UserLog).filter_by(action="MANAGED_SESSION_RECOVERED").all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.actor_type == "system"
+        assert row.status == "SUCCESS"
+        assert row.target_type == "managed_platform_account"
+        assert row.target_id == account["id"]
+        assert row.target_name == "投放一号"
+        assert row.details["accountName"] == "投放一号"
+        assert row.details["credentialVersionBefore"] == account["credentialVersion"]
+        assert row.details["credentialVersionAfter"] == account["credentialVersion"] + 1
+        assert row.details["remoteAccountId"] == "remote-1"
+        assert row.details["remoteDisplayName"] == "远端一号"
+        # Cookie 值绝不进入审计行。
+        assert "fresh-recovery-token" not in json.dumps(row.details, ensure_ascii=False)
+
+
+def test_recovery_failure_writes_audit_without_provider_output(
+    service_db: Database, probe: ProbeStub, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.base import utc_now
+    from app.services import managed_recovery
+    from app.services.managed_platforms import ManagedLoginResult
+
+    account, _user = _bound_account(service_db, auth_mode="server_login")
+    now = utc_now() + timedelta(seconds=1)
+    monkeypatch.setattr(managed_recovery, "utc_now", lambda: now)
+
+    class ExplodingProvider:
+        def verify(self, **kwargs: Any) -> ManagedLoginResult:
+            raise RuntimeError("upstream https://leak.example/login cookie=tok-xyz")
+
+    # 异常路径：state 归为 unavailable，审计只允许固定文案，原始异常绝不落库。
+    assert managed_recovery.run_recovery(service_db, account["id"], provider=ExplodingProvider()) is False
+    now += timedelta(seconds=30)
+
+    class UnavailableProvider:
+        def verify(self, **kwargs: Any) -> ManagedLoginResult:
+            return ManagedLoginResult("unavailable", [])
+
+    for _attempt in (2, 3):
+        assert managed_recovery.run_recovery(service_db, account["id"], provider=UnavailableProvider()) is False
+        now += timedelta(seconds=30)
+
+    with service_db.session() as session:
+        rows = session.query(UserLog).filter_by(action="MANAGED_SESSION_RECOVERY_FAILED").order_by(UserLog.id).all()
+        assert len(rows) == 3
+        assert all(row.actor_type == "system" and row.status == "FAILED" for row in rows)
+        assert all(row.details["accountName"] == "投放一号" for row in rows)
+        assert [row.details["recoveryAttempts"] for row in rows] == [1, 2, 3]
+        assert [row.details["recoveryStatus"] for row in rows] == ["retry_wait", "retry_wait", "failed"]
+        assert rows[0].details["state"] == "unavailable"
+        assert rows[2].summary == "自动登录连续失败，请检查网络和浏览器配置"
+        blob = json.dumps([row.summary for row in rows] + [row.details for row in rows], ensure_ascii=False)
+        assert "leak.example" not in blob
+        assert "tok-xyz" not in blob
+        assert rows[0].details["nextRecoveryAt"] is not None
+        assert rows[2].details["nextRecoveryAt"] is None
+
+
+def test_recovery_invalid_credentials_audit_uses_fixed_message(
+    service_db: Database, probe: ProbeStub,
+) -> None:
+    from app.services.managed_platforms import ManagedLoginResult
+    from app.services.managed_recovery import run_recovery
+
+    account, _user = _bound_account(service_db, auth_mode="server_login")
+
+    class InvalidProvider:
+        def verify(self, **kwargs: Any) -> ManagedLoginResult:
+            return ManagedLoginResult("invalid_credentials", [])
+
+    assert run_recovery(service_db, account["id"], provider=InvalidProvider()) is False
+    with service_db.session() as session:
+        rows = session.query(UserLog).filter_by(action="MANAGED_SESSION_RECOVERY_FAILED").all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.summary == "自动登录失败：账号或密码错误、账号受限，请更新凭据"
+        assert row.details["state"] == "invalid_credentials"
+        assert row.details["recoveryStatus"] == "failed"
+        assert row.details["nextRecoveryAt"] is None
