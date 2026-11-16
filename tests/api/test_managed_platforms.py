@@ -869,9 +869,23 @@ def test_report_session_expired_marks_account_and_blocks_bootstrap(api: Any) -> 
     assert payload(again) == {**report, "applied": False}
     with module.db.session() as session_db:
         audits = session_db.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").all()
-        assert len(audits) == 1
-        assert audits[0].details["sessionId"] == identity["sessionId"]
-        assert audits[0].details["credentialVersion"] == identity["credentialVersion"]
+        # Both the applied report and the stale one leave an audit row so the
+        # support team can see every desktop-side expiry report.
+        assert len(audits) == 2
+        first, second = sorted(audits, key=lambda item: item.id)
+        assert first.details["applied"] is True
+        assert first.details["sessionId"] == identity["sessionId"]
+        assert first.details["credentialVersion"] == identity["credentialVersion"]
+        assert first.details["accountName"] == "方舟主账号"
+        assert first.details["platformName"] == "方舟"
+        assert first.details["queuedRecovery"] is False  # cookie 账号不排队自动登录
+        assert first.details["sessionConsumedAt"] is not None
+        assert second.details["applied"] is False
+        assert second.details["sessionId"] == identity["sessionId"]
+        # 上报的是旧版本 1，当前已是首次上报后的 2。
+        assert second.details["credentialVersion"] == 1
+        assert second.details["currentCredentialVersion"] == 2
+        assert "重复" in second.summary
 
 
 @pytest.mark.parametrize("endpoint", ["account-patch", "user-patch", "legacy-put"])
@@ -914,7 +928,8 @@ def test_admin_credential_rotation_resets_session_status(
     assert consumed["cookieBundle"][0]["value"] == "fresh-cookie"
     assert consumed["credentialVersion"] == 3
     with module.db.session() as session_db:
-        assert session_db.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").count() == 1
+        # 一次 applied 成功 + 两次轮转后的迟到上报（applied=False 也留痕）。
+        assert session_db.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").count() == 3
 
 
 def test_session_expiry_requires_complete_strict_identity(api: Any) -> None:
@@ -1140,7 +1155,8 @@ def test_concurrent_expiry_reports_apply_once(api: Any, monkeypatch: pytest.Monk
     assert all(result["sessionStatus"] == "expired" and result["credentialVersion"] == 2 for result in results)
     with module.db.session() as session:
         assert session.get(module.ManagedPlatformAccount, account_id).credential_version == 2
-        assert session.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").count() == 1
+        audits = session.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").all()
+        assert sorted(item.details["applied"] for item in audits) == [False, True]
 
 
 def test_concurrent_bootstrap_consumes_release_cookie_only_once(api: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1246,7 +1262,10 @@ def test_expiry_cas_does_not_overwrite_concurrent_fresh_credentials(api: Any, mo
         account = session.get(module.ManagedPlatformAccount, account_id)
         assert account.cookie_bundle[0]["value"] == "fresh"
         assert account.last_error is None
-        assert session.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").count() == 0
+        audits = session.query(module.UserLog).filter_by(action="MANAGED_SESSION_EXPIRED").all()
+        # 上报本身留痕（applied=False），但不得改动任何账号状态。
+        assert len(audits) == 1
+        assert audits[0].details["applied"] is False
 
 
 def test_recovery_provider_cannot_overwrite_concurrent_rotation(api: Any, recovery_enabled: None) -> None:

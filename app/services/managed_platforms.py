@@ -1833,8 +1833,9 @@ def report_session_expired(
     """Expire only the exact credential used by this user's consumed session.
 
     Grant expires_at is a redemption deadline, not a running-session deadline.
-    Authenticate the full report even when it is stale; only then may retries
-    return the current account state without changing it or recording an audit.
+    Authenticate the full report even when it is stale; a stale report changes
+    nothing but still records an audit row marked ``applied: false`` so the
+    support team can see that a desktop did report the expiry.
     """
     with database.session() as session:
         # Keep the same grant -> binding -> account lock order as consume.
@@ -1879,24 +1880,34 @@ def report_session_expired(
         account = managed_repo.get_account_for_update(session, row.managed_account_id)
         if account is None:
             raise NotFoundError(MANAGED_ACCOUNT_NOT_FOUND)
+        queued_recovery = False
         if applied:
-            queue_recovery(account)
-            record(
-                session,
-                audit,
-                "MANAGED_SESSION_EXPIRED",
-                "客户端上报托管账号在平台侧退出登录",
-                target_type="managed_platform_account",
-                target_id=account.id,
-                target_name=account.name,
-                details={
-                    "platformId": row.platform_id,
-                    "userId": row.user_id,
-                    "sessionId": str(row.id),
-                    "credentialVersion": credential_version,
-                    "deviceId": _normalized_device_id(device_id),
-                },
-            )
+            queued_recovery = queue_recovery(account)
+        record(
+            session,
+            audit,
+            "MANAGED_SESSION_EXPIRED",
+            "客户端上报托管账号在平台侧退出登录"
+            if applied
+            else "重复的托管会话失效上报（凭据已由其他上报或轮转处理）",
+            target_type="managed_platform_account",
+            target_id=account.id,
+            target_name=account.name,
+            details={
+                "platformId": row.platform_id,
+                "platformName": platform.name,
+                "userId": row.user_id,
+                "sessionId": str(row.id),
+                "accountName": account.name,
+                "sessionCreatedAt": iso_datetime(row.created_at),
+                "sessionConsumedAt": iso_datetime(row.consumed_at),
+                "credentialVersion": credential_version,
+                "currentCredentialVersion": int(account.credential_version),
+                "deviceId": _normalized_device_id(device_id),
+                "queuedRecovery": queued_recovery,
+                "applied": applied,
+            },
+        )
         return {
             "sessionStatus": account.session_status,
             "credentialVersion": account.credential_version,

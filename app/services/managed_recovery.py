@@ -13,6 +13,7 @@ from app.db.base import iso_datetime, utc_now
 from app.db.models import ManagedPlatformAccount, Platform
 from app.db.session import Database
 from app.repositories import managed_recovery as recovery_repo
+from app.services.audit import AuditContext, record
 from app.services.errors import ManagedProviderUnavailableError, ManagedVerificationRequiredError
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,51 @@ def run_recovery(database: Database, account_id: int, *, provider: Any = None) -
         if current_platform is None or current_platform.url != platform_url:
             return False
         applied = recovery_repo.finish(session, account_id, account.credential_version, token, now, values)
+        if applied:
+            # Join the finish transaction so a committed state change cannot end
+            # up unlogged. The summary and details reuse only the fixed Chinese
+            # messages above -- never provider output or credential values.
+            audit = AuditContext()
+            if state == "verified":
+                record(
+                    session,
+                    audit,
+                    "MANAGED_SESSION_RECOVERED",
+                    "托管账号自动登录成功，已刷新 Cookie 并恢复会话",
+                    target_type="managed_platform_account",
+                    target_id=account_id,
+                    target_name=account.name,
+                    details={
+                        "platformId": account.platform_id,
+                        "managedAccountId": account_id,
+                        "accountName": account.name,
+                        "credentialVersionBefore": int(account.credential_version),
+                        "credentialVersionAfter": int(account.credential_version) + 1,
+                        "remoteAccountId": remote_id,
+                        "remoteDisplayName": remote_name,
+                    },
+                )
+            else:
+                record(
+                    session,
+                    audit,
+                    "MANAGED_SESSION_RECOVERY_FAILED",
+                    detail,
+                    status="FAILED",
+                    target_type="managed_platform_account",
+                    target_id=account_id,
+                    target_name=account.name,
+                    details={
+                        "platformId": account.platform_id,
+                        "managedAccountId": account_id,
+                        "accountName": account.name,
+                        "state": state,
+                        "recoveryStatus": values["recovery_status"],
+                        "recoveryAttempts": int(account.recovery_attempts or 0),
+                        "nextRecoveryAt": iso_datetime(next_recovery_at),
+                        "lastError": detail,
+                    },
+                )
     if applied:
         logger.info("managed recovery account=%s state=%s", account_id, values["recovery_status"])
     return applied and state == "verified"
