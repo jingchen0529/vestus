@@ -1,0 +1,438 @@
+{
+  "version": {
+    "protocolVersion": "1.3",
+    "product": "Chrome/153.0.8010.12",
+    "revision": "@971a7443b0c9b0a9b2860529b33331b76077ec62",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+    "jsVersion": "15.3.76.4"
+  },
+  "platform": "darwin",
+  "arch": "arm64",
+  "method": "Actual unmodified repository collector executed in bundled headless Chromium; programmatic native checkbox activation via HTMLElement.click duration only, NOT INP/customer workflow. 100 samples of five events, after 50-event warmup; two fresh-page rounds; report binding replaced by local no-network stub.",
+  "results": [
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-50",
+        "fields": 50,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.020000004768371583,
+        "maxMs": 0.020000004768371583,
+        "meanMs": 0.0016000000238418576
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-50",
+        "fields": 50,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 0.14000000953674316,
+        "p95Ms": 0.5799999952316284,
+        "maxMs": 2.019999992847443,
+        "meanMs": 0.19239999997615811
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0.10000002384185791,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 50,
+        "submitFields": 0
+      }
+    },
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-5000",
+        "fields": 5000,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.019999992847442628,
+        "maxMs": 0.020000004768371583,
+        "meanMs": 0.001399999976158142
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-5000",
+        "fields": 5000,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 0.2399999976158142,
+        "p95Ms": 0.6600000023841858,
+        "maxMs": 1.2399999976158143,
+        "meanMs": 0.2799999998807908
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0.10000002384185791,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 50,
+        "submitFields": 0
+      }
+    },
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-duplicate-1000",
+        "fields": 1000,
+        "nodes": 0,
+        "mode": "same",
+        "form": true
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.020000004768371583,
+        "maxMs": 0.03999999761581421,
+        "meanMs": 0.0025999999046325676
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-duplicate-1000",
+        "fields": 1000,
+        "nodes": 0,
+        "mode": "same",
+        "form": true
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 0.9600000023841858,
+        "p95Ms": 3.4,
+        "maxMs": 11.5,
+        "meanMs": 1.2822000000476839
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 1,
+        "submitFields": 0
+      }
+    },
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-document-50000-nodes",
+        "fields": 50,
+        "nodes": 50000,
+        "mode": "unique",
+        "form": false
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.019999992847442628,
+        "maxMs": 0.020000004768371583,
+        "meanMs": 0.0013999998569488525
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 1,
+      "fixture": {
+        "label": "checkbox-document-50000-nodes",
+        "fields": 50,
+        "nodes": 50000,
+        "mode": "unique",
+        "form": false
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 2.1,
+        "p95Ms": 2.5399999976158143,
+        "maxMs": 3.839999997615814,
+        "meanMs": 2.1429999999999993
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0.09999996423721313,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 50,
+        "submitFields": 0
+      }
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-50",
+        "fields": 50,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.020000004768371583,
+        "maxMs": 0.020000004768371583,
+        "meanMs": 0.0014000000953674316
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-50",
+        "fields": 50,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 0.13999999761581422,
+        "p95Ms": 0.5600000023841858,
+        "maxMs": 1.7199999928474425,
+        "meanMs": 0.18260000002384189
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 50,
+        "submitFields": 0
+      }
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-5000",
+        "fields": 5000,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.019999992847442628,
+        "maxMs": 0.020000004768371583,
+        "meanMs": 0.001399999976158142
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-5000",
+        "fields": 5000,
+        "nodes": 0,
+        "mode": "unique",
+        "form": true
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 0.2399999976158142,
+        "p95Ms": 0.6600000023841858,
+        "maxMs": 1.1,
+        "meanMs": 0.27860000002384183
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 50,
+        "submitFields": 0
+      }
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-duplicate-1000",
+        "fields": 1000,
+        "nodes": 0,
+        "mode": "same",
+        "form": true
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.019999992847442628,
+        "maxMs": 0.020000004768371583,
+        "meanMs": 0.001399999976158142
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-duplicate-1000",
+        "fields": 1000,
+        "nodes": 0,
+        "mode": "same",
+        "form": true
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 0.9799999952316284,
+        "p95Ms": 3.5799999952316286,
+        "maxMs": 3.8600000023841856,
+        "meanMs": 1.288800000071525
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0.09999996423721313,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 1,
+        "submitFields": 0
+      }
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-document-50000-nodes",
+        "fields": 50,
+        "nodes": 50000,
+        "mode": "unique",
+        "form": false
+      },
+      "enabled": false,
+      "checkboxActivation": {
+        "p50Ms": 0,
+        "p95Ms": 0.020000004768371583,
+        "maxMs": 0.03999999761581421,
+        "meanMs": 0.006799999952316288
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0,
+      "evidence": null
+    },
+    {
+      "round": 2,
+      "fixture": {
+        "label": "checkbox-document-50000-nodes",
+        "fields": 50,
+        "nodes": 50000,
+        "mode": "unique",
+        "form": false
+      },
+      "enabled": true,
+      "checkboxActivation": {
+        "p50Ms": 2.1,
+        "p95Ms": 2.5200000047683715,
+        "maxMs": 3.8200000047683718,
+        "meanMs": 2.1469999998807894
+      },
+      "inputEvents": 550,
+      "changeEvents": 550,
+      "clickEvents": 550,
+      "checked": false,
+      "flushMs": 0.09999996423721313,
+      "evidence": {
+        "counts": {
+          "click": 550,
+          "input": 1100
+        },
+        "inputFields": 50,
+        "submitFields": 0
+      }
+    }
+  ]
+}

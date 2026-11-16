@@ -1,0 +1,3524 @@
+{
+  "rounds": [
+    {
+      "round": 1,
+      "elapsed_ms": 36059.412542,
+      "validations": [
+        {
+          "after": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "after_reopen": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "after_retry": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "before": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "db_path": "/private/tmp/vestus-outbox-bench.1QjA5ToJ/data/run.EvrZbTN2/round-1/failure-row-quota/activity-outbox/queue.sqlite3",
+          "error": "activity queue capacity exceeded; existing records retained",
+          "existing_records_and_autoincrement_sequence_unchanged": true,
+          "failure_ms": 3.065709,
+          "passed": true,
+          "quota": "rows"
+        },
+        {
+          "after": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "after_reopen": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "after_retry": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "before": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "db_path": "/private/tmp/vestus-outbox-bench.1QjA5ToJ/data/run.EvrZbTN2/round-1/failure-byte-quota/activity-outbox/queue.sqlite3",
+          "error": "activity queue capacity exceeded; existing records retained",
+          "existing_records_and_autoincrement_sequence_unchanged": true,
+          "failure_ms": 22.685375,
+          "passed": true,
+          "quota": "bytes"
+        }
+      ],
+      "path": "/private/tmp/vestus-outbox-bench.1QjA5ToJ/results/run.EvrZbTN2.round-1.json"
+    },
+    {
+      "round": 2,
+      "elapsed_ms": 35563.707667,
+      "validations": [
+        {
+          "after": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "after_reopen": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "after_retry": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "before": {
+            "changed_payload_rows": 0,
+            "max_id": 10000,
+            "payload_bytes": 7680000,
+            "ready_rows": 0,
+            "rows": 10000,
+            "sqlite_sequence": 10000,
+            "sum_ids": 50005000
+          },
+          "db_path": "/private/tmp/vestus-outbox-bench.1QjA5ToJ/data/run.EvrZbTN2/round-2/failure-row-quota/activity-outbox/queue.sqlite3",
+          "error": "activity queue capacity exceeded; existing records retained",
+          "existing_records_and_autoincrement_sequence_unchanged": true,
+          "failure_ms": 2.397333,
+          "passed": true,
+          "quota": "rows"
+        },
+        {
+          "after": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "after_reopen": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "after_retry": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "before": {
+            "changed_payload_rows": 0,
+            "max_id": 8192,
+            "payload_bytes": 134217728,
+            "ready_rows": 0,
+            "rows": 8192,
+            "sqlite_sequence": 8192,
+            "sum_ids": 33558528
+          },
+          "db_path": "/private/tmp/vestus-outbox-bench.1QjA5ToJ/data/run.EvrZbTN2/round-2/failure-byte-quota/activity-outbox/queue.sqlite3",
+          "error": "activity queue capacity exceeded; existing records retained",
+          "existing_records_and_autoincrement_sequence_unchanged": true,
+          "failure_ms": 22.415542,
+          "passed": true,
+          "quota": "bytes"
+        }
+      ],
+      "path": "/private/tmp/vestus-outbox-bench.1QjA5ToJ/results/run.EvrZbTN2.round-2.json"
+    }
+  ],
+  "rows": [
+    {
+      "round": 1,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 2.279583,
+        "mean_ms": 0.21183172,
+        "min_ms": 0.117667,
+        "n": 100,
+        "p50_ms": 0.141541,
+        "p95_ms": 0.245125
+      },
+      "capacity_pct": 4.912148642032934,
+      "capacity_ms": {
+        "max_ms": 0.022209,
+        "mean_ms": 0.012910420000000002,
+        "min_ms": 0.004167,
+        "n": 100,
+        "p50_ms": 0.012416,
+        "p95_ms": 0.020959000000000002
+      },
+      "commit_ms": {
+        "max_ms": 1.319417,
+        "mean_ms": 0.18926248,
+        "min_ms": 0.054833,
+        "n": 100,
+        "p50_ms": 0.073958,
+        "p95_ms": 1.0345
+      },
+      "write_close_ms": {
+        "max_ms": 0.009041,
+        "mean_ms": 0.0055496200000000025,
+        "min_ms": 0.004792,
+        "n": 100,
+        "p50_ms": 0.005208999999999999,
+        "p95_ms": 0.00725
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.07179200000000001,
+        "mean_ms": 0.04175543,
+        "min_ms": 0.037958,
+        "n": 100,
+        "p50_ms": 0.04,
+        "p95_ms": 0.051
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.011916999999999999,
+        "mean_ms": 0.0047362499999999965,
+        "min_ms": 0.0043749999999999995,
+        "n": 100,
+        "p50_ms": 0.004542,
+        "p95_ms": 0.005542
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.018208,
+        "mean_ms": 0.004853719999999999,
+        "min_ms": 0.0043749999999999995,
+        "n": 100,
+        "p50_ms": 0.004625,
+        "p95_ms": 0.005541
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.003875,
+        "mean_ms": 0.0031487199999999994,
+        "min_ms": 0.003,
+        "n": 100,
+        "p50_ms": 0.003083,
+        "p95_ms": 0.0037500000000000003
+      },
+      "stage_sizes": {
+        "db_bytes": 28672,
+        "shm_bytes": 32768,
+        "wal_bytes": 1466752
+      },
+      "all_closed_sizes": {
+        "db_bytes": 139264,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 4720.728321518609,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 2.210417,
+        "mean_ms": 0.15360004000000002,
+        "min_ms": 0.111416,
+        "n": 100,
+        "p50_ms": 0.12999999999999998,
+        "p95_ms": 0.16508399999999998
+      },
+      "capacity_pct": 7.457066101445706,
+      "capacity_ms": {
+        "max_ms": 0.052250000000000005,
+        "mean_ms": 0.012866700000000003,
+        "min_ms": 0.004083,
+        "n": 100,
+        "p50_ms": 0.012666,
+        "p95_ms": 0.020916999999999998
+      },
+      "commit_ms": {
+        "max_ms": 2.09375,
+        "mean_ms": 0.10115919999999999,
+        "min_ms": 0.052958,
+        "n": 100,
+        "p50_ms": 0.06229200000000001,
+        "p95_ms": 0.078958
+      },
+      "write_close_ms": {
+        "max_ms": 0.015583999999999999,
+        "mean_ms": 0.00545249,
+        "min_ms": 0.0047079999999999995,
+        "n": 100,
+        "p50_ms": 0.005084,
+        "p95_ms": 0.00725
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.06925,
+        "mean_ms": 0.04545371999999999,
+        "min_ms": 0.038792,
+        "n": 100,
+        "p50_ms": 0.041084,
+        "p95_ms": 0.06166700000000001
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.011167,
+        "mean_ms": 0.005409599999999998,
+        "min_ms": 0.0043749999999999995,
+        "n": 100,
+        "p50_ms": 0.004625,
+        "p95_ms": 0.009375
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.015042,
+        "mean_ms": 0.004981739999999999,
+        "min_ms": 0.004459,
+        "n": 100,
+        "p50_ms": 0.0047090000000000005,
+        "p95_ms": 0.005791999999999999
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.006667,
+        "mean_ms": 0.0031670499999999994,
+        "min_ms": 0.0029579999999999997,
+        "n": 100,
+        "p50_ms": 0.003083,
+        "p95_ms": 0.0037500000000000003
+      },
+      "stage_sizes": {
+        "db_bytes": 28672,
+        "shm_bytes": 32768,
+        "wal_bytes": 1466752
+      },
+      "all_closed_sizes": {
+        "db_bytes": 139264,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 6510.4149712461,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 2.516084,
+        "mean_ms": 0.7956442200000001,
+        "min_ms": 0.49583299999999997,
+        "n": 100,
+        "p50_ms": 0.716542,
+        "p95_ms": 1.158792
+      },
+      "capacity_pct": 2.440165548816444,
+      "capacity_ms": {
+        "max_ms": 0.032292,
+        "mean_ms": 0.015214950000000005,
+        "min_ms": 0.0045000000000000005,
+        "n": 100,
+        "p50_ms": 0.014083,
+        "p95_ms": 0.025125
+      },
+      "commit_ms": {
+        "max_ms": 2.605709,
+        "mean_ms": 0.23113388,
+        "min_ms": 0.088292,
+        "n": 100,
+        "p50_ms": 0.128583,
+        "p95_ms": 0.6922919999999999
+      },
+      "write_close_ms": {
+        "max_ms": 0.267125,
+        "mean_ms": 0.15420418999999996,
+        "min_ms": 0.120333,
+        "n": 100,
+        "p50_ms": 0.148084,
+        "p95_ms": 0.190833
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.31629199999999996,
+        "mean_ms": 0.17446371,
+        "min_ms": 0.142458,
+        "n": 100,
+        "p50_ms": 0.15975,
+        "p95_ms": 0.251708
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.120834,
+        "mean_ms": 0.07606171,
+        "min_ms": 0.063084,
+        "n": 100,
+        "p50_ms": 0.072833,
+        "p95_ms": 0.093333
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.028917,
+        "mean_ms": 0.005746299999999999,
+        "min_ms": 0.005,
+        "n": 100,
+        "p50_ms": 0.005292000000000001,
+        "p95_ms": 0.006875
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.004083,
+        "mean_ms": 0.0031620599999999995,
+        "min_ms": 0.003,
+        "n": 100,
+        "p50_ms": 0.003084,
+        "p95_ms": 0.003417
+      },
+      "stage_sizes": {
+        "db_bytes": 139264,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 139264,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 1256.8431654037527,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 1.788459,
+        "mean_ms": 0.57234167,
+        "min_ms": 0.417083,
+        "n": 100,
+        "p50_ms": 0.481334,
+        "p95_ms": 1.3355000000000001
+      },
+      "capacity_pct": 2.813658113057088,
+      "capacity_ms": {
+        "max_ms": 0.02575,
+        "mean_ms": 0.013670450000000002,
+        "min_ms": 0.004084,
+        "n": 100,
+        "p50_ms": 0.013417,
+        "p95_ms": 0.021916
+      },
+      "commit_ms": {
+        "max_ms": 1.406083,
+        "mean_ms": 0.11297165999999997,
+        "min_ms": 0.077291,
+        "n": 100,
+        "p50_ms": 0.097083,
+        "p95_ms": 0.121875
+      },
+      "write_close_ms": {
+        "max_ms": 1.391583,
+        "mean_ms": 0.15683921999999997,
+        "min_ms": 0.106542,
+        "n": 100,
+        "p50_ms": 0.137916,
+        "p95_ms": 0.17425000000000002
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.23466700000000001,
+        "mean_ms": 0.16632458000000006,
+        "min_ms": 0.14216700000000002,
+        "n": 100,
+        "p50_ms": 0.15291600000000002,
+        "p95_ms": 0.211333
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.17975,
+        "mean_ms": 0.07729825000000003,
+        "min_ms": 0.06325,
+        "n": 100,
+        "p50_ms": 0.072042,
+        "p95_ms": 0.097166
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.007459,
+        "mean_ms": 0.005306239999999998,
+        "min_ms": 0.004875,
+        "n": 100,
+        "p50_ms": 0.005167,
+        "p95_ms": 0.006084
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.004,
+        "mean_ms": 0.003175019999999997,
+        "min_ms": 0.003042,
+        "n": 100,
+        "p50_ms": 0.003125,
+        "p95_ms": 0.003458
+      },
+      "stage_sizes": {
+        "db_bytes": 139264,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 139264,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 1747.2080968698294,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 0.446834,
+        "mean_ms": 0.25339079000000003,
+        "min_ms": 0.147,
+        "n": 100,
+        "p50_ms": 0.239208,
+        "p95_ms": 0.388584
+      },
+      "capacity_pct": 39.045636903499265,
+      "capacity_ms": {
+        "max_ms": 0.183,
+        "mean_ms": 0.09637910999999999,
+        "min_ms": 0.007333,
+        "n": 100,
+        "p50_ms": 0.096708,
+        "p95_ms": 0.17566700000000002
+      },
+      "commit_ms": {
+        "max_ms": 0.36104200000000003,
+        "mean_ms": 0.08094499000000002,
+        "min_ms": 0.06870899999999999,
+        "n": 100,
+        "p50_ms": 0.074459,
+        "p95_ms": 0.093958
+      },
+      "write_close_ms": {
+        "max_ms": 0.015333999999999999,
+        "mean_ms": 0.009544110000000001,
+        "min_ms": 0.005458,
+        "n": 100,
+        "p50_ms": 0.009666000000000001,
+        "p95_ms": 0.013375
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.066084,
+        "mean_ms": 0.04189584,
+        "min_ms": 0.040417,
+        "n": 100,
+        "p50_ms": 0.041167,
+        "p95_ms": 0.043207999999999996
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.005959,
+        "mean_ms": 0.0047829000000000005,
+        "min_ms": 0.004541,
+        "n": 100,
+        "p50_ms": 0.0047079999999999995,
+        "p95_ms": 0.005083000000000001
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.00675,
+        "mean_ms": 0.0048362399999999995,
+        "min_ms": 0.004583,
+        "n": 100,
+        "p50_ms": 0.004792,
+        "p95_ms": 0.005167
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.0038330000000000005,
+        "mean_ms": 0.003125039999999997,
+        "min_ms": 0.003,
+        "n": 100,
+        "p50_ms": 0.003084,
+        "p95_ms": 0.00325
+      },
+      "stage_sizes": {
+        "db_bytes": 28672,
+        "shm_bytes": 32768,
+        "wal_bytes": 2962312
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1318912,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 3946.473350511279,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 0.40258299999999997,
+        "mean_ms": 0.24647750999999998,
+        "min_ms": 0.149209,
+        "n": 100,
+        "p50_ms": 0.240292,
+        "p95_ms": 0.355041
+      },
+      "capacity_pct": 39.60354182918922,
+      "capacity_ms": {
+        "max_ms": 0.267958,
+        "mean_ms": 0.09871083000000003,
+        "min_ms": 0.006375,
+        "n": 100,
+        "p50_ms": 0.09691699999999999,
+        "p95_ms": 0.190125
+      },
+      "commit_ms": {
+        "max_ms": 0.25462500000000005,
+        "mean_ms": 0.08163965,
+        "min_ms": 0.06962499999999999,
+        "n": 100,
+        "p50_ms": 0.076958,
+        "p95_ms": 0.096458
+      },
+      "write_close_ms": {
+        "max_ms": 0.024791999999999998,
+        "mean_ms": 0.00940799,
+        "min_ms": 0.005083000000000001,
+        "n": 100,
+        "p50_ms": 0.009042000000000001,
+        "p95_ms": 0.01425
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.079375,
+        "mean_ms": 0.04155705000000001,
+        "min_ms": 0.039042,
+        "n": 100,
+        "p50_ms": 0.040083,
+        "p95_ms": 0.046334
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.00575,
+        "mean_ms": 0.004632019999999998,
+        "min_ms": 0.004458,
+        "n": 100,
+        "p50_ms": 0.004583,
+        "p95_ms": 0.0050409999999999995
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.006125,
+        "mean_ms": 0.0046220599999999955,
+        "min_ms": 0.0043749999999999995,
+        "n": 100,
+        "p50_ms": 0.004583,
+        "p95_ms": 0.0050420000000000005
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.003959,
+        "mean_ms": 0.0032145799999999964,
+        "min_ms": 0.0030410000000000003,
+        "n": 100,
+        "p50_ms": 0.003125,
+        "p95_ms": 0.0038330000000000005
+      },
+      "stage_sizes": {
+        "db_bytes": 28672,
+        "shm_bytes": 32768,
+        "wal_bytes": 2962312
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1318912,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 4057.165296744519,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 2.6345409999999996,
+        "mean_ms": 0.7390437599999999,
+        "min_ms": 0.517209,
+        "n": 100,
+        "p50_ms": 0.661458,
+        "p95_ms": 1.286791
+      },
+      "capacity_pct": 13.182469668419092,
+      "capacity_ms": {
+        "max_ms": 0.19512500000000002,
+        "mean_ms": 0.09871006000000003,
+        "min_ms": 0.006125,
+        "n": 100,
+        "p50_ms": 0.095417,
+        "p95_ms": 0.17891700000000002
+      },
+      "commit_ms": {
+        "max_ms": 1.7306249999999999,
+        "mean_ms": 0.16867032999999998,
+        "min_ms": 0.095708,
+        "n": 100,
+        "p50_ms": 0.11816600000000001,
+        "p95_ms": 0.274625
+      },
+      "write_close_ms": {
+        "max_ms": 1.621833,
+        "mean_ms": 0.25746993,
+        "min_ms": 0.169458,
+        "n": 100,
+        "p50_ms": 0.208375,
+        "p95_ms": 0.35325
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.425292,
+        "mean_ms": 0.19799374999999997,
+        "min_ms": 0.157542,
+        "n": 100,
+        "p50_ms": 0.19162500000000002,
+        "p95_ms": 0.24433400000000002
+      },
+      "readonly_close_ms": {
+        "max_ms": 1.172166,
+        "mean_ms": 0.09552873000000005,
+        "min_ms": 0.064292,
+        "n": 100,
+        "p50_ms": 0.084666,
+        "p95_ms": 0.10775
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.037167,
+        "mean_ms": 0.00585207,
+        "min_ms": 0.005,
+        "n": 100,
+        "p50_ms": 0.005332999999999999,
+        "p95_ms": 0.006959
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.008291999999999999,
+        "mean_ms": 0.0034566699999999994,
+        "min_ms": 0.003125,
+        "n": 100,
+        "p50_ms": 0.003375,
+        "p95_ms": 0.0036669999999999997
+      },
+      "stage_sizes": {
+        "db_bytes": 1318912,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1318912,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 1353.0998489182834,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 0,
+      "final_rows": 100,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 1.548958,
+        "mean_ms": 0.6858870599999999,
+        "min_ms": 0.523042,
+        "n": 100,
+        "p50_ms": 0.661708,
+        "p95_ms": 0.810958
+      },
+      "capacity_pct": 14.120820191469944,
+      "capacity_ms": {
+        "max_ms": 0.232,
+        "mean_ms": 0.10002665000000002,
+        "min_ms": 0.005208,
+        "n": 100,
+        "p50_ms": 0.0955,
+        "p95_ms": 0.18412499999999998
+      },
+      "commit_ms": {
+        "max_ms": 1.99775,
+        "mean_ms": 0.18564833,
+        "min_ms": 0.0945,
+        "n": 100,
+        "p50_ms": 0.121625,
+        "p95_ms": 0.30520800000000003
+      },
+      "write_close_ms": {
+        "max_ms": 0.424542,
+        "mean_ms": 0.1989070599999999,
+        "min_ms": 0.15320899999999998,
+        "n": 100,
+        "p50_ms": 0.19270800000000002,
+        "p95_ms": 0.235708
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.26691600000000004,
+        "mean_ms": 0.19365374999999993,
+        "min_ms": 0.144208,
+        "n": 100,
+        "p50_ms": 0.192666,
+        "p95_ms": 0.242417
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.12245800000000001,
+        "mean_ms": 0.08624034,
+        "min_ms": 0.067,
+        "n": 100,
+        "p50_ms": 0.08625,
+        "p95_ms": 0.10562500000000001
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.016959000000000002,
+        "mean_ms": 0.005547899999999999,
+        "min_ms": 0.004875,
+        "n": 100,
+        "p50_ms": 0.0052499999999999995,
+        "p95_ms": 0.006792
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.010125,
+        "mean_ms": 0.0032562399999999975,
+        "min_ms": 0.0030410000000000003,
+        "n": 100,
+        "p50_ms": 0.003125,
+        "p95_ms": 0.003459
+      },
+      "stage_sizes": {
+        "db_bytes": 1318912,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1318912,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 1457.9659805799517,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 1.8505,
+        "mean_ms": 0.36523542999999997,
+        "min_ms": 0.299292,
+        "n": 100,
+        "p50_ms": 0.32379199999999997,
+        "p95_ms": 0.450459
+      },
+      "capacity_pct": 51.07916164022362,
+      "capacity_ms": {
+        "max_ms": 0.26425,
+        "mean_ms": 0.19058997999999996,
+        "min_ms": 0.17550000000000002,
+        "n": 100,
+        "p50_ms": 0.18812500000000001,
+        "p95_ms": 0.211292
+      },
+      "commit_ms": {
+        "max_ms": 1.0778750000000001,
+        "mean_ms": 0.11654039999999999,
+        "min_ms": 0.055958,
+        "n": 100,
+        "p50_ms": 0.080083,
+        "p95_ms": 0.25395799999999996
+      },
+      "write_close_ms": {
+        "max_ms": 0.017333,
+        "mean_ms": 0.012142470000000006,
+        "min_ms": 0.011083,
+        "n": 100,
+        "p50_ms": 0.011583999999999999,
+        "p95_ms": 0.014916
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.07354100000000001,
+        "mean_ms": 0.043491300000000004,
+        "min_ms": 0.04075,
+        "n": 100,
+        "p50_ms": 0.041875,
+        "p95_ms": 0.050041999999999996
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.015083,
+        "mean_ms": 0.011473729999999994,
+        "min_ms": 0.011042,
+        "n": 100,
+        "p50_ms": 0.011250000000000001,
+        "p95_ms": 0.01275
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.223375,
+        "mean_ms": 0.17821958999999998,
+        "min_ms": 0.171667,
+        "n": 100,
+        "p50_ms": 0.17475,
+        "p95_ms": 0.193084
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.08449999999999999,
+        "mean_ms": 0.06743539,
+        "min_ms": 0.064334,
+        "n": 100,
+        "p50_ms": 0.066334,
+        "p95_ms": 0.073333
+      },
+      "stage_sizes": {
+        "db_bytes": 1138688,
+        "shm_bytes": 32768,
+        "wal_bytes": 1582112
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1249280,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 2737.960005687291,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 1.689125,
+        "mean_ms": 0.36581416,
+        "min_ms": 0.30824999999999997,
+        "n": 100,
+        "p50_ms": 0.332916,
+        "p95_ms": 0.521625
+      },
+      "capacity_pct": 57.393131861167284,
+      "capacity_ms": {
+        "max_ms": 0.344791,
+        "mean_ms": 0.19266037,
+        "min_ms": 0.179209,
+        "n": 100,
+        "p50_ms": 0.188041,
+        "p95_ms": 0.206958
+      },
+      "commit_ms": {
+        "max_ms": 0.273208,
+        "mean_ms": 0.07404581,
+        "min_ms": 0.060708000000000005,
+        "n": 100,
+        "p50_ms": 0.069292,
+        "p95_ms": 0.092042
+      },
+      "write_close_ms": {
+        "max_ms": 0.016708,
+        "mean_ms": 0.012563680000000006,
+        "min_ms": 0.011165999999999999,
+        "n": 100,
+        "p50_ms": 0.01175,
+        "p95_ms": 0.015667
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.120708,
+        "mean_ms": 0.04362460000000001,
+        "min_ms": 0.040917,
+        "n": 100,
+        "p50_ms": 0.041875,
+        "p95_ms": 0.049042
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.017458,
+        "mean_ms": 0.01161413,
+        "min_ms": 0.010958,
+        "n": 100,
+        "p50_ms": 0.011250000000000001,
+        "p95_ms": 0.01425
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.259791,
+        "mean_ms": 0.17796330000000002,
+        "min_ms": 0.17149999999999999,
+        "n": 100,
+        "p50_ms": 0.175542,
+        "p95_ms": 0.189708
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.098709,
+        "mean_ms": 0.0668121,
+        "min_ms": 0.063,
+        "n": 100,
+        "p50_ms": 0.065625,
+        "p95_ms": 0.07425
+      },
+      "stage_sizes": {
+        "db_bytes": 1138688,
+        "shm_bytes": 32768,
+        "wal_bytes": 1582112
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1249280,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 2733.628463151891,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 1.966625,
+        "mean_ms": 0.6952203999999998,
+        "min_ms": 0.598292,
+        "n": 100,
+        "p50_ms": 0.661542,
+        "p95_ms": 0.7877500000000001
+      },
+      "capacity_pct": 28.258587888161152,
+      "capacity_ms": {
+        "max_ms": 0.225167,
+        "mean_ms": 0.19395998999999997,
+        "min_ms": 0.178833,
+        "n": 100,
+        "p50_ms": 0.192416,
+        "p95_ms": 0.214416
+      },
+      "commit_ms": {
+        "max_ms": 0.142917,
+        "mean_ms": 0.10984998000000003,
+        "min_ms": 0.088625,
+        "n": 100,
+        "p50_ms": 0.107958,
+        "p95_ms": 0.129917
+      },
+      "write_close_ms": {
+        "max_ms": 0.374417,
+        "mean_ms": 0.16675050000000002,
+        "min_ms": 0.130458,
+        "n": 100,
+        "p50_ms": 0.156333,
+        "p95_ms": 0.20316700000000001
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.353584,
+        "mean_ms": 0.20491964000000004,
+        "min_ms": 0.173208,
+        "n": 100,
+        "p50_ms": 0.197792,
+        "p95_ms": 0.241542
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.263083,
+        "mean_ms": 0.08774245,
+        "min_ms": 0.070584,
+        "n": 100,
+        "p50_ms": 0.08275,
+        "p95_ms": 0.111
+      },
+      "fresh_scan_ms": {
+        "max_ms": 2.419792,
+        "mean_ms": 0.20694331999999993,
+        "min_ms": 0.175875,
+        "n": 100,
+        "p50_ms": 0.18187499999999998,
+        "p95_ms": 0.20708400000000002
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.078,
+        "mean_ms": 0.06590924999999997,
+        "min_ms": 0.063542,
+        "n": 100,
+        "p50_ms": 0.065208,
+        "p95_ms": 0.07116700000000001
+      },
+      "stage_sizes": {
+        "db_bytes": 1249280,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1249280,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 1438.392774435273,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 2.567167,
+        "mean_ms": 0.7094499599999997,
+        "min_ms": 0.589083,
+        "n": 100,
+        "p50_ms": 0.658875,
+        "p95_ms": 0.8474170000000001
+      },
+      "capacity_pct": 26.981063427411957,
+      "capacity_ms": {
+        "max_ms": 0.24041700000000002,
+        "mean_ms": 0.19661370999999994,
+        "min_ms": 0.178875,
+        "n": 100,
+        "p50_ms": 0.19454100000000002,
+        "p95_ms": 0.221208
+      },
+      "commit_ms": {
+        "max_ms": 1.208666,
+        "mean_ms": 0.13894005,
+        "min_ms": 0.080459,
+        "n": 100,
+        "p50_ms": 0.098375,
+        "p95_ms": 0.2935
+      },
+      "write_close_ms": {
+        "max_ms": 0.43029100000000003,
+        "mean_ms": 0.17784793000000004,
+        "min_ms": 0.13712500000000002,
+        "n": 100,
+        "p50_ms": 0.1615,
+        "p95_ms": 0.239459
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.29575,
+        "mean_ms": 0.20027623000000003,
+        "min_ms": 0.171375,
+        "n": 100,
+        "p50_ms": 0.196416,
+        "p95_ms": 0.231084
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.550583,
+        "mean_ms": 0.08984378999999999,
+        "min_ms": 0.073084,
+        "n": 100,
+        "p50_ms": 0.079958,
+        "p95_ms": 0.10691700000000001
+      },
+      "fresh_scan_ms": {
+        "max_ms": 0.2405,
+        "mean_ms": 0.18469377,
+        "min_ms": 0.17583400000000002,
+        "n": 100,
+        "p50_ms": 0.18208300000000002,
+        "p95_ms": 0.200208
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.147125,
+        "mean_ms": 0.06811624,
+        "min_ms": 0.063042,
+        "n": 100,
+        "p50_ms": 0.06579199999999999,
+        "p95_ms": 0.078584
+      },
+      "stage_sizes": {
+        "db_bytes": 1249280,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 1249280,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 1409.5426828976076,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 13.133707999999999,
+        "mean_ms": 2.4873499900000007,
+        "min_ms": 2.025125,
+        "n": 100,
+        "p50_ms": 2.276583,
+        "p95_ms": 2.943
+      },
+      "capacity_pct": 89.18560000985813,
+      "capacity_ms": {
+        "max_ms": 2.469792,
+        "mean_ms": 2.0380846000000004,
+        "min_ms": 1.8379159999999999,
+        "n": 100,
+        "p50_ms": 2.005208,
+        "p95_ms": 2.292333
+      },
+      "commit_ms": {
+        "max_ms": 0.235625,
+        "mean_ms": 0.13322674000000004,
+        "min_ms": 0.094791,
+        "n": 100,
+        "p50_ms": 0.12387499999999999,
+        "p95_ms": 0.17675
+      },
+      "write_close_ms": {
+        "max_ms": 0.032542,
+        "mean_ms": 0.02189631,
+        "min_ms": 0.018291,
+        "n": 100,
+        "p50_ms": 0.021375,
+        "p95_ms": 0.026250000000000002
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.143333,
+        "mean_ms": 0.06066582999999999,
+        "min_ms": 0.046709,
+        "n": 100,
+        "p50_ms": 0.054625,
+        "p95_ms": 0.09175
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.046709,
+        "mean_ms": 0.014010500000000002,
+        "min_ms": 0.009459,
+        "n": 100,
+        "p50_ms": 0.011459,
+        "p95_ms": 0.022042
+      },
+      "fresh_scan_ms": {
+        "max_ms": 1.975625,
+        "mean_ms": 1.5237870600000003,
+        "min_ms": 1.397833,
+        "n": 100,
+        "p50_ms": 1.4925,
+        "p95_ms": 1.707625
+      },
+      "reused_scan_ms": {
+        "max_ms": 1.598875,
+        "mean_ms": 1.4182070400000004,
+        "min_ms": 1.344084,
+        "n": 100,
+        "p50_ms": 1.3883750000000001,
+        "p95_ms": 1.5477500000000002
+      },
+      "stage_sizes": {
+        "db_bytes": 12914688,
+        "shm_bytes": 32768,
+        "wal_bytes": 3069432
+      },
+      "all_closed_sizes": {
+        "db_bytes": 14204928,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 402.03429514155334,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 3.186042,
+        "mean_ms": 2.308652519999999,
+        "min_ms": 1.984833,
+        "n": 100,
+        "p50_ms": 2.277167,
+        "p95_ms": 2.640167
+      },
+      "capacity_pct": 89.53108170744032,
+      "capacity_ms": {
+        "max_ms": 2.392791,
+        "mean_ms": 2.015901639999999,
+        "min_ms": 1.802583,
+        "n": 100,
+        "p50_ms": 1.9907499999999998,
+        "p95_ms": 2.235167
+      },
+      "commit_ms": {
+        "max_ms": 0.21620799999999998,
+        "mean_ms": 0.13049290000000002,
+        "min_ms": 0.096167,
+        "n": 100,
+        "p50_ms": 0.119625,
+        "p95_ms": 0.180417
+      },
+      "write_close_ms": {
+        "max_ms": 0.029917,
+        "mean_ms": 0.020782090000000007,
+        "min_ms": 0.018000000000000002,
+        "n": 100,
+        "p50_ms": 0.019875,
+        "p95_ms": 0.0255
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.11916600000000001,
+        "mean_ms": 0.05767244999999999,
+        "min_ms": 0.046042,
+        "n": 100,
+        "p50_ms": 0.052417000000000005,
+        "p95_ms": 0.079958
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.036792000000000005,
+        "mean_ms": 0.012827500000000006,
+        "min_ms": 0.0095,
+        "n": 100,
+        "p50_ms": 0.011,
+        "p95_ms": 0.020125
+      },
+      "fresh_scan_ms": {
+        "max_ms": 1.9994169999999998,
+        "mean_ms": 1.4910291200000003,
+        "min_ms": 1.387,
+        "n": 100,
+        "p50_ms": 1.466833,
+        "p95_ms": 1.646958
+      },
+      "reused_scan_ms": {
+        "max_ms": 1.8639999999999999,
+        "mean_ms": 1.4162154200000003,
+        "min_ms": 1.3070410000000001,
+        "n": 100,
+        "p50_ms": 1.3769170000000002,
+        "p95_ms": 1.566958
+      },
+      "stage_sizes": {
+        "db_bytes": 12914688,
+        "shm_bytes": 32768,
+        "wal_bytes": 3069432
+      },
+      "all_closed_sizes": {
+        "db_bytes": 14204928,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 433.1531017929023,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 3.35375,
+        "mean_ms": 2.6956595400000007,
+        "min_ms": 2.416208,
+        "n": 100,
+        "p50_ms": 2.7017909999999996,
+        "p95_ms": 2.9345410000000003
+      },
+      "capacity_pct": 75.40499506752494,
+      "capacity_ms": {
+        "max_ms": 2.803125,
+        "mean_ms": 2.05854001,
+        "min_ms": 1.821667,
+        "n": 100,
+        "p50_ms": 2.017625,
+        "p95_ms": 2.278209
+      },
+      "commit_ms": {
+        "max_ms": 1.083375,
+        "mean_ms": 0.16413712,
+        "min_ms": 0.115792,
+        "n": 100,
+        "p50_ms": 0.142917,
+        "p95_ms": 0.207083
+      },
+      "write_close_ms": {
+        "max_ms": 1.57175,
+        "mean_ms": 0.25519419000000004,
+        "min_ms": 0.183,
+        "n": 100,
+        "p50_ms": 0.225333,
+        "p95_ms": 0.37929199999999996
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.463208,
+        "mean_ms": 0.22524252999999994,
+        "min_ms": 0.179209,
+        "n": 100,
+        "p50_ms": 0.219084,
+        "p95_ms": 0.282083
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.561958,
+        "mean_ms": 0.11536043000000003,
+        "min_ms": 0.0825,
+        "n": 100,
+        "p50_ms": 0.10087499999999999,
+        "p95_ms": 0.169625
+      },
+      "fresh_scan_ms": {
+        "max_ms": 2.1915839999999998,
+        "mean_ms": 1.5674357999999997,
+        "min_ms": 1.4175419999999999,
+        "n": 100,
+        "p50_ms": 1.5434590000000001,
+        "p95_ms": 1.886958
+      },
+      "reused_scan_ms": {
+        "max_ms": 1.8517080000000001,
+        "mean_ms": 1.40329664,
+        "min_ms": 1.2909169999999999,
+        "n": 100,
+        "p50_ms": 1.3745420000000002,
+        "p95_ms": 1.542417
+      },
+      "stage_sizes": {
+        "db_bytes": 14204928,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 14204928,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 370.96672823898217,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 1000,
+      "final_rows": 1100,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 11.595333,
+        "mean_ms": 2.8678424899999997,
+        "min_ms": 2.365083,
+        "n": 100,
+        "p50_ms": 2.725917,
+        "p95_ms": 3.194416
+      },
+      "capacity_pct": 75.00415297464855,
+      "capacity_ms": {
+        "max_ms": 2.520375,
+        "mean_ms": 2.0365295999999997,
+        "min_ms": 1.84575,
+        "n": 100,
+        "p50_ms": 2.0059169999999997,
+        "p95_ms": 2.261666
+      },
+      "commit_ms": {
+        "max_ms": 0.455833,
+        "mean_ms": 0.16008173000000003,
+        "min_ms": 0.119625,
+        "n": 100,
+        "p50_ms": 0.14575,
+        "p95_ms": 0.228292
+      },
+      "write_close_ms": {
+        "max_ms": 2.276542,
+        "mean_ms": 0.26446000000000003,
+        "min_ms": 0.187667,
+        "n": 100,
+        "p50_ms": 0.229041,
+        "p95_ms": 0.335
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.5257499999999999,
+        "mean_ms": 0.22591626000000006,
+        "min_ms": 0.169458,
+        "n": 100,
+        "p50_ms": 0.215334,
+        "p95_ms": 0.304917
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.36354200000000003,
+        "mean_ms": 0.12109623000000001,
+        "min_ms": 0.082125,
+        "n": 100,
+        "p50_ms": 0.10450000000000001,
+        "p95_ms": 0.19287500000000002
+      },
+      "fresh_scan_ms": {
+        "max_ms": 2.053084,
+        "mean_ms": 1.5579033100000002,
+        "min_ms": 1.405208,
+        "n": 100,
+        "p50_ms": 1.524834,
+        "p95_ms": 1.8689170000000002
+      },
+      "reused_scan_ms": {
+        "max_ms": 1.618,
+        "mean_ms": 1.38440753,
+        "min_ms": 1.2973329999999998,
+        "n": 100,
+        "p50_ms": 1.355083,
+        "p95_ms": 1.499458
+      },
+      "stage_sizes": {
+        "db_bytes": 14204928,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 14204928,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 348.694185084063,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 1.300416,
+        "mean_ms": 1.0786862099999999,
+        "min_ms": 0.982917,
+        "n": 100,
+        "p50_ms": 1.0547499999999999,
+        "p95_ms": 1.2515409999999998
+      },
+      "capacity_pct": 82.88898739493335,
+      "capacity_ms": {
+        "max_ms": 1.373958,
+        "mean_ms": 0.97813288,
+        "min_ms": 0.881875,
+        "n": 100,
+        "p50_ms": 0.94075,
+        "p95_ms": 1.217958
+      },
+      "commit_ms": {
+        "max_ms": 0.4215,
+        "mean_ms": 0.10189582000000001,
+        "min_ms": 0.063209,
+        "n": 100,
+        "p50_ms": 0.08775000000000001,
+        "p95_ms": 0.1535
+      },
+      "write_close_ms": {
+        "max_ms": 0.037375,
+        "mean_ms": 0.021697849999999998,
+        "min_ms": 0.017667,
+        "n": 100,
+        "p50_ms": 0.021167,
+        "p95_ms": 0.028249999999999997
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.946125,
+        "mean_ms": 0.06582827,
+        "min_ms": 0.042457999999999996,
+        "n": 100,
+        "p50_ms": 0.047125,
+        "p95_ms": 0.117125
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.066875,
+        "mean_ms": 0.021489159999999993,
+        "min_ms": 0.016875,
+        "n": 100,
+        "p50_ms": 0.018792,
+        "p95_ms": 0.033374999999999995
+      },
+      "fresh_scan_ms": {
+        "max_ms": 2.960583,
+        "mean_ms": 0.9282825099999996,
+        "min_ms": 0.8168340000000001,
+        "n": 100,
+        "p50_ms": 0.858791,
+        "p95_ms": 1.147375
+      },
+      "reused_scan_ms": {
+        "max_ms": 1.0012079999999999,
+        "mean_ms": 0.84206502,
+        "min_ms": 0.802792,
+        "n": 100,
+        "p50_ms": 0.8272499999999999,
+        "p95_ms": 0.910083
+      },
+      "stage_sizes": {
+        "db_bytes": 5595136,
+        "shm_bytes": 32768,
+        "wal_bytes": 1594472
+      },
+      "all_closed_sizes": {
+        "db_bytes": 5709824,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 927.0536609529847,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 2.0733330000000003,
+        "mean_ms": 1.24130841,
+        "min_ms": 1.026709,
+        "n": 100,
+        "p50_ms": 1.1525,
+        "p95_ms": 1.6279160000000001
+      },
+      "capacity_pct": 82.49067229469289,
+      "capacity_ms": {
+        "max_ms": 2.194083,
+        "mean_ms": 0.9154096400000004,
+        "min_ms": 0.83775,
+        "n": 100,
+        "p50_ms": 0.869166,
+        "p95_ms": 0.9825
+      },
+      "commit_ms": {
+        "max_ms": 1.583666,
+        "mean_ms": 0.10308334999999999,
+        "min_ms": 0.063084,
+        "n": 100,
+        "p50_ms": 0.077167,
+        "p95_ms": 0.115375
+      },
+      "write_close_ms": {
+        "max_ms": 0.166041,
+        "mean_ms": 0.021310449999999998,
+        "min_ms": 0.016917,
+        "n": 100,
+        "p50_ms": 0.017750000000000002,
+        "p95_ms": 0.026708
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.085459,
+        "mean_ms": 0.05032843,
+        "min_ms": 0.042375,
+        "n": 100,
+        "p50_ms": 0.04575,
+        "p95_ms": 0.07470900000000001
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.030750000000000003,
+        "mean_ms": 0.019105360000000002,
+        "min_ms": 0.016875,
+        "n": 100,
+        "p50_ms": 0.017666,
+        "p95_ms": 0.025834
+      },
+      "fresh_scan_ms": {
+        "max_ms": 1.369583,
+        "mean_ms": 0.8699016900000001,
+        "min_ms": 0.819459,
+        "n": 100,
+        "p50_ms": 0.844709,
+        "p95_ms": 0.961833
+      },
+      "reused_scan_ms": {
+        "max_ms": 0.9797499999999999,
+        "mean_ms": 0.8326125099999997,
+        "min_ms": 0.8002079999999999,
+        "n": 100,
+        "p50_ms": 0.822833,
+        "p95_ms": 0.8744999999999999
+      },
+      "stage_sizes": {
+        "db_bytes": 5595136,
+        "shm_bytes": 32768,
+        "wal_bytes": 1594472
+      },
+      "all_closed_sizes": {
+        "db_bytes": 5709824,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 805.6015668177097,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 1.65375,
+        "mean_ms": 1.4064029899999997,
+        "min_ms": 1.280792,
+        "n": 100,
+        "p50_ms": 1.383375,
+        "p95_ms": 1.542084
+      },
+      "capacity_pct": 62.77148525228757,
+      "capacity_ms": {
+        "max_ms": 2.195208,
+        "mean_ms": 0.9843120900000001,
+        "min_ms": 0.845083,
+        "n": 100,
+        "p50_ms": 0.930917,
+        "p95_ms": 1.2242089999999999
+      },
+      "commit_ms": {
+        "max_ms": 0.362917,
+        "mean_ms": 0.11868996000000001,
+        "min_ms": 0.080834,
+        "n": 100,
+        "p50_ms": 0.10466700000000001,
+        "p95_ms": 0.189583
+      },
+      "write_close_ms": {
+        "max_ms": 0.5552079999999999,
+        "mean_ms": 0.20994250999999994,
+        "min_ms": 0.142917,
+        "n": 100,
+        "p50_ms": 0.18450000000000003,
+        "p95_ms": 0.424291
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.435375,
+        "mean_ms": 0.23043585,
+        "min_ms": 0.178333,
+        "n": 100,
+        "p50_ms": 0.22054200000000002,
+        "p95_ms": 0.308625
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.278333,
+        "mean_ms": 0.1185817,
+        "min_ms": 0.090041,
+        "n": 100,
+        "p50_ms": 0.107,
+        "p95_ms": 0.167209
+      },
+      "fresh_scan_ms": {
+        "max_ms": 1.673208,
+        "mean_ms": 0.9589532900000002,
+        "min_ms": 0.8441660000000001,
+        "n": 100,
+        "p50_ms": 0.91925,
+        "p95_ms": 1.236167
+      },
+      "reused_scan_ms": {
+        "max_ms": 1.245333,
+        "mean_ms": 0.8623954,
+        "min_ms": 0.813167,
+        "n": 100,
+        "p50_ms": 0.844875,
+        "p95_ms": 0.961375
+      },
+      "stage_sizes": {
+        "db_bytes": 5709824,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 5709824,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 711.0337556947317,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 1.6455840000000002,
+        "mean_ms": 1.4047659000000003,
+        "min_ms": 1.27675,
+        "n": 100,
+        "p50_ms": 1.380917,
+        "p95_ms": 1.567667
+      },
+      "capacity_pct": 62.15057162392384,
+      "capacity_ms": {
+        "max_ms": 1.06325,
+        "mean_ms": 0.8877178699999995,
+        "min_ms": 0.8376669999999999,
+        "n": 100,
+        "p50_ms": 0.8787499999999999,
+        "p95_ms": 0.963292
+      },
+      "commit_ms": {
+        "max_ms": 0.3415,
+        "mean_ms": 0.11216124,
+        "min_ms": 0.090875,
+        "n": 100,
+        "p50_ms": 0.103917,
+        "p95_ms": 0.136041
+      },
+      "write_close_ms": {
+        "max_ms": 2.465875,
+        "mean_ms": 0.20363459999999997,
+        "min_ms": 0.139792,
+        "n": 100,
+        "p50_ms": 0.175209,
+        "p95_ms": 0.233458
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.28725,
+        "mean_ms": 0.20637922999999997,
+        "min_ms": 0.163208,
+        "n": 100,
+        "p50_ms": 0.197792,
+        "p95_ms": 0.25704200000000005
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.150042,
+        "mean_ms": 0.10320797000000002,
+        "min_ms": 0.08641599999999999,
+        "n": 100,
+        "p50_ms": 0.100042,
+        "p95_ms": 0.125833
+      },
+      "fresh_scan_ms": {
+        "max_ms": 1.07075,
+        "mean_ms": 0.8713737700000006,
+        "min_ms": 0.829333,
+        "n": 100,
+        "p50_ms": 0.862916,
+        "p95_ms": 0.933708
+      },
+      "reused_scan_ms": {
+        "max_ms": 1.0995840000000001,
+        "mean_ms": 0.84687375,
+        "min_ms": 0.802333,
+        "n": 100,
+        "p50_ms": 0.8315,
+        "p95_ms": 0.928125
+      },
+      "stage_sizes": {
+        "db_bytes": 5709824,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 5709824,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 711.862382194784,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 11.495459,
+        "mean_ms": 10.255429619999997,
+        "min_ms": 9.826709,
+        "n": 100,
+        "p50_ms": 10.116834,
+        "p95_ms": 10.945500000000001
+      },
+      "capacity_pct": 96.04826958713709,
+      "capacity_ms": {
+        "max_ms": 45.994875,
+        "mean_ms": 11.377991649999998,
+        "min_ms": 9.760333,
+        "n": 100,
+        "p50_ms": 10.262375,
+        "p95_ms": 13.281666
+      },
+      "commit_ms": {
+        "max_ms": 0.474416,
+        "mean_ms": 0.20690416999999986,
+        "min_ms": 0.149,
+        "n": 100,
+        "p50_ms": 0.196083,
+        "p95_ms": 0.283375
+      },
+      "write_close_ms": {
+        "max_ms": 0.538333,
+        "mean_ms": 0.03854629000000001,
+        "min_ms": 0.022583,
+        "n": 100,
+        "p50_ms": 0.030291,
+        "p95_ms": 0.059042000000000004
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.222334,
+        "mean_ms": 0.10766955999999998,
+        "min_ms": 0.07662500000000001,
+        "n": 100,
+        "p50_ms": 0.104917,
+        "p95_ms": 0.137958
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.080667,
+        "mean_ms": 0.04969878,
+        "min_ms": 0.036625000000000005,
+        "n": 100,
+        "p50_ms": 0.047875,
+        "p95_ms": 0.064167
+      },
+      "fresh_scan_ms": {
+        "max_ms": 9.262167,
+        "mean_ms": 8.504507459999997,
+        "min_ms": 8.154333,
+        "n": 100,
+        "p50_ms": 8.441291,
+        "p95_ms": 9.057333
+      },
+      "reused_scan_ms": {
+        "max_ms": 15.895458000000001,
+        "mean_ms": 9.94503005,
+        "min_ms": 8.124917,
+        "n": 100,
+        "p50_ms": 8.956333,
+        "p95_ms": 13.806000000000001
+      },
+      "stage_sizes": {
+        "db_bytes": 64471040,
+        "shm_bytes": 32768,
+        "wal_bytes": 3081792
+      },
+      "all_closed_sizes": {
+        "db_bytes": 65765376,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 97.5093230662725,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 21.479459,
+        "mean_ms": 10.99695416,
+        "min_ms": 10.39475,
+        "n": 100,
+        "p50_ms": 10.769167,
+        "p95_ms": 11.457583
+      },
+      "capacity_pct": 96.64622866945078,
+      "capacity_ms": {
+        "max_ms": 12.356957999999999,
+        "mean_ms": 10.578509180000003,
+        "min_ms": 10.048667,
+        "n": 100,
+        "p50_ms": 10.434959000000001,
+        "p95_ms": 11.511959000000001
+      },
+      "commit_ms": {
+        "max_ms": 0.496875,
+        "mean_ms": 0.2008091699999999,
+        "min_ms": 0.140958,
+        "n": 100,
+        "p50_ms": 0.197417,
+        "p95_ms": 0.234125
+      },
+      "write_close_ms": {
+        "max_ms": 0.047875,
+        "mean_ms": 0.029281200000000004,
+        "min_ms": 0.023334,
+        "n": 100,
+        "p50_ms": 0.028334,
+        "p95_ms": 0.037916
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.237375,
+        "mean_ms": 0.11621117000000002,
+        "min_ms": 0.071875,
+        "n": 100,
+        "p50_ms": 0.111125,
+        "p95_ms": 0.140791
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.109459,
+        "mean_ms": 0.0516779,
+        "min_ms": 0.039541,
+        "n": 100,
+        "p50_ms": 0.049499999999999995,
+        "p95_ms": 0.063375
+      },
+      "fresh_scan_ms": {
+        "max_ms": 9.773667,
+        "mean_ms": 8.64854507,
+        "min_ms": 8.184417,
+        "n": 100,
+        "p50_ms": 8.542542000000001,
+        "p95_ms": 9.469916999999999
+      },
+      "reused_scan_ms": {
+        "max_ms": 8.932792000000001,
+        "mean_ms": 8.322575790000002,
+        "min_ms": 8.073,
+        "n": 100,
+        "p50_ms": 8.263958,
+        "p95_ms": 8.744833999999999
+      },
+      "stage_sizes": {
+        "db_bytes": 64471040,
+        "shm_bytes": 32768,
+        "wal_bytes": 3081792
+      },
+      "all_closed_sizes": {
+        "db_bytes": 65765376,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 90.93427011247995,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 14.553,
+        "mean_ms": 11.385280410000002,
+        "min_ms": 10.74625,
+        "n": 100,
+        "p50_ms": 11.253792,
+        "p95_ms": 12.128333999999999
+      },
+      "capacity_pct": 92.49745099201434,
+      "capacity_ms": {
+        "max_ms": 11.294625000000002,
+        "mean_ms": 10.292141710000001,
+        "min_ms": 9.968834,
+        "n": 100,
+        "p50_ms": 10.204583999999999,
+        "p95_ms": 10.855208
+      },
+      "commit_ms": {
+        "max_ms": 0.931291,
+        "mean_ms": 0.23072205,
+        "min_ms": 0.187125,
+        "n": 100,
+        "p50_ms": 0.21762499999999999,
+        "p95_ms": 0.27308299999999996
+      },
+      "write_close_ms": {
+        "max_ms": 1.7696669999999999,
+        "mean_ms": 0.3202591499999999,
+        "min_ms": 0.225542,
+        "n": 100,
+        "p50_ms": 0.28245800000000004,
+        "p95_ms": 0.5155420000000001
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.388958,
+        "mean_ms": 0.24965048000000004,
+        "min_ms": 0.21241700000000002,
+        "n": 100,
+        "p50_ms": 0.24104199999999998,
+        "p95_ms": 0.320625
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.279584,
+        "mean_ms": 0.19315209,
+        "min_ms": 0.166042,
+        "n": 100,
+        "p50_ms": 0.18920800000000002,
+        "p95_ms": 0.222083
+      },
+      "fresh_scan_ms": {
+        "max_ms": 8.496708,
+        "mean_ms": 8.154269560000001,
+        "min_ms": 7.993416999999999,
+        "n": 100,
+        "p50_ms": 8.146583000000001,
+        "p95_ms": 8.4045
+      },
+      "reused_scan_ms": {
+        "max_ms": 27.009625,
+        "mean_ms": 8.770145500000002,
+        "min_ms": 7.875874999999999,
+        "n": 100,
+        "p50_ms": 8.148834,
+        "p95_ms": 10.274959
+      },
+      "stage_sizes": {
+        "db_bytes": 65765376,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 65765376,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 87.8327071436618,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 5000,
+      "final_rows": 5100,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 14.443375,
+        "mean_ms": 11.669452399999997,
+        "min_ms": 10.959875,
+        "n": 100,
+        "p50_ms": 11.3725,
+        "p95_ms": 13.226541
+      },
+      "capacity_pct": 92.17342620983646,
+      "capacity_ms": {
+        "max_ms": 11.950209,
+        "mean_ms": 10.781975,
+        "min_ms": 10.211625,
+        "n": 100,
+        "p50_ms": 10.670833,
+        "p95_ms": 11.368625
+      },
+      "commit_ms": {
+        "max_ms": 3.199625,
+        "mean_ms": 0.27402706,
+        "min_ms": 0.182291,
+        "n": 100,
+        "p50_ms": 0.22045800000000002,
+        "p95_ms": 0.27270799999999995
+      },
+      "write_close_ms": {
+        "max_ms": 4.302917,
+        "mean_ms": 0.32923415,
+        "min_ms": 0.230375,
+        "n": 100,
+        "p50_ms": 0.27545899999999995,
+        "p95_ms": 0.379792
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.43237499999999995,
+        "mean_ms": 0.2685737299999999,
+        "min_ms": 0.22220900000000002,
+        "n": 100,
+        "p50_ms": 0.26033300000000004,
+        "p95_ms": 0.318292
+      },
+      "readonly_close_ms": {
+        "max_ms": 2.076292,
+        "mean_ms": 0.23227749000000006,
+        "min_ms": 0.17558400000000002,
+        "n": 100,
+        "p50_ms": 0.210667,
+        "p95_ms": 0.263666
+      },
+      "fresh_scan_ms": {
+        "max_ms": 9.761542,
+        "mean_ms": 8.6582054,
+        "min_ms": 8.35975,
+        "n": 100,
+        "p50_ms": 8.55875,
+        "p95_ms": 9.200792
+      },
+      "reused_scan_ms": {
+        "max_ms": 9.238167,
+        "mean_ms": 8.483288359999998,
+        "min_ms": 8.162333,
+        "n": 100,
+        "p50_ms": 8.414333,
+        "p95_ms": 9.008583
+      },
+      "stage_sizes": {
+        "db_bytes": 65765376,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 65765376,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 85.69382398783341,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 2.468042,
+        "mean_ms": 2.06700503,
+        "min_ms": 1.869875,
+        "n": 100,
+        "p50_ms": 2.048625,
+        "p95_ms": 2.255417
+      },
+      "capacity_pct": 89.28672464094167,
+      "capacity_ms": {
+        "max_ms": 2.151333,
+        "mean_ms": 1.82878748,
+        "min_ms": 1.711792,
+        "n": 100,
+        "p50_ms": 1.811375,
+        "p95_ms": 1.9638749999999998
+      },
+      "commit_ms": {
+        "max_ms": 0.401958,
+        "mean_ms": 0.11653208000000002,
+        "min_ms": 0.083541,
+        "n": 100,
+        "p50_ms": 0.11175,
+        "p95_ms": 0.149958
+      },
+      "write_close_ms": {
+        "max_ms": 0.029791,
+        "mean_ms": 0.021794209999999987,
+        "min_ms": 0.018625,
+        "n": 100,
+        "p50_ms": 0.021124999999999998,
+        "p95_ms": 0.026833
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.427042,
+        "mean_ms": 0.10022505000000001,
+        "min_ms": 0.055209,
+        "n": 100,
+        "p50_ms": 0.075917,
+        "p95_ms": 0.227417
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.151666,
+        "mean_ms": 0.03809494999999999,
+        "min_ms": 0.021167,
+        "n": 100,
+        "p50_ms": 0.027375,
+        "p95_ms": 0.110375
+      },
+      "fresh_scan_ms": {
+        "max_ms": 7.698083,
+        "mean_ms": 2.2858087200000003,
+        "min_ms": 1.7124169999999999,
+        "n": 100,
+        "p50_ms": 1.8845839999999998,
+        "p95_ms": 4.276209000000001
+      },
+      "reused_scan_ms": {
+        "max_ms": 4.608041999999999,
+        "mean_ms": 2.0473520700000005,
+        "min_ms": 1.668667,
+        "n": 100,
+        "p50_ms": 1.8769170000000002,
+        "p95_ms": 2.887542
+      },
+      "stage_sizes": {
+        "db_bytes": 11055104,
+        "shm_bytes": 32768,
+        "wal_bytes": 1594472
+      },
+      "all_closed_sizes": {
+        "db_bytes": 11165696,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 483.7917593262945,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 768,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 8.654166,
+        "mean_ms": 3.0912325500000013,
+        "min_ms": 2.124542,
+        "n": 100,
+        "p50_ms": 2.7767500000000003,
+        "p95_ms": 4.696834000000001
+      },
+      "capacity_pct": 87.62157451800645,
+      "capacity_ms": {
+        "max_ms": 4.069916,
+        "mean_ms": 2.4920283599999995,
+        "min_ms": 1.858542,
+        "n": 100,
+        "p50_ms": 2.1694169999999997,
+        "p95_ms": 3.756709
+      },
+      "commit_ms": {
+        "max_ms": 0.825125,
+        "mean_ms": 0.18733667999999998,
+        "min_ms": 0.10337500000000001,
+        "n": 100,
+        "p50_ms": 0.16004100000000002,
+        "p95_ms": 0.32741699999999996
+      },
+      "write_close_ms": {
+        "max_ms": 0.442166,
+        "mean_ms": 0.03692081,
+        "min_ms": 0.020416,
+        "n": 100,
+        "p50_ms": 0.025083,
+        "p95_ms": 0.093291
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.166709,
+        "mean_ms": 0.08007500000000001,
+        "min_ms": 0.054083,
+        "n": 100,
+        "p50_ms": 0.075084,
+        "p95_ms": 0.11925
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.057,
+        "mean_ms": 0.02722332,
+        "min_ms": 0.02025,
+        "n": 100,
+        "p50_ms": 0.026375,
+        "p95_ms": 0.03725
+      },
+      "fresh_scan_ms": {
+        "max_ms": 2.286,
+        "mean_ms": 1.860655060000001,
+        "min_ms": 1.690709,
+        "n": 100,
+        "p50_ms": 1.828584,
+        "p95_ms": 2.045875
+      },
+      "reused_scan_ms": {
+        "max_ms": 2.367875,
+        "mean_ms": 1.7883979099999998,
+        "min_ms": 1.621583,
+        "n": 100,
+        "p50_ms": 1.75625,
+        "p95_ms": 2.006958
+      },
+      "stage_sizes": {
+        "db_bytes": 11055104,
+        "shm_bytes": 32768,
+        "wal_bytes": 1594472
+      },
+      "all_closed_sizes": {
+        "db_bytes": 11165696,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 323.4955584302448,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 9.704541,
+        "mean_ms": 3.91791252,
+        "min_ms": 2.538209,
+        "n": 100,
+        "p50_ms": 3.572,
+        "p95_ms": 6.015042
+      },
+      "capacity_pct": 67.61240154154683,
+      "capacity_ms": {
+        "max_ms": 13.757584,
+        "mean_ms": 2.8579066400000017,
+        "min_ms": 1.8376670000000002,
+        "n": 100,
+        "p50_ms": 2.382875,
+        "p95_ms": 4.352458
+      },
+      "commit_ms": {
+        "max_ms": 4.414083,
+        "mean_ms": 0.27839632000000003,
+        "min_ms": 0.11887500000000001,
+        "n": 100,
+        "p50_ms": 0.19504200000000002,
+        "p95_ms": 0.5095
+      },
+      "write_close_ms": {
+        "max_ms": 9.886791,
+        "mean_ms": 0.46713868000000014,
+        "min_ms": 0.187083,
+        "n": 100,
+        "p50_ms": 0.276584,
+        "p95_ms": 1.067041
+      },
+      "configured_connection_ms": {
+        "max_ms": 1.750041,
+        "mean_ms": 0.39647497000000015,
+        "min_ms": 0.226583,
+        "n": 100,
+        "p50_ms": 0.28408300000000003,
+        "p95_ms": 1.231958
+      },
+      "readonly_close_ms": {
+        "max_ms": 2.0728750000000002,
+        "mean_ms": 0.25570836999999985,
+        "min_ms": 0.126,
+        "n": 100,
+        "p50_ms": 0.191875,
+        "p95_ms": 0.547625
+      },
+      "fresh_scan_ms": {
+        "max_ms": 4.885042,
+        "mean_ms": 2.6072728900000004,
+        "min_ms": 1.822333,
+        "n": 100,
+        "p50_ms": 2.090666,
+        "p95_ms": 4.055917
+      },
+      "reused_scan_ms": {
+        "max_ms": 4.313334,
+        "mean_ms": 2.282672069999999,
+        "min_ms": 1.69825,
+        "n": 100,
+        "p50_ms": 1.916625,
+        "p95_ms": 3.902291
+      },
+      "stage_sizes": {
+        "db_bytes": 11165696,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 11165696,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 255.23796023909182,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 768,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 3.268917,
+        "mean_ms": 2.59870539,
+        "min_ms": 2.288875,
+        "n": 100,
+        "p50_ms": 2.549459,
+        "p95_ms": 3.089
+      },
+      "capacity_pct": 75.84876798649611,
+      "capacity_ms": {
+        "max_ms": 3.886708,
+        "mean_ms": 1.9488591699999993,
+        "min_ms": 1.6982080000000002,
+        "n": 100,
+        "p50_ms": 1.862584,
+        "p95_ms": 2.474333
+      },
+      "commit_ms": {
+        "max_ms": 0.622333,
+        "mean_ms": 0.14668375,
+        "min_ms": 0.094542,
+        "n": 100,
+        "p50_ms": 0.13175,
+        "p95_ms": 0.211542
+      },
+      "write_close_ms": {
+        "max_ms": 0.359916,
+        "mean_ms": 0.21224871000000003,
+        "min_ms": 0.146916,
+        "n": 100,
+        "p50_ms": 0.209417,
+        "p95_ms": 0.268291
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.385625,
+        "mean_ms": 0.21960787000000004,
+        "min_ms": 0.17945799999999998,
+        "n": 100,
+        "p50_ms": 0.21412499999999998,
+        "p95_ms": 0.26804100000000003
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.21595899999999998,
+        "mean_ms": 0.12675409,
+        "min_ms": 0.094958,
+        "n": 100,
+        "p50_ms": 0.114708,
+        "p95_ms": 0.175959
+      },
+      "fresh_scan_ms": {
+        "max_ms": 2.304542,
+        "mean_ms": 1.82221298,
+        "min_ms": 1.675417,
+        "n": 100,
+        "p50_ms": 1.793625,
+        "p95_ms": 1.9745829999999998
+      },
+      "reused_scan_ms": {
+        "max_ms": 2.12425,
+        "mean_ms": 1.7512258899999997,
+        "min_ms": 1.632209,
+        "n": 100,
+        "p50_ms": 1.707791,
+        "p95_ms": 1.927167
+      },
+      "stage_sizes": {
+        "db_bytes": 11165696,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 11165696,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 384.80699037608105,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 30.246125,
+        "mean_ms": 21.464861670000005,
+        "min_ms": 20.040875,
+        "n": 100,
+        "p50_ms": 21.161958000000002,
+        "p95_ms": 23.296167
+      },
+      "capacity_pct": 98.22106230678597,
+      "capacity_ms": {
+        "max_ms": 25.462875,
+        "mean_ms": 21.756580430000003,
+        "min_ms": 20.679541999999998,
+        "n": 100,
+        "p50_ms": 21.501584,
+        "p95_ms": 23.095417
+      },
+      "commit_ms": {
+        "max_ms": 0.438625,
+        "mean_ms": 0.21108467,
+        "min_ms": 0.1285,
+        "n": 100,
+        "p50_ms": 0.207792,
+        "p95_ms": 0.267042
+      },
+      "write_close_ms": {
+        "max_ms": 0.107125,
+        "mean_ms": 0.033559160000000005,
+        "min_ms": 0.026834,
+        "n": 100,
+        "p50_ms": 0.031207999999999996,
+        "p95_ms": 0.040667
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.7721250000000001,
+        "mean_ms": 0.15003087000000007,
+        "min_ms": 0.07483300000000001,
+        "n": 100,
+        "p50_ms": 0.131917,
+        "p95_ms": 0.245542
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.174125,
+        "mean_ms": 0.06489628000000001,
+        "min_ms": 0.0475,
+        "n": 100,
+        "p50_ms": 0.060375,
+        "p95_ms": 0.090458
+      },
+      "fresh_scan_ms": {
+        "max_ms": 46.040334,
+        "mean_ms": 20.365371199999995,
+        "min_ms": 16.878500000000003,
+        "n": 100,
+        "p50_ms": 18.036416,
+        "p95_ms": 33.722875
+      },
+      "reused_scan_ms": {
+        "max_ms": 180.083041,
+        "mean_ms": 27.311239130000004,
+        "min_ms": 17.295542,
+        "n": 100,
+        "p50_ms": 24.715875,
+        "p95_ms": 37.992875000000005
+      },
+      "stage_sizes": {
+        "db_bytes": 127627264,
+        "shm_bytes": 32768,
+        "wal_bytes": 3077672
+      },
+      "all_closed_sizes": {
+        "db_bytes": 128913408,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 46.58776820339974,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 12288,
+      "mode": "held_observer_connection",
+      "stage": {
+        "max_ms": 63.0785,
+        "mean_ms": 22.714350439999997,
+        "min_ms": 20.173334,
+        "n": 100,
+        "p50_ms": 21.500208999999998,
+        "p95_ms": 30.179709
+      },
+      "capacity_pct": 98.22517696166734,
+      "capacity_ms": {
+        "max_ms": 48.564583,
+        "mean_ms": 26.307070009999993,
+        "min_ms": 20.458667,
+        "n": 100,
+        "p50_ms": 26.737042,
+        "p95_ms": 32.684208
+      },
+      "commit_ms": {
+        "max_ms": 0.9129999999999999,
+        "mean_ms": 0.23741747000000005,
+        "min_ms": 0.135833,
+        "n": 100,
+        "p50_ms": 0.205875,
+        "p95_ms": 0.444709
+      },
+      "write_close_ms": {
+        "max_ms": 1.010042,
+        "mean_ms": 0.054192899999999995,
+        "min_ms": 0.025958000000000002,
+        "n": 100,
+        "p50_ms": 0.033374999999999995,
+        "p95_ms": 0.118292
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.36000000000000004,
+        "mean_ms": 0.13923460000000004,
+        "min_ms": 0.08337499999999999,
+        "n": 100,
+        "p50_ms": 0.133209,
+        "p95_ms": 0.176125
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.179459,
+        "mean_ms": 0.06232293999999999,
+        "min_ms": 0.050083,
+        "n": 100,
+        "p50_ms": 0.060709,
+        "p95_ms": 0.07216700000000001
+      },
+      "fresh_scan_ms": {
+        "max_ms": 33.238416,
+        "mean_ms": 17.827728729999993,
+        "min_ms": 16.76425,
+        "n": 100,
+        "p50_ms": 17.437041,
+        "p95_ms": 19.732375
+      },
+      "reused_scan_ms": {
+        "max_ms": 22.528125,
+        "mean_ms": 18.00623997,
+        "min_ms": 16.905666,
+        "n": 100,
+        "p50_ms": 17.904166,
+        "p95_ms": 19.33625
+      },
+      "stage_sizes": {
+        "db_bytes": 127627264,
+        "shm_bytes": 32768,
+        "wal_bytes": 3077672
+      },
+      "all_closed_sizes": {
+        "db_bytes": 128913408,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 44.02503178074592,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 1,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 24.641333000000003,
+        "mean_ms": 21.734466230000006,
+        "min_ms": 20.767709,
+        "n": 100,
+        "p50_ms": 21.504708,
+        "p95_ms": 23.363292
+      },
+      "capacity_pct": 95.69793714513787,
+      "capacity_ms": {
+        "max_ms": 28.722041,
+        "mean_ms": 20.749516619999994,
+        "min_ms": 19.792917,
+        "n": 100,
+        "p50_ms": 20.449915999999998,
+        "p95_ms": 21.909125000000003
+      },
+      "commit_ms": {
+        "max_ms": 4.264666999999999,
+        "mean_ms": 0.29115881,
+        "min_ms": 0.199209,
+        "n": 100,
+        "p50_ms": 0.24404099999999998,
+        "p95_ms": 0.31375000000000003
+      },
+      "write_close_ms": {
+        "max_ms": 0.490625,
+        "mean_ms": 0.29601463999999994,
+        "min_ms": 0.23658300000000002,
+        "n": 100,
+        "p50_ms": 0.282625,
+        "p95_ms": 0.380125
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.35933299999999996,
+        "mean_ms": 0.27118748,
+        "min_ms": 0.234917,
+        "n": 100,
+        "p50_ms": 0.26449999999999996,
+        "p95_ms": 0.328709
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.311833,
+        "mean_ms": 0.22674454999999993,
+        "min_ms": 0.176375,
+        "n": 100,
+        "p50_ms": 0.223625,
+        "p95_ms": 0.261792
+      },
+      "fresh_scan_ms": {
+        "max_ms": 17.536917,
+        "mean_ms": 16.58860292,
+        "min_ms": 16.248749999999998,
+        "n": 100,
+        "p50_ms": 16.467334,
+        "p95_ms": 17.221542
+      },
+      "reused_scan_ms": {
+        "max_ms": 17.789666999999998,
+        "mean_ms": 16.683928730000005,
+        "min_ms": 16.114041999999998,
+        "n": 100,
+        "p50_ms": 16.619875,
+        "p95_ms": 17.33825
+      },
+      "stage_sizes": {
+        "db_bytes": 128913408,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 128913408,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 46.00987157530023,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    },
+    {
+      "round": 2,
+      "rows": 9900,
+      "final_rows": 10000,
+      "payload_bytes": 12288,
+      "mode": "last_connection_closes_each_stage",
+      "stage": {
+        "max_ms": 73.034625,
+        "mean_ms": 26.299573310000014,
+        "min_ms": 21.435042000000003,
+        "n": 100,
+        "p50_ms": 23.100958000000002,
+        "p95_ms": 39.495792
+      },
+      "capacity_pct": 95.94347338319405,
+      "capacity_ms": {
+        "max_ms": 33.068332999999996,
+        "mean_ms": 21.524037550000006,
+        "min_ms": 19.952250000000003,
+        "n": 100,
+        "p50_ms": 20.836417,
+        "p95_ms": 24.983083999999998
+      },
+      "commit_ms": {
+        "max_ms": 0.445959,
+        "mean_ms": 0.24842666999999996,
+        "min_ms": 0.184959,
+        "n": 100,
+        "p50_ms": 0.24250000000000002,
+        "p95_ms": 0.308458
+      },
+      "write_close_ms": {
+        "max_ms": 1.7188329999999998,
+        "mean_ms": 0.33697955000000007,
+        "min_ms": 0.232,
+        "n": 100,
+        "p50_ms": 0.291666,
+        "p95_ms": 0.458417
+      },
+      "configured_connection_ms": {
+        "max_ms": 0.498416,
+        "mean_ms": 0.30116497,
+        "min_ms": 0.240041,
+        "n": 100,
+        "p50_ms": 0.292083,
+        "p95_ms": 0.380458
+      },
+      "readonly_close_ms": {
+        "max_ms": 0.34658300000000003,
+        "mean_ms": 0.24597499000000006,
+        "min_ms": 0.195166,
+        "n": 100,
+        "p50_ms": 0.24216600000000002,
+        "p95_ms": 0.283625
+      },
+      "fresh_scan_ms": {
+        "max_ms": 19.948959,
+        "mean_ms": 17.32047959,
+        "min_ms": 16.650542,
+        "n": 100,
+        "p50_ms": 17.186,
+        "p95_ms": 18.268833
+      },
+      "reused_scan_ms": {
+        "max_ms": 40.587625,
+        "mean_ms": 21.076074560000002,
+        "min_ms": 16.7295,
+        "n": 100,
+        "p50_ms": 20.488333,
+        "p95_ms": 25.949666
+      },
+      "stage_sizes": {
+        "db_bytes": 128913408,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "all_closed_sizes": {
+        "db_bytes": 128913408,
+        "shm_bytes": 0,
+        "wal_bytes": 0
+      },
+      "mean_serial_service_ceiling_reports_per_second": 38.02343057861571,
+      "settings": {
+        "busy_timeout_ms": 3000,
+        "cache_size": -2000,
+        "checkpoint_fullfsync": 0,
+        "fullfsync": 0,
+        "journal_mode": "wal",
+        "mmap_size": 0,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0",
+        "synchronous": 2,
+        "wal_autocheckpoint": 1000
+      },
+      "query_plan": [
+        "CO-ROUTINE (subquery-2)",
+        "COMPOUND QUERY",
+        "LEFT-MOST SUBQUERY",
+        "SCAN staged",
+        "UNION ALL",
+        "SCAN ready",
+        "SCAN (subquery-2)"
+      ]
+    }
+  ]
+}

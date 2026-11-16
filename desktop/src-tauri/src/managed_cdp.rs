@@ -926,10 +926,25 @@ impl ManagedSessionMonitor {
         })
     }
 
-    /// 喂一条采集连接事件；返回 true 表示平台登出或登录页停留超窗，
-    /// 按凭据过期流程处理（每个会话只报一次）。
+    /// 更新导航状态；仅显式登出立即通知，停留超窗由采集连接的截止时间判断。
     pub(crate) fn observe(&mut self, event: &Value) -> bool {
         self.detector.observe(event);
+        if !self.notified && self.detector.detected {
+            self.notified = true;
+            return true;
+        }
+        false
+    }
+
+    /// No timer remains armed after notification; the collector waits directly
+    /// on this deadline instead of depending on Runtime traffic or polling.
+    pub(crate) fn login_deadline(&self) -> Option<tokio::time::Instant> {
+        (!self.notified)
+            .then(|| self.detector.login_deadline())
+            .flatten()
+    }
+
+    pub(crate) fn expire_due(&mut self) -> bool {
         if !self.notified
             && (self.detector.detected
                 || self.detector.login_expired_at(tokio::time::Instant::now()))
@@ -1382,6 +1397,14 @@ mod tests {
             );
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn localhost_test_watch(
+    base_url: &str,
+    signals: tokio::sync::mpsc::UnboundedSender<crate::cdp::ManagedSignal>,
+) -> crate::cdp::ManagedWatch {
+    integration_tests::localhost_watch(base_url, signals)
 }
 
 #[cfg(test)]

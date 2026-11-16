@@ -378,11 +378,11 @@ sequenceDiagram
     participant SVC as services.browser_activity
     participant DB as MySQL
 
-    C-->>CDP: 页面地址变化 / 操作计数事件
-    CDP->>AGG: 增量（地址 + 计数，不含标题/元素/按键）
-    AGG->>AGG: 按账号聚合为固定批次
-    AGG->>OB: 落盘入队
-    OB->>API: POST 批量（batch_id + 增量）
+    C-->>CDP: 初始标签页地址 / 顶层文档或 SPA 地址变化
+    CDP->>AGG: 地址（含脱敏 query）+ 访问增量，无页面交互/快照
+    AGG->>OB: 按当前账号将地址观察落盘暂存
+    AGG->>OB: 每 30 秒聚合同会话暂存并原子转为固定批次
+    AGG->>API: POST 批量（batch_id + 增量）
     API->>SVC: 校验采集边界 schema
     SVC->>DB: 查 browser_activity_receipt（user_id, batch_id）
     alt 已确认过
@@ -393,8 +393,8 @@ sequenceDiagram
         SVC->>DB: 写 receipt + 审计
         SVC-->>API: 确认
     end
-    API-->>OB: 回执
-    OB->>OB: 收到确认后才删除本地批次
+    API-->>AGG: 回执
+    AGG->>OB: 收到匹配确认后才删除本地批次
     Note over OB,API: 断网 / 服务重启：批次留在 outbox 下次重发<br/>客户端重启或升级后依然补报
 ```
 

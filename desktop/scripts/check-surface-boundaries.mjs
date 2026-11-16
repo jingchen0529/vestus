@@ -142,13 +142,12 @@ assert(
   "Rust 仍注册页面自动化 IPC：run_page_script"
 );
 
-// 采集通道只允许固定计数脚本，不得驱动页面。托管 login guard 另走 managed_cdp；
-// 它不是给采集通道或前端增加任意脚本入口的例外。脚本读取内容由各自单元测试守。
+// 地址采集不注入页面脚本，也不订阅 Runtime 事件；托管固定 guard 是唯一例外。
 const rustCdp = rustProduction(read("src-tauri/src/cdp.rs"));
-// 按 collect 和 Collector 的代码块检查，覆盖 install/resume 等拆出的 helper，
-// 不吞掉本地 #[cfg(test)]，也不涉及另一条一次性浏览器生命周期控制连接。
+// 检查采集入口、实际 IO helper 和状态机；一次性生命周期控制连接不在其中。
 const collectSurface =
   rustBody(rustCdp, /\bpub\s+async\s+fn\s+collect\s*\(/) +
+  rustBody(rustCdp, /\basync\s+fn\s+collect_events\s*\(/) +
   rustBody(rustCdp, /\bimpl\s+Collector\b/);
 // 带前导引号匹配 CDP 方法名，才不会把 Page.navigatedWithinDocument 这类事件名
 // 当成 Page.navigate 命令。
@@ -159,6 +158,9 @@ for (const method of [
   '"Page.reload',
   '"Page.captureScreenshot',
   '"Page.printToPDF',
+  '"Runtime.enable',
+  '"Runtime.addBinding',
+  '"Runtime.bindingCalled',
   '"Runtime.evaluate',
   '"Runtime.callFunctionOn',
   '"Target.createTarget',
@@ -179,7 +181,7 @@ for (const method of [
 // compiled managed module (or any of its guard files) requires the whole unit.
 //
 // 2026-11-04 起托管防护回到**单连接模型**：采集连接本身就是唯一的 CDP 客户端，
-// 新 target 由它暂停、装完采集脚本与固定 guard 后再放行。独立的第二条防护连接
+// 新 target 暂停到地址订阅与托管固定 guard 就位后再放行。独立的第二条防护连接
 // 会让 window.open 弹窗停在 about:blank，已删除；这里只校验单连接上的边界。
 const managedPaths = [
   "src-tauri/src/managed_cdp.rs",
@@ -235,7 +237,7 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
     assert(!pattern.test(guard), `托管固定 guard 不得读取或执行：${capability}`);
   }
 
-  // 单连接模型：采集连接暂停所有新 target，装完两个固定脚本后才放行。
+  // 单连接模型：地址订阅与托管固定 guard 就位后才放行。
   const openingCommands = rustBody(rustCdp, /\bfn\s+opening_commands\s*\(/);
   assert(
     /"autoAttach"\s*:\s*true\b/.test(openingCommands) &&
@@ -247,20 +249,16 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
   const installBody = rustBody(rustCdp, /\bfn\s+install\s*\(/);
   const documentScripts = (installBody.match(/"Page\.addScriptToEvaluateOnNewDocument"/g) || []).length;
   assert(
-    documentScripts === 2,
-    "采集连接只允许安装采集脚本与固定 guard 两个文档脚本",
-  );
-  assert(
-    /"source"\s*:\s*COLLECTOR_SCRIPT\b/.test(installBody),
-    "采集脚本必须来自固定常量 COLLECTOR_SCRIPT",
+    documentScripts === 1,
+    "地址采集只允许安装托管固定 guard 一个文档脚本",
   );
   assert(
     /"source"\s*:\s*managed\s*\.\s*login_guard_script\b/.test(installBody),
     "托管 guard 必须由采集连接安装，且 source 只能来自 policy 生成的固定字段",
   );
   assert(
-    (installBody.match(/"source"\s*:/g) || []).length === 2,
-    "文档脚本只能来自固定常量或 policy 生成的 guard，不能使用前端动态 source",
+    (installBody.match(/"source"\s*:/g) || []).length === 1,
+    "文档脚本只能来自 policy 生成的 guard，不能使用前端动态 source",
   );
   const enableAt = installBody.indexOf('"Page.enable"');
   const guardAt = installBody.indexOf("managed.login_guard_script");

@@ -1,5 +1,6 @@
 """Durable activity uploads: retries, owner isolation, atomicity and compatibility."""
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from threading import Barrier
 from typing import Any
 
@@ -40,6 +41,71 @@ def test_v2_retries_do_not_repeat_counters_or_audit(api: Any) -> None:
     report["pages"][0]["visits"] = 4
     conflict = client.post("/api/user/browser-activity/v2", json=report, headers=_bearer(token))
     assert conflict.status_code == 409
+
+
+def test_url_only_v2_upload_defaults_and_retry_preserve_address_identity(api: Any) -> None:
+    from app.db.models import BrowserPageVisit, BrowserSession
+    client, module = api
+    admin, token, platform_id = _setup(client)
+    user_id = payload(client.get("/api/admin/users", headers=_bearer(admin)))["items"][0]["id"]
+    report = _report(
+        {"url": "https://ads.oceanengine.com/material", "urlParams": "advid=123456&token=%5BREDACTED%5D", "visits": 1},
+        platformId=platform_id, batchId="b" * 64, ownerUserId=user_id, protocolVersion=2,
+    )
+    first = client.post("/api/user/browser-activity/v2", json=report, headers=_bearer(token))
+    assert first.status_code == 200, first.text
+    retry = client.post("/api/user/browser-activity/v2", json=report, headers=_bearer(token))
+    assert retry.status_code == 200, retry.text
+    assert payload(retry)["batchId"] == report["batchId"]
+    assert payload(retry)["acknowledged"] is True
+    assert payload(retry)["newPages"] == 0
+    detail = payload(client.get(f"/api/admin/browser-sessions/{payload(first)['sessionId']}", headers=_bearer(admin)))
+    page = detail["pages"][0]
+    assert page["urlParams"] == "advid=123456&token=%5BREDACTED%5D"
+    exported = payload(client.get("/api/admin/browser-activity/export-advids", headers=_bearer(admin)))
+    assert exported["items"][0]["paramValue"] == "123456"
+    assert exported["items"][0]["totalVisits"] == 1
+    for key in ("clicks", "inputs", "submits", "scrolls", "dwellMs"):
+        assert page[key] == 0
+    assert page["inputSnapshot"] is None
+    assert page["submitSnapshot"] is None
+    with module.db.session() as db:
+        assert db.scalars(select(BrowserPageVisit)).one().visits == 1
+        assert db.scalars(select(BrowserSession)).one().visits == 1
+
+
+def test_url_only_v2_increment_does_not_clear_historical_interactions(api: Any) -> None:
+    client, _module = api
+    admin, token, platform_id = _setup(client)
+    user_id = payload(client.get("/api/admin/users", headers=_bearer(admin)))["items"][0]["id"]
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    old_page = {
+        **_page("https://ads.oceanengine.com/material", visits=2, clicks=3, inputs=4, submits=5, scrolls=6, dwellMs=700),
+        "urlParams": "advid=123456",
+        "inputSnapshot": {"campaign": ["historical"]}, "inputSnapshotAtMs": now_ms - 2000,
+        "submitSnapshot": {"quantity": ["2"]}, "submitSnapshotAtMs": now_ms - 1000,
+    }
+    report = _report(old_page, platformId=platform_id, batchId="c" * 64, ownerUserId=user_id,
+                     protocolVersion=2, reportedAtMs=now_ms)
+    first = client.post("/api/user/browser-activity/v2", json=report, headers=_bearer(token))
+    assert first.status_code == 200, first.text
+    session_id = payload(first)["sessionId"]
+    before = payload(client.get(f"/api/admin/browser-sessions/{session_id}", headers=_bearer(admin)))["pages"][0]
+    new_report = {**report, "batchId": "d" * 64, "pages": [
+        {"url": old_page["url"], "urlParams": "advid=123456", "visits": 1},
+    ]}
+    response = client.post("/api/user/browser-activity/v2", json=new_report, headers=_bearer(token))
+    assert response.status_code == 200, response.text
+    assert payload(response)["newPages"] == 0
+    after = payload(client.get(f"/api/admin/browser-sessions/{session_id}", headers=_bearer(admin)))["pages"][0]
+    assert after["visits"] == 3
+    assert after["urlParams"] == "advid=123456"
+    for key in ("clicks", "inputs", "submits", "scrolls", "dwellMs", "inputSnapshot", "submitSnapshot", "inputSnapshotAt", "submitSnapshotAt"):
+        assert after[key] == before[key]
+    retry = client.post("/api/user/browser-activity/v2", json=report, headers=_bearer(token))
+    assert retry.status_code == 200, retry.text
+    assert payload(retry)["acknowledged"] is True
+    assert payload(retry)["newPages"] == 0
 
 
 def test_v2_rejects_foreign_owner_and_requires_protocol_identity(api: Any) -> None:

@@ -818,6 +818,22 @@ test("浏览器会话地址明细独立展示参数且折叠快照不预渲染",
   assert.doesNotMatch(emptyMeta, /地址参数|客户输入快照|提交内容快照/);
 });
 
+test("地址专用新记录保留参数展示且不生成历史快照入口", async () => {
+  const { PageAddress } = await server.ssrLoadModule(
+    "/src/components/activity/session-detail-modal.tsx",
+  );
+  const html = renderToStaticMarkup(createElement(PageAddress, {
+    pageItem: {
+      id: 3, url: "https://ads.oceanengine.com/material", urlParams: "advid=123456",
+      visits: 1, clicks: 0, inputs: 0, submits: 0, scrolls: 0, dwellMs: 0,
+    },
+  }));
+  assert.match(html, /https:\/\/ads\.oceanengine\.com\/material/);
+  assert.match(html, /地址参数/);
+  assert.match(html, /advid=123456/);
+  assert.doesNotMatch(html, /客户输入快照|提交内容快照/);
+});
+
 test("前台停留时长最多显示两级单位", async () => {
   const { formatDuration } = await server.ssrLoadModule("/src/lib/utils.ts");
 

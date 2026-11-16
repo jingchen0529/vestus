@@ -8,7 +8,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runControlTest } from "./test-browser-control.mjs";
 
-const passing = "running 1 test\ntest cdp::control_tests::target_commands_work_against_a_real_browser ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.01s\n";
+const passing = "running 2 tests\ntest cdp::control_tests::target_commands_work_against_a_real_browser ... ok\ntest cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.01s\n";
 
 async function exercise(t, { output = passing, code = 0, signal = null, error, throws = false, chrome = process.execPath } = {}) {
   const root = mkdtempSync(join(tmpdir(), "vestus-control-runner-"));
@@ -55,7 +55,7 @@ test("missing cargo error followed by close cannot pass and is recorded and prin
   assert.match(run.result.error, /spawn cargo ENOENT/);
 });
 
-test("one passing exact real-browser test succeeds with locked serial ignored-test selection", async (t) => {
+test("both named real-browser tests succeed with locked serial ignored-test selection", async (t) => {
   const run = await exercise(t);
   assert.equal(run.status, 0);
   assert.equal(run.result.passed, true);
@@ -63,9 +63,8 @@ test("one passing exact real-browser test succeeds with locked serial ignored-te
   assert.equal(run.result.signal, null);
   assert.equal(run.invocation[0], "cargo");
   assert.deepEqual(run.invocation[1], [
-    "test", "--locked", "--lib",
-    "cdp::control_tests::target_commands_work_against_a_real_browser",
-    "--", "--ignored", "--exact", "--nocapture", "--test-threads=1",
+    "test", "--locked", "--lib", "cdp::control_tests::",
+    "--", "--ignored", "--test-threads=1",
   ]);
   assert.equal(run.invocation[2].cwd, fileURLToPath(new URL("../src-tauri", import.meta.url)));
   assert.equal(run.invocation[2].env.VESTUS_CONTROL_CHROMIUM, process.execPath);
@@ -81,7 +80,9 @@ test("one passing exact real-browser test succeeds with locked serial ignored-te
 for (const [name, options] of [
   ["zero tests selected", { output: "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out;\n" }],
   ["all ignored", { output: "running 1 test\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 42 filtered out;\n" }],
-  ["unexpected extra passing test", { output: passing.replace("1 passed", "2 passed") }],
+  ["unexpected extra passing test", { output: passing.replace("2 passed", "3 passed") }],
+  ["missing URL-only test", { output: passing.replace(/^test cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser \.\.\. ok\n/m, "") }],
+  ["renamed URL-only test", { output: passing.replace("url_only_collection_and_managed_guard_against_a_real_browser", "unrelated_real_browser_test") }],
   ["passing plus ignored", { output: passing.replace("0 ignored", "1 ignored") }],
   ["no test summary", { output: "cargo diagnostics only\n" }],
   ["nonzero cargo exit", { code: 101 }],
@@ -96,6 +97,12 @@ for (const [name, options] of [
     assert.equal(run.result.signal, options.signal ?? null);
   });
 }
+
+test("control gate requires the named URL-only acceptance test as well as lifecycle control", async (t) => {
+  const run = await exercise(t, { output: passing.replace(/^test cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser \.\.\. ok\n/m, "") });
+  assert.equal(run.status, 1, "a forged count without the address-only test must not pass");
+  assert.match(run.stderr, /URL-only|url_only|命名/);
+});
 
 test("synchronous spawn errors are also recorded as failure", async (t) => {
   const run = await exercise(t, { throws: true, error: new Error("cargo unavailable") });

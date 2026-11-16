@@ -59,10 +59,9 @@ pub(crate) fn logout_guard_script(target_url: &str) -> Option<String> {
   Object.defineProperty(window, '__guard', { value: true });
 })();
 `,
-  // 单连接模型：采集连接暂停新 target，装完采集脚本与固定 guard 后放行。
+  // 单连接模型：订阅地址，安装托管固定 guard 后放行。
   [cdpPath]: `
 struct ManagedWatch { login_guard_script: String }
-const COLLECTOR_SCRIPT: &str = "collector";
 pub enum ManagedSignal { Expired, ConnectionLost }
 struct Collector { managed: Option<ManagedWatch> }
 pub async fn collect(managed: Option<ManagedWatch>) {
@@ -77,10 +76,7 @@ impl Collector {
     fn install(&mut self, session_id: &str) -> Vec<String> {
         let mut commands = vec![
             self.command(Some(session_id), "Page.enable", json!({})),
-            self.command(Some(session_id), "Runtime.enable", json!({})),
-            self.command(Some(session_id), "Runtime.addBinding", json!({"name": BINDING_NAME})),
-            self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
-                json!({"source": COLLECTOR_SCRIPT})),
+            self.command(Some(session_id), "Page.getFrameTree", json!({})),
         ];
         if let Some(managed) = &self.managed {
             commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
@@ -257,12 +253,12 @@ for (const [name, from, to, expected] of [
 }
 
 for (const [name, from, to, expected] of [
-  ["dynamic install source", '"source": managed.login_guard_script', '"source": frontend.script', /只能来自固定常量或 policy|policy 生成的固定字段/],
-  ["missing guard install", '"source": managed.login_guard_script', '"source": COLLECTOR_SCRIPT', /policy 生成的固定字段/],
-  ["a third document script", 'commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', /只允许安装采集脚本与固定 guard/],
+  ["dynamic install source", '"source": managed.login_guard_script', '"source": frontend.script', /只能来自 policy|policy 生成的固定字段/],
+  ["missing guard install", '"source": managed.login_guard_script', '"source": arbitrary_script', /policy 生成的固定字段/],
+  ["an extra document script", 'commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', /只允许安装托管固定 guard/],
   ["install before Page.enable", '"Page.enable"', '"Page.enableLater"', /Page\.enable 之后/],
   ["no debugger wait", '"waitForDebuggerOnStart": true', '"waitForDebuggerOnStart": false', /必须暂停新 target/],
-  ["self-contained guard script", 'const COLLECTOR_SCRIPT: &str = "collector";', 'const COLLECTOR_SCRIPT: &str = "collector";\nconst RAW: &str = include_str!("managed_cdp/login_guard.js");', /只能在 managed_cdp 的 policy 里生成/],
+  ["self-contained guard script", "struct ManagedWatch { login_guard_script: String }", 'struct ManagedWatch { login_guard_script: String }\nconst RAW: &str = include_str!("managed_cdp/login_guard.js");', /只能在 managed_cdp 的 policy 里生成/],
   ["collapsed failure signals", "pub enum ManagedSignal { Expired, ConnectionLost }", "pub enum ManagedSignal { Expired }", /必须区分凭据过期与防护连接断开/],
 ]) {
   test(`managed boundary rejects ${name}`, () => {
@@ -297,6 +293,21 @@ for (const method of ["Runtime.evaluate", "Runtime.callFunctionOn", "Input.dispa
     }, { managed: true }), /采集通道拿到了只读采集用不着的能力/);
   });
 }
+
+for (const method of ["Runtime.enable", "Runtime.addBinding", "Runtime.bindingCalled"]) {
+  test(`address-only collection rejects ${method}`, () => {
+    fails(runChecker(change(cdpPath,
+      'self.command(Some(session_id), "Page.enable", json!({})),',
+      `self.command(Some(session_id), "Page.enable", json!({})),\n            self.command(Some(session_id), "${method}", json!({})),`,
+    ), { managed: true }), /只读采集用不着的能力/);
+  });
+}
+
+test("collector I/O helper cannot bypass the read-only capability boundary", () => {
+  const helper = '\nasync fn collect_events() { send("Runtime.enable"); }\n';
+  fails(runChecker({ [cdpPath]: managedSources[cdpPath] + helper }, { managed: true }),
+    /只读采集用不着的能力/);
+});
 
 for (const path of [policyPath, guardPath]) {
   test(`partial managed fixture cannot omit ${path}`, () => {

@@ -1,5 +1,13 @@
 # 浏览行为日志可靠投递与更新兼容
 
+## 当前采集边界
+
+新客户端只记录顶层标签页的初始地址、整文档导航和 SPA 地址变化，以及访问次数和投递所需的会话/设备/时间元数据。地址保留已脱敏的查询参数，`advid` 继续用于广告账户访问索引；iframe 地址不算标签页访问。
+
+不再采集点击、input/change、提交、滚动、停留时长或表单快照。不向业务页面安装活动采集脚本、binding 或心跳，不启用 Runtime console 事件订阅。托管固定登录防护仍安装在新标签页放行前，其中交互监听只用于拦截登录页操作，不读取表单值；登录页停留判定按截止时间触发，不依赖采集心跳。
+
+升级前已持久化的 staged 报告仍可包含原来的参数、计数与脱敏快照，转批时保留原内容。已准备的 ready 批次按原 JSON 与 batchId 重发。服务端和历史管理页面继续兼容旧数据，新地址记录的零/空增量不会清空历史计数或快照。本次地址采集改动不增加数据库迁移、不降低队列的 FULL 持久性；同批另将随包 Chromium 固定到 CfT Stable 157.0.8103.78，验证记录见 [内核升级验证](../.scratch/cft-stable-upgrade/verification.md)。
+
 ## 投递行为
 
 CDP 事件送到客户端后，先写入应用本地数据目录下的 `activity-outbox/queue.sqlite3`。队列按服务器、客户端账号 ID 和 profileKey 隔离，不保存登录 token。SQLite 随客户端打包，客户无需安装数据库。
@@ -12,9 +20,9 @@ CDP 事件送到客户端后，先写入应用本地数据目录下的 `activity
 
 ## 分批更新顺序
 
-推荐先升级数据库与服务端，再逐步升级客户端：
+已有 v2 服务端无需为本次地址专用采集升级数据库。以下顺序适用于首次部署可靠投递能力：
 
-1. 备份数据库，在正常部署流程中执行 `alembic upgrade head`。本次增量迁移为 `0007`，只增加 `browser_activity_receipt`，保留历史活动数据。
+1. 备份数据库，在正常部署流程中执行 `alembic upgrade head`。收据表最初由迁移 `0007` 引入；它不是本次新增迁移。
 2. 部署同时支持旧接口和 v2 接口的服务端。
 3. 客户端逐步升级，核对活动上报和本地错误诊断。
 
@@ -32,7 +40,7 @@ v2 收据的 `payload_hash` 是服务端对 **Pydantic 校验、默认值补全�
 
 本地队列格式有 `user_version`。不认识的版本会拒绝读写并保留原文件，不会自动删库重建。未来修改暂存载荷或协议字段时，必须设计队列迁移/协议版本兼容，不能仅修改结构体后沿用原格式版本。降级到本次改动以前的客户端会暂时停止消费新队列，重新升级后仍可补报原账号的数据。
 
-本次不修改客户端更新策略，也不更新随包 Chromium 版本。跨平台测试在开发/CI 的测试环境运行，不会给客户机器安装或升级浏览器。
+本次不修改客户端自动更新策略。随包内核升级与地址采集分别验证，跨平台测试在开发/CI 的测试环境运行；尚未发布的新资源不会自动替换客户已安装的浏览器。
 
 ## 持久化边界与诊断
 
@@ -40,15 +48,22 @@ v2 收据的 `payload_hash` 是服务端对 **Pydantic 校验、默认值补全�
 - 新事件入队时，暂存与待发记录合计限额为 10,000 条、128 MiB 载荷。已有记录转批可使用有界额外空间，避免满队列因计数/停留时间拆分而无法发送：单次最多转换 500 条来源，输出条数不超过来源的 8 倍，字节不超过来源的 8 倍加每条 1 KiB 元数据余量。同一账号已有待发批次时先发送，不继续转批；不同账号可独立转批。极端情况下队列不超过 80,000 条、1 GiB 加约 9.8 MiB 元数据载荷（不含 SQLite 文件开销），超过正常入队限额期间拒绝新增事件，已存记录仍可补发并释放空间。满额或磁盘不可写时保留原队列，拒绝新写入并输出诊断，不能承诺无限离线保留。诊断包括 `activity queue unavailable`、`activity observation could not be persisted`、`activity delivery deferred`。
 - 收到 404、网络错误、服务端错误、缺失/不匹配 ACK 时，不删除待发批次。持续错误需修复服务端或部署兼容版本，不能通过清队列掩盖。
 - 不在本次范围：CDP 断线重连、超长期离线记录的时间归属策略、逐事件历史回放。服务端既有时间校验会对超出 7 天过去/5 分钟未来的时间戳做保护处理。
-- 本机账号隔离不等于操作系统用户隔离。队列只存现有采集边界允许的地址、计数、参数和脱敏快照；需要硬隔离时使用独立系统账号。
+- 首次接管时，frame tree 返回前的 SPA 地址候选最多暂存 64 条；确认主 frame 后按顺序记录匹配地址，iframe 候选丢弃。超过上限移除最早候选并输出一次无地址内容的诊断，这种极端情况下可能漏记早期访问，不承诺完整操作回放。
+- 登录截止时间优先处理已到达的导航/断连消息，再判断超时，避免调度延迟后误报已跳离的登录页。若 CDP 消息持续不断地就绪，截止时间通知可能推迟；当前不订阅 Runtime 高频日志，没有为异常事件洪泛新增限流。
+- 本机账号隔离不等于操作系统用户隔离。新记录只含地址、脱敏参数和访问元数据；旧队列仍可能含此前允许的计数与脱敏快照。需要硬隔离时使用独立系统账号。
 
 ## 验证
 
 ```bash
-python3 -m pytest -q tests/test_browser_activity_api.py tests/test_browser_activity_v2.py
-cd desktop/src-tauri
-cargo test --lib activity
-cargo test --all-targets
+python3 -m pytest -q tests/api/test_browser_activity_api.py tests/api/test_browser_activity_v2.py tests/api/test_activity_identity_snapshot.py
+npm --prefix desktop run build
+npm --prefix desktop run check:surfaces
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib activity -- --test-threads=1
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib cdp -- --test-threads=1
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- --test-threads=1
+# 显式真实浏览器门禁使用随包 Chromium 和新 profile，不接入已有用户浏览器。
+# 设置 VESTUS_CONTROL_CHROMIUM 为随包可执行文件绝对路径后：
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser -- --ignored --exact --test-threads=1
 ```
 
 测试覆盖：同批次重试、同 ID 内容冲突、错误账号、并发首次上报/累计、事务回滚、迁移与旧客户端兼容、本地队列重开、原子转批、响应丢失后原样重发、账号切换、错误 ACK 和旧服务端 404、容量和未知格式保护。远程 Windows/Linux 发布验证与真实 MySQL 部署验收仍以各自环境结果为准。

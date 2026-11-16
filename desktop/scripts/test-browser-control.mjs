@@ -6,10 +6,13 @@ import { fileURLToPath } from "node:url";
 import { chromiumExecutable } from "./chromium-resource.mjs";
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const args = [
-  "test", "--locked", "--lib",
+const requiredTests = [
   "cdp::control_tests::target_commands_work_against_a_real_browser",
-  "--", "--ignored", "--exact", "--nocapture", "--test-threads=1",
+  "cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser",
+];
+const args = [
+  "test", "--locked", "--lib", "cdp::control_tests::",
+  "--", "--ignored", "--test-threads=1",
 ];
 
 // Keep the subprocess boundary injectable: Node regressions do not launch Chromium or Rust.
@@ -69,14 +72,19 @@ export async function runControlTest({
     recordError(error);
   }
   // A removed/renamed/ignored test must never turn this release gate green.
-  const summaries = [...`${capturedOut}\n${capturedErr}`.matchAll(
+  const output = `${capturedOut}\n${capturedErr}`;
+  const summaries = [...output.matchAll(
     /^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;/gm,
   )];
+  const testNames = [...output.matchAll(/^test (\S+) \.\.\. ok$/gm)].map((match) => match[1]);
   const ran = summaries.length === 1 && summaries[0][1] === "ok"
-    && summaries[0][2] === "1" && summaries[0][3] === "0" && summaries[0][4] === "0";
+    && Number(summaries[0][2]) === requiredTests.length
+    && summaries[0][3] === "0" && summaries[0][4] === "0"
+    && testNames.length === requiredTests.length
+    && requiredTests.every((name) => testNames.includes(name));
   const passed = !failure && exitCode === 0 && !signal && ran;
   if (!passed && !failure) {
-    const message = "Control gate requires cargo exit 0 without a signal and exactly 1 passing real-browser test, 0 failed, 0 ignored; refusing a false success.\n";
+    const message = "Control gate requires cargo exit 0 without a signal and exactly 2 named passing real-browser tests (lifecycle and URL-only collection/guard), 0 failed, 0 ignored; refusing a false success.\n";
     appendFileSync(logPath, message);
     stderr.write(message);
   }

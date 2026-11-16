@@ -266,7 +266,20 @@ impl Fixture {
                     else {
                         return;
                     };
-                    let body = "<!doctype html><title>Vestus control fixture</title><p>Local test only</p>";
+                    let body = r#"<!doctype html><title>Vestus local collector fixture</title>
+                        <form><input id="input" name="quantity"><input id="checkbox" type="checkbox"><button type="submit">submit</button></form>
+                        <iframe id="child" src="/frame"></iframe><div style="height:5000px">Local only</div>
+                        <script>
+                        window.fixtureSeen = {input:0,change:0,click:0,submit:0};
+                        for (const kind of Object.keys(fixtureSeen)) document.addEventListener(kind, event => {
+                          fixtureSeen[kind]++; if (kind === 'submit') event.preventDefault();
+                        });
+                        </script>"#;
+                    let body = if String::from_utf8_lossy(&request).starts_with("GET /frame ") {
+                        "<!doctype html><title>Local child</title><p>iframe</p>"
+                    } else {
+                        body
+                    };
                     let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                     let _ = stream.write_all(response.as_bytes()).await;
                 });
@@ -282,7 +295,21 @@ impl Fixture {
     }
 
     async fn launch(&mut self, executable: &std::path::Path, url: &str) -> DevToolsEndpoint {
+        self.launch_with_mode(executable, url, false).await
+    }
+
+    async fn launch_with_mode(
+        &mut self,
+        executable: &std::path::Path,
+        url: &str,
+        headless: bool,
+    ) -> DevToolsEndpoint {
         let mut command = Command::new(executable);
+        if headless {
+            // Collection acceptance must not steal focus or lose its tab to
+            // incidental desktop interaction during the 61-second idle check.
+            command.arg("--headless=new");
+        }
         command
             .arg(format!("--user-data-dir={}", self.root.display()))
             .args([
@@ -349,6 +376,243 @@ impl Fixture {
             .await;
         }
     }
+}
+
+async fn test_page_command(
+    endpoint: &DevToolsEndpoint,
+    target: &str,
+    method: &str,
+    params: Value,
+) -> Value {
+    let mut socket = connect(endpoint).await.unwrap();
+    socket
+        .send(Message::Text(
+            json!({"id":1,"method":"Target.attachToTarget","params":{
+                "targetId":target,"flatten":true
+            }})
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let session = loop {
+        let Some(Ok(Message::Text(text))) = socket.next().await else {
+            panic!("attach reply missing")
+        };
+        let reply: Value = serde_json::from_str(&text).unwrap();
+        if reply["id"] == 1 {
+            assert!(reply.get("error").is_none(), "test attach failed: {reply}");
+            break reply["result"]["sessionId"].as_str().unwrap().to_string();
+        }
+    };
+    socket
+        .send(Message::Text(
+            json!({"id":2,"sessionId":session,"method":method,"params":params})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let result = loop {
+        let Some(Ok(Message::Text(text))) = socket.next().await else {
+            panic!("page reply missing")
+        };
+        let reply: Value = serde_json::from_str(&text).unwrap();
+        if reply["id"] == 2 {
+            assert!(reply.get("error").is_none(), "test command failed: {reply}");
+            break reply["result"].clone();
+        }
+    };
+    let _ = socket.close(None).await;
+    result
+}
+
+async fn test_evaluate(endpoint: &DevToolsEndpoint, target: &str, expression: &str) -> Value {
+    let result = timeout(Duration::from_secs(5), test_page_command(endpoint, target, "Runtime.evaluate",
+        json!({"expression":expression,"returnByValue":true,"awaitPromise":true,"userGesture":true})))
+        .await.expect("local test evaluation deadline");
+    assert!(
+        result.get("exceptionDetails").is_none(),
+        "local test script failed: {result}"
+    );
+    result["result"]["value"].clone()
+}
+
+fn assert_url_only(report: &PageReport) {
+    assert_eq!(report.visits, 1);
+    assert_eq!(
+        (
+            report.clicks,
+            report.inputs,
+            report.submits,
+            report.scrolls,
+            report.dwell_ms
+        ),
+        (0, 0, 0, 0, 0)
+    );
+    assert!(report.input_snapshot.is_none() && report.submit_snapshot.is_none());
+    assert_eq!(
+        (report.input_snapshot_at_ms, report.submit_snapshot_at_ms),
+        (0, 0)
+    );
+}
+
+async fn expected_report(
+    reports: &mut tokio::sync::mpsc::UnboundedReceiver<PageReport>,
+    url: &str,
+    params: Option<&str>,
+) {
+    let report = timeout(Duration::from_secs(10), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_url_only(&report);
+    assert_eq!(report.url, url);
+    assert_eq!(report.url_params.as_deref(), params);
+    eprintln!("URL-only report verified: {report:?}");
+}
+
+async fn no_reports(
+    reports: &mut tokio::sync::mpsc::UnboundedReceiver<PageReport>,
+    budget: Duration,
+    phase: &str,
+) {
+    assert!(
+        timeout(budget, reports.recv()).await.is_err(),
+        "unexpected report during {phase}"
+    );
+    eprintln!("Zero reports verified during {phase} ({budget:?})");
+}
+
+async fn close_fixture(fixture: &mut Fixture, endpoint: &DevToolsEndpoint) {
+    assert_eq!(request_exit(endpoint).await, Ok(()));
+    let deadline = TokioInstant::now() + Duration::from_secs(10);
+    while !fixture.process.as_ref().unwrap().has_exited().unwrap() {
+        assert!(
+            TokioInstant::now() < deadline,
+            "browser did not shut down cleanly"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    fixture
+        .process
+        .as_mut()
+        .unwrap()
+        .terminate()
+        .expect("verify owned process tree shutdown");
+    eprintln!("Browser.close completed; isolated process tree verified stopped");
+}
+
+/// Real production collect stream: the driver connection never subscribes to
+/// Runtime and only controls synthetic loopback pages in a new private profile.
+#[test]
+#[ignore = "requires bundled VESTUS_CONTROL_CHROMIUM; opens isolated real browser windows"]
+fn url_only_collection_and_managed_guard_against_a_real_browser() {
+    let executable = PathBuf::from(
+        std::env::var_os("VESTUS_CONTROL_CHROMIUM").expect("bundled Chromium required"),
+    );
+    assert!(executable.is_absolute() && executable.is_file());
+    crate::rt::runtime().block_on(async {
+        let mut fixture = Fixture::new().await;
+        let base = fixture.url.clone();
+        let initial = format!("{base}first?advid=42&token=fixture#top");
+        let endpoint = fixture.launch_with_mode(&executable, &initial, true).await;
+        let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
+        assert_eq!(test_evaluate(&endpoint, &target, "new Promise(resolve => document.readyState === 'complete' ? resolve(true) : addEventListener('load', () => resolve(true), {once:true}))").await, true);
+        let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(collect(endpoint.clone(), sink, None));
+        expected_report(&mut reports, &format!("{base}first"), Some("advid=42&token=%5BREDACTED%5D")).await;
+        no_reports(&mut reports, Duration::from_millis(200), "initial duplicate seed").await;
+        assert_eq!(test_evaluate(&endpoint, &target,
+            "({binding:typeof window.__vestusReportActivity,guard:Object.hasOwn(window,'__vestusManagedLoginGuard')})").await,
+            json!({"binding":"undefined","guard":false}));
+        let ordinary = test_evaluate(&endpoint, &target, "(() => {
+            input.value='2'; input.dispatchEvent(new InputEvent('input',{bubbles:true,cancelable:true}));
+            checkbox.click(); checkbox.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+            document.querySelector('form').requestSubmit(); window.scrollTo(0,1500);
+            return {checked:checkbox.checked, inputSeen:fixtureSeen.input, changeSeen:fixtureSeen.change, submitSeen:fixtureSeen.submit,scrollY};
+        })()").await;
+        assert_eq!(ordinary["checked"], true);
+        assert_eq!(ordinary["inputSeen"], 2, "text input plus native checkbox input");
+        assert!(ordinary["changeSeen"].as_u64().unwrap() >= 1);
+        assert_eq!(ordinary["submitSeen"], 1);
+        assert!(ordinary["scrollY"].as_i64().unwrap() > 0);
+        no_reports(&mut reports, Duration::from_secs(61), "checkbox/input/submit/scroll and idle beyond legacy heartbeat").await;
+
+        test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}regular?advid=43")})).await;
+        expected_report(&mut reports, &format!("{base}regular"), Some("advid=43")).await;
+        test_evaluate(&endpoint, &target, "history.pushState({},'', '/spa?advid=44'); true").await;
+        expected_report(&mut reports, &format!("{base}spa"), Some("advid=44")).await;
+        test_evaluate(&endpoint, &target, "child.contentWindow.history.pushState({},'', '/iframe-spa'); child.src='/iframe-nav'; true").await;
+        no_reports(&mut reports, Duration::from_millis(400), "iframe SPA and full navigation").await;
+        test_evaluate(&endpoint, &target, "window.open('/popup?advid=45','fixture-popup','width=400,height=300'); true").await;
+        expected_report(&mut reports, &format!("{base}popup"), Some("advid=45")).await;
+        control_command(&endpoint, "Target.createTarget", json!({"url":format!("{base}new-tab?advid=46")})).await.unwrap();
+        expected_report(&mut reports, &format!("{base}new-tab"), Some("advid=46")).await;
+        test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}login")})).await;
+        expected_report(&mut reports, &format!("{base}login"), None).await;
+        assert_eq!(test_evaluate(&endpoint, &target, "({inert:document.documentElement.inert,guard:Object.hasOwn(window,'__vestusManagedLoginGuard'),binding:typeof window.__vestusReportActivity})").await,
+            json!({"inert":false,"guard":false,"binding":"undefined"}));
+        no_reports(&mut reports, Duration::from_millis(200), "ordinary login and popup/new tab duplicates").await;
+        close_fixture(&mut fixture, &endpoint).await;
+        let result = timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        assert!(matches!(result, Ok(()) | Err(CdpError::Transport(_))), "collector stopped after verified browser exit: {result:?}");
+        eprintln!("Collector exit after Browser.close: {result:?}");
+
+        let mut fixture = Fixture::new().await;
+        let base = fixture.url.clone();
+        let endpoint = fixture.launch_with_mode(&executable, "about:blank", true).await;
+        let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));
+        // about:blank itself never reports. Wait until the collecting session has
+        // attached before navigating the first real document.
+        let mut ready = false;
+        for _ in 0..100 {
+            let targets = control_command(&endpoint,"Target.getTargets",json!({})).await.unwrap();
+            ready = targets["targetInfos"].as_array().unwrap().iter().any(|t| t["targetId"] == target && t["attached"] == true);
+            if ready { break }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(ready, "collector attached to isolated blank target");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}workbench?advid=51")})).await;
+        expected_report(&mut reports, &format!("{base}workbench"), Some("advid=51")).await;
+        assert_eq!(test_evaluate(&endpoint, &target, "({guard:Object.hasOwn(window,'__vestusManagedLoginGuard'),inert:document.documentElement.inert,binding:typeof window.__vestusReportActivity})").await,
+            json!({"guard":true,"inert":false,"binding":"undefined"}));
+        test_evaluate(&endpoint, &target, "window.open('/popup?advid=52','managed-popup','width=400,height=300'); true").await;
+        expected_report(&mut reports, &format!("{base}popup"), Some("advid=52")).await;
+        test_evaluate(&endpoint, &target, "history.pushState({},'', '/login'); true").await;
+        expected_report(&mut reports, &format!("{base}login"), None).await;
+        let locked = test_evaluate(&endpoint, &target, "(() => {
+            const i=new InputEvent('input',{bubbles:true,cancelable:true});input.dispatchEvent(i);
+            const c=new Event('change',{bubbles:true,cancelable:true});checkbox.dispatchEvent(c);
+            document.querySelector('form').requestSubmit();
+            return {inert:document.documentElement.inert,opacity:document.documentElement.style.opacity,
+                inputBlocked:i.defaultPrevented,changeBlocked:c.defaultPrevented,seen:fixtureSeen,binding:typeof window.__vestusReportActivity};
+        })()").await;
+        assert_eq!(locked, json!({"inert":true,"opacity":"0","inputBlocked":true,"changeBlocked":true,
+            "seen":{"input":0,"change":0,"click":0,"submit":0},"binding":"undefined"}));
+        test_evaluate(&endpoint, &target, "history.replaceState({},'', '/workbench'); true").await;
+        expected_report(&mut reports, &format!("{base}workbench"), None).await;
+        assert_eq!(test_evaluate(&endpoint, &target, "document.documentElement.inert").await, false);
+        assert!(timeout(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(200), signal_rx.recv()).await.is_err(), "self-healed login cancels deadline");
+        test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}login")})).await;
+        expected_report(&mut reports, &format!("{base}login"), None).await;
+        assert!(matches!(timeout(crate::managed_cdp::LOGIN_SETTLE + Duration::from_secs(1), signal_rx.recv()).await,
+            Ok(Some(ManagedSignal::Expired))), "quiet real login expires without Runtime subscription");
+        no_reports(&mut reports, Duration::from_millis(200), "managed guard interactions and quiet login").await;
+        assert!(timeout(Duration::from_millis(100), signal_rx.recv()).await.is_err(), "one-shot Expired");
+        close_fixture(&mut fixture, &endpoint).await;
+        let result = timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        assert!(matches!(result, Ok(()) | Err(CdpError::Transport(_))), "collector stopped after verified browser exit: {result:?}");
+        eprintln!("Collector exit after Browser.close: {result:?}");
+        assert!(matches!(signal_rx.recv().await, Some(ManagedSignal::ConnectionLost)));
+        assert!(signal_rx.recv().await.is_none());
+        eprintln!("Real URL-only and managed-guard acceptance completed");
+    });
 }
 
 /// Explicit acceptance gate: never silently passes because system Chrome is absent.

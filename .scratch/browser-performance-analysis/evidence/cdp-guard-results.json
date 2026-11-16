@@ -1,0 +1,178 @@
+{
+  "version": {
+    "protocolVersion": "1.3",
+    "product": "Chrome/153.0.8010.12",
+    "revision": "@971a7443b0c9b0a9b2860529b33331b76077ec62",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+    "jsVersion": "15.3.76.4"
+  },
+  "methodology": "Two independent fresh-page rounds in bundled headless Chromium, localhost fixtures only. Runtime console=2000 simple console calls; binding tested via actual CDP. Guard origin substituted to localhost; code otherwise unchanged. Auto-attach sends six commands without waiting each receipt, emulating Rust send order; timings include fixture load and harness polling, NOT customer INP.",
+  "results": [
+    {
+      "kind": "runtime",
+      "round": 1,
+      "enabled": false,
+      "bindingType": "function",
+      "consoleLoopMs": 6.199999988079071,
+      "bindings": 1,
+      "console": 0,
+      "methods": {
+        "Runtime.bindingCalled": 1
+      }
+    },
+    {
+      "kind": "runtime",
+      "round": 1,
+      "enabled": true,
+      "bindingType": "function",
+      "consoleLoopMs": 21.399999976158142,
+      "bindings": 1,
+      "console": 2000,
+      "methods": {
+        "Runtime.executionContextCreated": 1,
+        "Runtime.bindingCalled": 1,
+        "Runtime.consoleAPICalled": 2000
+      }
+    },
+    {
+      "kind": "guard-business",
+      "round": 1,
+      "enabled": false,
+      "clickSequenceP50Ms": 0.0010000002384185792,
+      "clickSequenceP95Ms": 0.0030000001192092896,
+      "maxMs": 0.006000000238418579,
+      "rootInert": false
+    },
+    {
+      "kind": "guard-business",
+      "round": 1,
+      "enabled": true,
+      "clickSequenceP50Ms": 0.006000000238418579,
+      "clickSequenceP95Ms": 0.0070000004768371584,
+      "maxMs": 0.01699999988079071,
+      "rootInert": false
+    },
+    {
+      "kind": "guard-login",
+      "round": 1,
+      "rootInert": true,
+      "opacity": "0",
+      "clickDelivered": false,
+      "defaultPrevented": true
+    },
+    {
+      "kind": "guard-release",
+      "round": 1,
+      "rootInert": false,
+      "opacity": ""
+    },
+    {
+      "kind": "auto-attach",
+      "round": 1,
+      "openedAndReadyMs": 32.130499999999984,
+      "newAttachmentsFor100SamePageClicks": 0,
+      "ownInstall": {
+        "targetId": "0E1FC92572F506E31A54C35C649CB318",
+        "type": "page",
+        "waitingForDebugger": true,
+        "receiptMs": 11.02820799999995
+      }
+    },
+    {
+      "kind": "runtime",
+      "round": 2,
+      "enabled": false,
+      "bindingType": "function",
+      "consoleLoopMs": 8.199999988079071,
+      "bindings": 1,
+      "console": 0,
+      "methods": {
+        "Runtime.bindingCalled": 1
+      }
+    },
+    {
+      "kind": "runtime",
+      "round": 2,
+      "enabled": true,
+      "bindingType": "function",
+      "consoleLoopMs": 31.899999976158142,
+      "bindings": 1,
+      "console": 2000,
+      "methods": {
+        "Runtime.executionContextCreated": 1,
+        "Runtime.bindingCalled": 1,
+        "Runtime.consoleAPICalled": 2000
+      }
+    },
+    {
+      "kind": "guard-business",
+      "round": 2,
+      "enabled": false,
+      "clickSequenceP50Ms": 0.0010000002384185792,
+      "clickSequenceP95Ms": 0.0020000004768371583,
+      "maxMs": 0.00800000011920929,
+      "rootInert": false
+    },
+    {
+      "kind": "guard-business",
+      "round": 2,
+      "enabled": true,
+      "clickSequenceP50Ms": 0.00699999988079071,
+      "clickSequenceP95Ms": 0.00800000011920929,
+      "maxMs": 0.02899999976158142,
+      "rootInert": false
+    },
+    {
+      "kind": "guard-login",
+      "round": 2,
+      "rootInert": true,
+      "opacity": "0",
+      "clickDelivered": false,
+      "defaultPrevented": true
+    },
+    {
+      "kind": "guard-release",
+      "round": 2,
+      "rootInert": false,
+      "opacity": ""
+    },
+    {
+      "kind": "auto-attach",
+      "round": 2,
+      "openedAndReadyMs": 37.57174999999961,
+      "newAttachmentsFor100SamePageClicks": 0,
+      "ownInstall": {
+        "targetId": "9721BDA4842002D36C6B86AAED113923",
+        "type": "page",
+        "waitingForDebugger": true,
+        "receiptMs": 15.790875000000142
+      }
+    }
+  ],
+  "installs": [
+    {
+      "targetId": "A522A6EDCC4F5AC3A3743C3B2459314D",
+      "type": "page",
+      "waitingForDebugger": false,
+      "receiptMs": 4.322458999999981
+    },
+    {
+      "targetId": "0E1FC92572F506E31A54C35C649CB318",
+      "type": "page",
+      "waitingForDebugger": true,
+      "receiptMs": 11.02820799999995
+    },
+    {
+      "targetId": "A522A6EDCC4F5AC3A3743C3B2459314D",
+      "type": "page",
+      "waitingForDebugger": false,
+      "receiptMs": 21.359958000000006
+    },
+    {
+      "targetId": "9721BDA4842002D36C6B86AAED113923",
+      "type": "page",
+      "waitingForDebugger": true,
+      "receiptMs": 15.790875000000142
+    }
+  ]
+}

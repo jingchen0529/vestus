@@ -110,17 +110,31 @@ struct PageRow {
     url: String,
     url_params: Option<String>,
     visits: u32,
+    // Missing legacy fields default to zero; populated staged history remains intact.
+    #[serde(default, skip_serializing_if = "is_zero")]
     clicks: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
     inputs: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
     submits: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
     scrolls: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
     dwell_ms: u64,
     first_seen_at_ms: u64,
     last_seen_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     input_snapshot: Option<FormSnapshot>,
+    #[serde(default, skip_serializing_if = "is_zero")]
     input_snapshot_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     submit_snapshot: Option<FormSnapshot>,
+    #[serde(default, skip_serializing_if = "is_zero")]
     submit_snapshot_at_ms: u64,
+}
+
+fn is_zero<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// 按地址合并的待上报增量。
@@ -360,20 +374,10 @@ impl ActivityCollector {
         let wake = self.wake.clone();
         let capture = rt::runtime().spawn(async move {
             while let Some(event) = receiver.recv().await {
-                let mut aggregate = Aggregate::default();
-                let time = now_ms();
-                aggregate.absorb(event, time);
-                if aggregate.is_empty() {
+                let Some(payload) = live_observation_payload(&key, &session_key, now_ms(), event)
+                else {
                     continue;
-                }
-                let report = activity_report(
-                    &key,
-                    &session_key,
-                    time,
-                    aggregate.dropped,
-                    aggregate.take(),
-                );
-                let payload = serde_json::to_value(report).expect("activity report serializes");
+                };
                 let queue = outbox.clone();
                 let namespace = owner.namespace.clone();
                 let result = rt::runtime()
@@ -409,6 +413,32 @@ impl ActivityCollector {
             eprintln!("activity shutdown deadline reached; committed queue is retained, unprocessed CDP events may be lost");
         }
     }
+}
+
+/// Project only new live navigation observations before they reach durable staging.
+/// Legacy staging and ready batches bypass this boundary and retain their history.
+fn live_observation_payload(
+    key: &SessionKey,
+    session_key: &str,
+    time: u64,
+    event: PageReport,
+) -> Option<serde_json::Value> {
+    if event.visits == 0 {
+        return None;
+    }
+    let navigation = PageReport {
+        url: event.url,
+        url_params: event.url_params,
+        visits: event.visits,
+        ..PageReport::default()
+    };
+    let mut aggregate = Aggregate::default();
+    aggregate.absorb(navigation, time);
+    if aggregate.is_empty() {
+        return None;
+    }
+    let report = activity_report(key, session_key, time, aggregate.dropped, aggregate.take());
+    Some(serde_json::to_value(report).expect("activity report serializes"))
 }
 
 /// The database transaction commits staged -> immutable batches together. IDs and
@@ -762,6 +792,245 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn new_live_navigation_stages_and_prepares_only_url_data_even_with_legacy_fields() {
+        let fixture = DurableFixture::new();
+        let owner = ActivityOwner::new("https://server.test", "user-7", 7);
+        let key = SessionKey {
+            browser_id: 1,
+            platform_id: 2,
+            managed_account_id: Some(9),
+            bootstrap_session_id: Some(42),
+            direct_mode: false,
+        };
+        let event = PageReport {
+            url: "https://a.test/p".into(),
+            url_params: Some("advid=42&index=2&token=%5BREDACTED%5D".into()),
+            visits: 2,
+            clicks: 3,
+            inputs: 4,
+            submits: 5,
+            scrolls: 6,
+            dwell_ms: 700,
+            input_snapshot: Some(FormSnapshot::from([(
+                "note".into(),
+                vec!["must not persist".into()],
+            )])),
+            input_snapshot_at_ms: 800,
+            submit_snapshot: Some(FormSnapshot::from([(
+                "choice".into(),
+                vec!["must not persist either".into()],
+            )])),
+            submit_snapshot_at_ms: 900,
+        };
+        let expected_page = serde_json::json!({
+            "url": "https://a.test/p",
+            "urlParams": "advid=42&index=2&token=%5BREDACTED%5D",
+            "visits": 2,
+            "firstSeenAtMs": 1_000,
+            "lastSeenAtMs": 1_000,
+        });
+        let staged = live_observation_payload(&key, "live-session", 1_000, event).unwrap();
+        fixture.queue.stage(&owner.namespace, &staged).unwrap();
+        let reopened = crate::activity_outbox::ActivityOutbox::open(&fixture.root).unwrap();
+        reopened
+            .prepare(&owner.namespace, |values| {
+                assert_eq!(values.len(), 1);
+                assert_eq!(values[0]["pages"][0], expected_page, "staged live URL data");
+                build_ready_reports(values, 7)
+            })
+            .unwrap();
+        let ready = reopened.next(&owner.namespace).unwrap().unwrap();
+        assert_eq!(ready["pages"][0], expected_page, "prepared live URL data");
+        assert_eq!(ready["ownerUserId"], 7);
+        assert_eq!(ready["protocolVersion"], 2);
+        assert_eq!(ready["bootstrapSessionId"], "42");
+        assert_eq!(ready["sessionKey"], "live-session");
+        assert_eq!(ready["reportedAtMs"], 1_000);
+        assert_eq!(ready["batchId"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn non_navigation_live_payloads_cannot_create_visits_or_staged_rows() {
+        let key = SessionKey {
+            browser_id: 1,
+            platform_id: 2,
+            managed_account_id: None,
+            bootstrap_session_id: None,
+            direct_mode: false,
+        };
+        let event = PageReport {
+            url: "https://a.test/p".into(),
+            url_params: Some("advid=42&index=2".into()),
+            clicks: 3,
+            inputs: 4,
+            submits: 5,
+            scrolls: 6,
+            dwell_ms: 700,
+            input_snapshot: Some(FormSnapshot::from([(
+                "note".into(),
+                vec!["not a navigation".into()],
+            )])),
+            submit_snapshot: Some(FormSnapshot::from([(
+                "choice".into(),
+                vec!["not a visit".into()],
+            )])),
+            ..PageReport::default()
+        };
+        assert!(live_observation_payload(&key, "live-session", 1_000, event).is_none());
+        assert!(
+            live_observation_payload(&key, "live-session", 1_000, PageReport::default()).is_none()
+        );
+    }
+
+    fn historical_staged_report() -> serde_json::Value {
+        serde_json::json!({
+            "sessionKey": "historical-session",
+            "browserId": 1,
+            "platformId": 2,
+            "managedAccountId": 9,
+            "directMode": false,
+            "clientVersion": "0.1.7",
+            "deviceId": null,
+            "reportedAtMs": 2_000,
+            "droppedPages": 3,
+            "pages": [{
+                "url": "https://a.test/p",
+                "urlParams": "advid=42&index=2&order=7",
+                "visits": 2,
+                "clicks": 3,
+                "inputs": 4,
+                "submits": 5,
+                "scrolls": 6,
+                "dwellMs": 700,
+                "firstSeenAtMs": 1_000,
+                "lastSeenAtMs": 2_000,
+                "inputSnapshot": {"note": ["historical input", "second value"]},
+                "inputSnapshotAtMs": 1_100,
+                "submitSnapshot": {"choice": ["historical submit"]},
+                "submitSnapshotAtMs": 1_900,
+            }],
+        })
+    }
+
+    #[test]
+    fn populated_historical_staging_survives_reopen_and_preparation() {
+        let fixture = DurableFixture::new();
+        let owner = ActivityOwner::new("https://server.test", "user-7", 7);
+        let historical = historical_staged_report();
+        fixture.queue.stage(&owner.namespace, &historical).unwrap();
+        let reopened = crate::activity_outbox::ActivityOutbox::open(&fixture.root).unwrap();
+        reopened
+            .prepare(&owner.namespace, |values| {
+                assert_eq!(values, vec![historical.clone()]);
+                build_ready_reports(values, 7)
+            })
+            .unwrap();
+        let mut ready = reopened.next(&owner.namespace).unwrap().unwrap();
+        assert_eq!(ready["ownerUserId"], 7);
+        assert_eq!(ready["protocolVersion"], 2);
+        assert_eq!(ready["batchId"].as_str().unwrap().len(), 64);
+        let object = ready.as_object_mut().unwrap();
+        object.remove("ownerUserId");
+        object.remove("protocolVersion");
+        object.remove("batchId");
+        assert_eq!(
+            ready, historical,
+            "populated legacy history must not be scrubbed"
+        );
+    }
+
+    #[test]
+    fn frozen_historical_ready_replays_exactly_after_response_loss_and_reopen() {
+        rt::runtime().block_on(async {
+            let fixture = DurableFixture::new();
+            let owner = ActivityOwner::new("https://server.test", "user-7", 7);
+            let historical = historical_staged_report();
+            let mut frozen = historical.clone();
+            frozen["protocolVersion"] = serde_json::json!(2);
+            frozen["ownerUserId"] = serde_json::json!(7);
+            frozen["batchId"] = serde_json::json!(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            );
+            frozen["legacyExtension"] = serde_json::json!({"unchanged": true});
+            frozen["pages"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "url": "https://a.test/old-empty-fields",
+                    "urlParams": null,
+                    "visits": 1,
+                    "clicks": 0,
+                    "inputs": 0,
+                    "submits": 0,
+                    "scrolls": 0,
+                    "dwellMs": 0,
+                    "firstSeenAtMs": 1_000,
+                    "lastSeenAtMs": 2_000,
+                    "inputSnapshot": null,
+                    "inputSnapshotAtMs": 0,
+                    "submitSnapshot": null,
+                    "submitSnapshotAtMs": 0,
+                }));
+            fixture.queue.stage(&owner.namespace, &historical).unwrap();
+            fixture
+                .queue
+                .prepare(&owner.namespace, |_| Ok(vec![frozen.clone()]))
+                .unwrap();
+            let expected = frozen.clone();
+            let failed = deliver_with_sender(fixture.queue.clone(), &owner, move |payload| {
+                assert_eq!(payload, expected, "old ready JSON must be sent unchanged");
+                async { Err("server committed, response was lost".into()) }
+            })
+            .await;
+            assert!(failed.is_err());
+            assert_eq!(
+                fixture.queue.next(&owner.namespace).unwrap(),
+                Some(frozen.clone())
+            );
+
+            let reopened =
+                Arc::new(crate::activity_outbox::ActivityOutbox::open(&fixture.root).unwrap());
+            let other = ActivityOwner::new("https://server.test", "user-8", 8);
+            deliver_with_sender(reopened.clone(), &other, |_| async {
+                panic!("another owner's historical batch was sent")
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                reopened.next(&owner.namespace).unwrap(),
+                Some(frozen.clone())
+            );
+            let expected = frozen.clone();
+            deliver_with_sender(reopened.clone(), &owner, move |payload| {
+                assert_eq!(
+                    payload, expected,
+                    "retry must preserve all fields and batch ID"
+                );
+                async { Ok(()) }
+            })
+            .await
+            .unwrap();
+            assert!(reopened.next(&owner.namespace).unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn sparse_url_only_staging_defaults_missing_legacy_fields() {
+        let mut sparse = historical_staged_report();
+        sparse["pages"] = serde_json::json!([{
+            "url": "https://a.test/p",
+            "urlParams": null,
+            "visits": 1,
+            "firstSeenAtMs": 1_000,
+            "lastSeenAtMs": 2_000,
+        }]);
+        let parsed: ActivityReport = serde_json::from_value(sparse.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), sparse);
+        let ready = build_ready_reports(vec![sparse.clone()], 7).unwrap();
+        assert_eq!(ready[0]["pages"], sparse["pages"]);
     }
 
     #[test]
@@ -1212,17 +1481,19 @@ mod tests {
     fn distinct_url_parameters_remain_distinct_rows_on_the_wire() {
         let mut aggregate = Aggregate::default();
         aggregate.absorb(
-            cdp::parse_payload(
-                &serde_json::json!({ "url": "https://a.test/p?order=1" }).to_string(),
-            )
-            .unwrap(),
+            PageReport {
+                url: "https://a.test/p".into(),
+                url_params: Some("order=1".into()),
+                ..PageReport::default()
+            },
             1_000,
         );
         aggregate.absorb(
-            cdp::parse_payload(
-                &serde_json::json!({ "url": "https://a.test/p?order=2" }).to_string(),
-            )
-            .unwrap(),
+            PageReport {
+                url: "https://a.test/p".into(),
+                url_params: Some("order=2".into()),
+                ..PageReport::default()
+            },
             2_000,
         );
 
@@ -1237,26 +1508,26 @@ mod tests {
     fn merging_a_failed_batch_keeps_the_newer_pending_snapshot() {
         let mut aggregate = Aggregate::default();
         aggregate.absorb(
-            cdp::parse_payload(
-                &serde_json::json!({
-                    "url": "https://a.test/p",
-                    "inputSnapshot": { "email": ["old@example.test"] },
-                })
-                .to_string(),
-            )
-            .unwrap(),
+            PageReport {
+                url: "https://a.test/p".into(),
+                input_snapshot: Some(FormSnapshot::from([(
+                    "email".into(),
+                    vec!["old@example.test".into()],
+                )])),
+                ..PageReport::default()
+            },
             1_000,
         );
         let failed = aggregate.take();
         aggregate.absorb(
-            cdp::parse_payload(
-                &serde_json::json!({
-                    "url": "https://a.test/p",
-                    "inputSnapshot": { "email": ["new@example.test"] },
-                })
-                .to_string(),
-            )
-            .unwrap(),
+            PageReport {
+                url: "https://a.test/p".into(),
+                input_snapshot: Some(FormSnapshot::from([(
+                    "email".into(),
+                    vec!["new@example.test".into()],
+                )])),
+                ..PageReport::default()
+            },
             5_000,
         );
         aggregate.merge_back(failed);
@@ -1368,8 +1639,8 @@ mod tests {
             "buyer@example.test"
         );
         assert_eq!(json["pages"][0]["inputSnapshotAtMs"], 1_700_000_000_000_u64);
-        assert_eq!(json["pages"][0]["submitSnapshot"], serde_json::Value::Null);
-        assert_eq!(json["pages"][0]["submitSnapshotAtMs"], 0);
+        assert!(json["pages"][0].get("submitSnapshot").is_none());
+        assert!(json["pages"][0].get("submitSnapshotAtMs").is_none());
         assert_eq!(json["pages"][0]["firstSeenAtMs"], 1_700_000_000_000_u64);
         assert_eq!(json["pages"][0]["lastSeenAtMs"], 1_700_000_000_001_u64);
     }
