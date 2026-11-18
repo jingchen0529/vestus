@@ -1064,6 +1064,35 @@ fn sandbox_fixup_root<'a>(executable: &Path, bundled_root: &'a Path) -> Option<&
     executable.starts_with(bundled_root).then_some(bundled_root)
 }
 
+/// Only grant the existing sandbox SIDs read/execute access to our browser tree.
+#[cfg(any(target_os = "windows", test))]
+fn sandbox_access_command(chromium_dir: &Path) -> Command {
+    // An absolute system path avoids executable lookup in the installation directory.
+    let icacls = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("icacls.exe");
+    let mut command = Command::new(icacls);
+    command
+        .arg(chromium_dir)
+        .args([
+            "/grant",
+            "*S-1-15-2-1:(OI)(CI)RX",
+            "*S-1-15-2-2:(OI)(CI)RX",
+            "*S-1-5-12:(OI)(CI)RX",
+            "/T",
+            "/C",
+        ])
+        .stdin(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
 /// 给随包 Chromium 目录补齐沙箱要的读取执行权限，每个进程只做一次。
 ///
 /// 正常情况下这件事由安装器（`installer-hooks.nsh`）做完了，这里是第二道：
@@ -1081,48 +1110,117 @@ fn sandbox_fixup_root<'a>(executable: &Path, bundled_root: &'a Path) -> Option<&
 /// 而不是浏览器真的不能用。SID 用数字写法，中文 Windows 上按名字授权会失败。
 #[cfg(target_os = "windows")]
 fn ensure_sandbox_access(chromium_dir: &Path) {
-    use std::os::windows::process::CommandExt;
     use std::sync::Once;
 
-    /// 不要让 icacls 闪出一个控制台窗口。
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     static ONCE: Once = Once::new();
-
     ONCE.call_once(|| {
-        // S-1-15-2-1 ALL APPLICATION PACKAGES（普通 AppContainer 令牌带它）
-        // S-1-15-2-2 ALL RESTRICTED APPLICATION PACKAGES（LPAC 令牌带它，且**不**带
-        //            S-1-15-2-1，所以两个都要给）
-        // S-1-5-12   RESTRICTED（渲染器受限令牌的 restricting SID）
-        // 只给 RX：沙箱进程要读自己的程序文件，不需要写它。
-        //
-        // 用绝对路径而不是裸 "icacls"：CreateProcess 的搜索顺序把**当前进程所在
-        // 目录**排在系统目录前面，安装目录里放一个 icacls.exe 就能劫持这次调用。
-        // 这个目录恰恰是普通用户可写的（currentUser 安装模式）。
-        let icacls = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-            .join("System32")
-            .join("icacls.exe");
-        let _ = Command::new(icacls)
-            .arg(chromium_dir)
-            .args([
-                "/grant",
-                "*S-1-15-2-1:(OI)(CI)RX",
-                "*S-1-15-2-2:(OI)(CI)RX",
-                "*S-1-5-12:(OI)(CI)RX",
-                "/T",
-                "/C",
-            ])
-            .stdin(Stdio::null())
+        let _ = sandbox_access_command(chromium_dir)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
             .status();
     });
 }
 
 #[cfg(not(target_os = "windows"))]
 fn ensure_sandbox_access(_chromium_dir: &Path) {}
+
+#[cfg(test)]
+fn validate_test_sandbox_tree(directory: &Path) -> std::io::Result<()> {
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        let is_link = metadata.file_type().is_symlink();
+        #[cfg(target_os = "windows")]
+        let is_link = {
+            use std::os::windows::fs::MetadataExt;
+            is_link || metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+        };
+        if is_link {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("sandbox ACL resource must not contain links or reparse points: {path:?}"),
+            ));
+        }
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        } else if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("sandbox ACL resource must contain only files and directories: {path:?}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn prepare_test_sandbox_access_with(
+    executable: &Path,
+    bundled_root: &Path,
+    run: impl FnOnce(&mut Command) -> std::io::Result<std::process::Output>,
+) -> std::io::Result<bool> {
+    let executable = executable.canonicalize()?;
+    // External overrides must never receive ACL changes, including a sibling
+    // directory whose name merely shares the chromium prefix.
+    if !bundled_root.exists() {
+        return Ok(false);
+    }
+    if std::fs::symlink_metadata(bundled_root)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "bundled Chromium resource root must not be a symlink",
+        ));
+    }
+    let root = bundled_root.canonicalize()?;
+    if !executable.starts_with(&root) {
+        return Ok(false);
+    }
+    // icacls /T follows resource descendants. Check the original root as well
+    // so a Windows junction cannot redirect this test-only permission change.
+    validate_test_sandbox_tree(bundled_root)?;
+    let output = run(&mut sandbox_access_command(&root)).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("sandbox ACL setup for {root:?}: {error}"),
+        )
+    })?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "sandbox ACL setup for {root:?} failed ({}): stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        )));
+    }
+    Ok(true)
+}
+
+/// Opt-in fixtures bypass the application resolver, so prepare the exact same
+/// bundled sandbox permissions before launch and fail on any setup error.
+#[cfg(test)]
+pub(crate) fn prepare_test_sandbox_access(executable: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("chromium");
+        let prepared =
+            prepare_test_sandbox_access_with(executable, &root, |command| command.output())?;
+        if prepared {
+            eprintln!("Prepared bundled Chromium sandbox ACL: {root:?}");
+        } else {
+            eprintln!("External Chromium override: sandbox ACL unchanged ({executable:?})");
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = executable;
+    Ok(())
+}
 
 /// 定位这次要启动的 Chromium。第二个返回值表示它是不是随包的那份——持久环境的根目录
 /// 按它分开，见 [`profile::profiles_root`]。
@@ -2145,6 +2243,164 @@ mod tests {
         // 被拒绝的启动同样不能删别人的环境。
         assert!(rejected_profile.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_browser_setup_checks_sandbox_permissions_before_launch() {
+        let root = scratch_dir("sandbox-test-setup");
+        let bundled = root.join("chromium");
+        std::fs::create_dir_all(&bundled).unwrap();
+        let executable = bundled.join("chrome.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let mut invoked = false;
+        let failure = prepare_test_sandbox_access_with(&executable, &bundled, |command| {
+            invoked = true;
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(args[0], bundled.canonicalize().unwrap().to_string_lossy());
+            assert_eq!(
+                &args[1..],
+                [
+                    "/grant",
+                    "*S-1-15-2-1:(OI)(CI)RX",
+                    "*S-1-15-2-2:(OI)(CI)RX",
+                    "*S-1-5-12:(OI)(CI)RX",
+                    "/T",
+                    "/C"
+                ]
+            );
+            assert!(
+                command
+                    .get_program()
+                    .to_string_lossy()
+                    .ends_with("System32/icacls.exe")
+                    || command
+                        .get_program()
+                        .to_string_lossy()
+                        .ends_with(r"System32\icacls.exe")
+            );
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "fixture ACL denied",
+            ))
+        });
+        assert!(invoked, "bundled browser must prepare sandbox permissions");
+        let error = failure.expect_err("failed ACL setup must stop browser startup");
+        assert!(error.to_string().contains("fixture ACL denied"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn sandbox_test_output(code: i32) -> std::process::Output {
+        #[cfg(unix)]
+        let status = {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code << 8)
+        };
+        #[cfg(target_os = "windows")]
+        let status = {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code as u32)
+        };
+        std::process::Output {
+            status,
+            stdout: b"processed fixture files".to_vec(),
+            stderr: b"fixture access denied".to_vec(),
+        }
+    }
+
+    #[test]
+    fn test_browser_setup_checks_exit_status_and_keeps_acl_diagnostics() {
+        let root = scratch_dir("sandbox-test-status");
+        let bundled = root.join("chromium");
+        std::fs::create_dir_all(&bundled).unwrap();
+        let executable = bundled.join("chrome.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        assert!(
+            prepare_test_sandbox_access_with(&executable, &bundled, |_| {
+                Ok(sandbox_test_output(0))
+            })
+            .unwrap()
+        );
+        let error =
+            prepare_test_sandbox_access_with(&executable, &bundled, |_| Ok(sandbox_test_output(5)))
+                .expect_err("a nonzero ACL exit must prevent fixture launch");
+        assert!(error.to_string().contains("processed fixture files"));
+        assert!(error.to_string().contains("fixture access denied"));
+        assert!(error.to_string().contains("failed"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_browser_setup_does_not_change_external_browser_permissions() {
+        let root = scratch_dir("sandbox-test-external");
+        let bundled = root.join("chromium");
+        let outside = root.join("chromium-backup");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let executable = outside.join("chrome.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        for expected_root in [&bundled, &root.join("missing")] {
+            let prepared = prepare_test_sandbox_access_with(&executable, expected_root, |_| {
+                panic!("external browser must not invoke icacls")
+            })
+            .unwrap();
+            assert!(!prepared);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_browser_setup_rejects_resource_links_and_skips_external_executable_links() {
+        use std::os::unix::fs::symlink;
+        let root = scratch_dir("sandbox-test-links");
+        let bundled = root.join("chromium");
+        let outside = root.join("external");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let external_exe = outside.join("chrome.exe");
+        std::fs::write(&external_exe, b"fixture").unwrap();
+        let executable = bundled.join("chrome.exe");
+        symlink(&external_exe, &executable).unwrap();
+        assert!(
+            !prepare_test_sandbox_access_with(&executable, &bundled, |_| {
+                panic!("executable symlink escapes the bundled resource")
+            })
+            .unwrap()
+        );
+        let linked_root = root.join("linked-chromium");
+        symlink(&bundled, &linked_root).unwrap();
+        assert!(
+            prepare_test_sandbox_access_with(&executable, &linked_root, |_| {
+                panic!("resource symlink must not invoke icacls")
+            })
+            .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_browser_setup_rejects_other_links_before_recursive_acl_changes() {
+        use std::os::unix::fs::symlink;
+        let root = scratch_dir("sandbox-test-descendant-link");
+        let bundled = root.join("chromium");
+        std::fs::create_dir_all(&bundled).unwrap();
+        let executable = bundled.join("chrome.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let external = root.join("outside-file");
+        std::fs::write(&external, b"outside").unwrap();
+        symlink(&external, bundled.join("other.dll")).unwrap();
+        let mut invoked = false;
+        let result = prepare_test_sandbox_access_with(&executable, &bundled, |_| {
+            invoked = true;
+            Ok(sandbox_test_output(0))
+        });
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(!invoked, "recursive ACL must not follow any resource link");
+        assert!(result.is_err(), "a resource link must fail before icacls");
     }
 
     // 补 ACL 是个副作用，只能落在我们自己铺的资源目录上。dev 会回退到系统装的

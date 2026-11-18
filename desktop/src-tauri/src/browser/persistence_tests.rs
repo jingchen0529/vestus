@@ -122,6 +122,8 @@ impl Fixture {
     }
 
     async fn launch(&mut self, exe: &Path, path: PathBuf) -> Cdp {
+        prepare_test_sandbox_access(exe)
+            .expect("prepare bundled Chromium sandbox permissions before persistence launch");
         self.next_id += 1;
         let (tx, rx) = tokio::sync::oneshot::channel();
         // Namespace isolation only: proxy/direct keys vary, actual requests stay local.

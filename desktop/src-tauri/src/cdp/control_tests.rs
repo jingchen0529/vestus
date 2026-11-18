@@ -304,6 +304,8 @@ impl Fixture {
         url: &str,
         headless: bool,
     ) -> DevToolsEndpoint {
+        crate::browser::prepare_test_sandbox_access(executable)
+            .expect("prepare bundled Chromium sandbox permissions before launch");
         let mut command = Command::new(executable);
         if headless {
             // Collection acceptance must not steal focus or lose its tab to
@@ -584,21 +586,30 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
             json!({"guard":true,"inert":false,"binding":"undefined"}));
         test_evaluate(&endpoint, &target, "window.open('/popup?advid=52','managed-popup','width=400,height=300'); true").await;
         expected_report(&mut reports, &format!("{base}popup"), Some("advid=52")).await;
-        test_evaluate(&endpoint, &target, "history.pushState({},'', '/login'); true").await;
-        expected_report(&mut reports, &format!("{base}login"), None).await;
-        let locked = test_evaluate(&endpoint, &target, "(() => {
-            const i=new InputEvent('input',{bubbles:true,cancelable:true});input.dispatchEvent(i);
-            const c=new Event('change',{bubbles:true,cancelable:true});checkbox.dispatchEvent(c);
+        // Keep login, blocked interactions and self-healing in one renderer task.
+        // Separate CDP connections must not consume the four-second login budget.
+        let mut healed = test_evaluate(&endpoint, &target, "(() => {
+            const started=performance.now();
+            history.pushState({},'', '/login');
+            const locked={inert:document.documentElement.inert,opacity:document.documentElement.style.opacity};
+            const i=new InputEvent('input',{bubbles:true,cancelable:true});document.getElementById('input').dispatchEvent(i);
+            const c=new Event('change',{bubbles:true,cancelable:true});document.getElementById('checkbox').dispatchEvent(c);
             document.querySelector('form').requestSubmit();
-            return {inert:document.documentElement.inert,opacity:document.documentElement.style.opacity,
-                inputBlocked:i.defaultPrevented,changeBlocked:c.defaultPrevented,seen:fixtureSeen,binding:typeof window.__vestusReportActivity};
+            history.replaceState({},'', '/workbench');
+            return {locked,inert:document.documentElement.inert,opacity:document.documentElement.style.opacity,
+                inputBlocked:i.defaultPrevented,changeBlocked:c.defaultPrevented,seen:fixtureSeen,binding:typeof window.__vestusReportActivity,
+                route:location.pathname,elapsedMs:performance.now()-started};
         })()").await;
-        assert_eq!(locked, json!({"inert":true,"opacity":"0","inputBlocked":true,"changeBlocked":true,
-            "seen":{"input":0,"change":0,"click":0,"submit":0},"binding":"undefined"}));
-        test_evaluate(&endpoint, &target, "history.replaceState({},'', '/workbench'); true").await;
+        let elapsed_ms = healed.as_object_mut().unwrap().remove("elapsedMs").unwrap().as_f64().unwrap();
+        assert!(elapsed_ms < crate::managed_cdp::LOGIN_SETTLE.as_secs_f64() * 1000.0,
+            "test self-healing exceeded the production login window: {elapsed_ms}ms");
+        assert_eq!(healed, json!({"locked":{"inert":true,"opacity":"0"},"inert":false,"opacity":"","inputBlocked":true,"changeBlocked":true,
+            "seen":{"input":0,"change":0,"click":0,"submit":0},"binding":"undefined","route":"/workbench"}));
+        expected_report(&mut reports, &format!("{base}login"), None).await;
         expected_report(&mut reports, &format!("{base}workbench"), None).await;
-        assert_eq!(test_evaluate(&endpoint, &target, "document.documentElement.inert").await, false);
-        assert!(timeout(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(200), signal_rx.recv()).await.is_err(), "self-healed login cancels deadline");
+        let cancellation = timeout(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(200), signal_rx.recv()).await;
+        assert!(cancellation.is_err(), "self-healed login must stay active past its original deadline: {cancellation:?}; collector_finished={}", task.is_finished());
+        eprintln!("Self-healed login verified in {elapsed_ms:.3}ms; no expiry across the full login window");
         test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}login")})).await;
         expected_report(&mut reports, &format!("{base}login"), None).await;
         assert!(matches!(timeout(crate::managed_cdp::LOGIN_SETTLE + Duration::from_secs(1), signal_rx.recv()).await,
