@@ -1756,6 +1756,13 @@ pub(crate) mod tests {
         assert_eq!(state.network_diagnostics_token(7, "profile-a", 1).unwrap_err().code, "session_changed");
     }
 
+    #[test]
+    fn network_diagnostics_receipt_uses_camel_case_contract() {
+        let receipt: NetworkDiagnosticsReceipt = serde_json::from_value(serde_json::json!({"accepted": 2, "duplicate": 1, "protocolVersion": 1})).unwrap();
+        assert_eq!(receipt, NetworkDiagnosticsReceipt { accepted: 2, duplicate: 1, protocol_version: 1 });
+        assert!(serde_json::from_value::<NetworkDiagnosticsReceipt>(serde_json::json!({"accepted": 1, "duplicate": 0, "protocolVersion": 2})).is_ok());
+    }
+
     #[tokio::test]
     async fn activity_upload_requires_exact_v2_ack_and_never_falls_back_to_legacy() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
