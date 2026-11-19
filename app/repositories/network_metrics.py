@@ -26,10 +26,24 @@ def delete_expired(session: Session, cutoff: datetime, *, batch_size: int = 1000
     ids = list(session.scalars(select(NetworkMetric.id).where(NetworkMetric.received_at < cutoff).limit(batch_size)))
     if not ids:
         return 0
-    return int(session.execute(delete(NetworkMetric).where(NetworkMetric.id.in_(ids))).rowcount or 0)
+    result = session.execute(delete(NetworkMetric).where(NetworkMetric.id.in_(ids)))
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
-def query(session: Session, *, user_ids: Optional[Sequence[int]], user_id: Optional[int], device_id: Optional[str], route: Optional[str], network_mode: Optional[str], status: Optional[str], start_at: Optional[datetime], end_at: Optional[datetime], page: int, page_size: int) -> tuple[list[NetworkMetric], int]:
+def query(
+    session: Session,
+    *,
+    user_ids: Optional[Sequence[int]],
+    user_id: Optional[int],
+    device_id: Optional[str],
+    route: Optional[str],
+    network_mode: Optional[str],
+    status: Optional[str],
+    start_at: Optional[datetime],
+    end_at: Optional[datetime],
+    page: int,
+    page_size: int,
+) -> tuple[list[NetworkMetric], int]:
     conditions: list[Any] = []
     if user_ids is not None:
         conditions.append(NetworkMetric.user_id.in_(user_ids))
@@ -48,7 +62,14 @@ def query(session: Session, *, user_ids: Optional[Sequence[int]], user_id: Optio
     if end_at:
         conditions.append(NetworkMetric.measured_at <= end_at)
     where = and_(*conditions) if conditions else None
-    count = int(session.scalar(select(func.count(NetworkMetric.id)).where(where) if where is not None else select(func.count(NetworkMetric.id))) or 0)
+    count = int(
+        session.scalar(
+            select(func.count(NetworkMetric.id)).where(where)
+            if where is not None
+            else select(func.count(NetworkMetric.id))
+        )
+        or 0
+    )
     stmt = select(NetworkMetric).order_by(NetworkMetric.measured_at.desc(), NetworkMetric.id.desc())
     if where is not None:
         stmt = stmt.where(where)
@@ -56,7 +77,29 @@ def query(session: Session, *, user_ids: Optional[Sequence[int]], user_id: Optio
     return rows, count
 
 
-def summary_values(session: Session, *, user_ids: Optional[Sequence[int]], user_id: Optional[int], device_id: Optional[str], route: Optional[str], network_mode: Optional[str], status: Optional[str], start_at: Optional[datetime], end_at: Optional[datetime]) -> list[NetworkMetric]:
-    rows, _ = query(session, user_ids=user_ids, user_id=user_id, device_id=device_id, route=route, network_mode=network_mode, status=status, start_at=start_at, end_at=end_at, page=1, page_size=2_147_483_647)
+def summary_values(
+    session: Session,
+    *,
+    user_ids: Optional[Sequence[int]],
+    user_id: Optional[int],
+    device_id: Optional[str],
+    route: Optional[str],
+    network_mode: Optional[str],
+    status: Optional[str],
+    start_at: Optional[datetime],
+    end_at: Optional[datetime],
+) -> list[NetworkMetric]:
+    rows, _ = query(
+        session,
+        user_ids=user_ids,
+        user_id=user_id,
+        device_id=device_id,
+        route=route,
+        network_mode=network_mode,
+        status=status,
+        start_at=start_at,
+        end_at=end_at,
+        page=1,
+        page_size=2_147_483_647,
+    )
     return rows
-

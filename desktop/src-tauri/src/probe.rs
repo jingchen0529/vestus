@@ -10,24 +10,41 @@
 
 use std::time::Duration;
 
-use crate::upstream::{TunnelError, UpstreamProxy};
 use crate::browser::DevToolsEndpoint;
+use crate::upstream::{TunnelError, UpstreamProxy};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Issue a browser-level DevTools command without executing page JavaScript.
 pub(crate) async fn probe_browser(endpoint: &DevToolsEndpoint) -> Result<(), String> {
-    let stream = tokio::time::timeout(Duration::from_millis(8000), tokio::net::TcpStream::connect(("127.0.0.1", endpoint.port)))
-        .await.map_err(|_| "timeout".to_string()).and_then(|result| result.map_err(|error| error.to_string()))?;
-    let (mut socket, _) = tokio_tungstenite::client_async(endpoint.websocket_url(), stream).await.map_err(|error| error.to_string())?;
+    let stream = tokio::time::timeout(
+        Duration::from_millis(8000),
+        tokio::net::TcpStream::connect(("127.0.0.1", endpoint.port)),
+    )
+    .await
+    .map_err(|_| "timeout".to_string())
+    .and_then(|result| result.map_err(|error| error.to_string()))?;
+    let (mut socket, _) = tokio_tungstenite::client_async(endpoint.websocket_url(), stream)
+        .await
+        .map_err(|error| error.to_string())?;
     use futures_util::{SinkExt, StreamExt};
-    socket.send(tokio_tungstenite::tungstenite::Message::Text(r#"{"id":1,"method":"Browser.getVersion","params":{}}"#.into())).await.map_err(|error| error.to_string())?;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"id":1,"method":"Browser.getVersion","params":{}}"#.into(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
     while let Some(frame) = socket.next().await {
         let frame = frame.map_err(|error| error.to_string())?;
         if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
-            let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            let value: serde_json::Value =
+                serde_json::from_str(&text).map_err(|error| error.to_string())?;
             if value.get("id").and_then(serde_json::Value::as_i64) == Some(1) {
-                return if value.get("error").is_some() { Err("cdp_error".into()) } else { Ok(()) };
+                return if value.get("error").is_some() {
+                    Err("cdp_error".into())
+                } else {
+                    Ok(())
+                };
             }
         }
     }
@@ -103,29 +120,63 @@ pub async fn probe_via_upstream(
         return Err(ProbeError::Status(status.as_u16()));
     }
 
-    let body = read_bounded(resp).await.map_err(|e| ProbeError::Request(e))?;
+    let body = read_bounded(resp)
+        .await
+        .map_err(|e| ProbeError::Request(e))?;
 
     parse_ip(&String::from_utf8_lossy(&body)).ok_or(ProbeError::Unparsable)
 }
 
-pub(crate) async fn probe_via_upstream_timed(upstream: &UpstreamProxy, probe_url: &str) -> Result<(String, u64, u64), ProbeError> {
+pub(crate) async fn probe_via_upstream_timed(
+    upstream: &UpstreamProxy,
+    probe_url: &str,
+) -> Result<(String, u64, u64), ProbeError> {
     let parsed = url::Url::parse(probe_url).map_err(|e| ProbeError::BadUrl(e.to_string()))?;
-    let host = parsed.host_str().ok_or_else(|| ProbeError::BadUrl("缺少主机名".into()))?.to_string();
-    let port = parsed.port_or_known_default().ok_or_else(|| ProbeError::BadUrl("无法确定端口".into()))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| ProbeError::BadUrl("缺少主机名".into()))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| ProbeError::BadUrl("无法确定端口".into()))?;
     upstream.open_tunnel(&host, port).await?;
-    let proxy = reqwest::Proxy::all(upstream.proxy_url_without_credentials()).map_err(|e| ProbeError::Request(describe(&e)))?.basic_auth(upstream.username(), upstream.expose_password());
-    let client = reqwest::Client::builder().proxy(proxy).timeout(Duration::from_secs(8)).build().map_err(|e| ProbeError::Request(describe(&e)))?;
-    let resp = client.get(probe_url).send().await.map_err(|e| ProbeError::Request(describe(&e)))?;
-    let status = resp.status(); if status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED { return Err(ProbeError::Tunnel(TunnelError::AuthFailed)); } if !status.is_success() { return Err(ProbeError::Status(status.as_u16())); }
-    let started = std::time::Instant::now(); let body = read_bounded(resp).await.map_err(ProbeError::Request)?; let elapsed = started.elapsed().as_millis() as u64;
-    let body_len = body.len() as u64; let text = String::from_utf8_lossy(&body).to_string(); let ip = parse_ip(&text).ok_or(ProbeError::Unparsable)?; Ok((ip, body_len, elapsed))
+    let proxy = reqwest::Proxy::all(upstream.proxy_url_without_credentials())
+        .map_err(|e| ProbeError::Request(describe(&e)))?
+        .basic_auth(upstream.username(), upstream.expose_password());
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
+    let resp = client
+        .get(probe_url)
+        .send()
+        .await
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+        return Err(ProbeError::Tunnel(TunnelError::AuthFailed));
+    }
+    if !status.is_success() {
+        return Err(ProbeError::Status(status.as_u16()));
+    }
+    let started = std::time::Instant::now();
+    let body = read_bounded(resp).await.map_err(ProbeError::Request)?;
+    let elapsed = started.elapsed().as_millis() as u64;
+    let body_len = body.len() as u64;
+    let text = String::from_utf8_lossy(&body).to_string();
+    let ip = parse_ip(&text).ok_or(ProbeError::Unparsable)?;
+    Ok((ip, body_len, elapsed))
 }
 
 async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| describe(&e))? {
-        let remaining = 1024 * 1024usize - body.len(); body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-        if body.len() >= 1024 * 1024 { break; }
+        let remaining = 1024 * 1024usize - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if body.len() >= 1024 * 1024 {
+            break;
+        }
     }
     Ok(body)
 }

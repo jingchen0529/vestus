@@ -375,7 +375,9 @@ impl ActivityCollector {
         let wake = self.wake.clone();
         let capture = rt::runtime().spawn(async move {
             while let Some(event) = receiver.recv().await {
-                if let Some(hook) = &activity_hook { hook(); }
+                if let Some(hook) = &activity_hook {
+                    hook();
+                }
                 let Some(payload) = live_observation_payload(&key, &session_key, now_ms(), event)
                 else {
                     continue;

@@ -616,12 +616,22 @@ impl BrowserSessionManager {
     /// Record the user-visible identity of a running browser and refresh its
     /// recency. This metadata is deliberately read-only to diagnostics.
     pub fn note_browser_activity(&self, browser_id: u64, platform_id: i64, direct_mode: bool) {
-        let session = self.inner.sessions.lock().ok().and_then(|s| s.get(&browser_id).cloned());
+        let session = self
+            .inner
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|s| s.get(&browser_id).cloned());
         if let Some(session) = session {
-            if let Ok(mut id) = session.platform_id.lock() { *id = Some(platform_id); }
+            if let Ok(mut id) = session.platform_id.lock() {
+                *id = Some(platform_id);
+            }
             session.direct_mode.store(direct_mode, Ordering::Release);
             session.last_active_ms.store(
-                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 Ordering::Release,
             );
         }
@@ -629,17 +639,22 @@ impl BrowserSessionManager {
 
     pub fn recent_sessions(&self) -> Vec<BrowserSessionSnapshot> {
         let sessions = self.inner.sessions.lock().expect("浏览器会话锁已中毒");
-        let mut result: Vec<_> = sessions.iter().filter_map(|(id, session)| {
-            if session.closing.load(Ordering::Acquire) { return None; }
-            let platform_id = session.platform_id.lock().ok().and_then(|id| *id)?;
-            Some(BrowserSessionSnapshot {
-                browser_id: *id,
-                platform_id,
-                direct_mode: session.direct_mode.load(Ordering::Acquire),
-                last_active_ms: session.last_active_ms.load(Ordering::Acquire),
-                endpoint: session.endpoint.lock().ok().and_then(|e| e.clone()),
+        let mut result: Vec<_> = sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                if session.closing.load(Ordering::Acquire) {
+                    return None;
+                }
+                let platform_id = session.platform_id.lock().ok().and_then(|id| *id)?;
+                Some(BrowserSessionSnapshot {
+                    browser_id: *id,
+                    platform_id,
+                    direct_mode: session.direct_mode.load(Ordering::Acquire),
+                    last_active_ms: session.last_active_ms.load(Ordering::Acquire),
+                    endpoint: session.endpoint.lock().ok().and_then(|e| e.clone()),
+                })
             })
-        }).collect();
+            .collect();
         result.sort_by_key(|entry| std::cmp::Reverse(entry.last_active_ms));
         result
     }

@@ -10,12 +10,12 @@ use crate::activity::{ActivityCollector, ActivityOwner, SessionKey as ActivitySe
 use crate::auth::DesktopAuthState;
 use crate::browser::{BrowserError, BrowserSessionManager, CloseReason};
 use crate::cdp;
+use crate::commands::NetworkMonitor;
 use crate::device;
 use crate::managed_cdp;
 use crate::profile::{self, ProfileSpec};
 use crate::rt;
 use crate::state::AppState;
-use crate::commands::NetworkMonitor;
 
 use super::*;
 
@@ -360,9 +360,17 @@ pub async fn open_browser<R: Runtime>(
             }
             let browser_touch = {
                 let browsers = browsers_for_activity.clone();
-                Arc::new(move || browsers.note_browser_activity(browser_id, platform_id, direct_mode))
+                Arc::new(move || {
+                    browsers.note_browser_activity(browser_id, platform_id, direct_mode)
+                })
             };
-            activity_collector.start(activity_key, endpoint, activity_owner, managed_watch, Some(browser_touch));
+            activity_collector.start(
+                activity_key,
+                endpoint,
+                activity_owner,
+                managed_watch,
+                Some(browser_touch),
+            );
         },
         move || {
             if let Some(tx) = watch_exit_tx {

@@ -292,7 +292,12 @@ async fn run_worker(
         let stopped = flush_queue_with(&monitor, &hooks.report, &mut stop_rx, retry_delays).await;
         let after_flush = {
             let mut state = monitor.inner.state.lock().expect("网络监控锁已中毒");
-            state.latest.upload_status = if state.queue.is_empty() { "uploaded" } else { "retrying" }.into();
+            state.latest.upload_status = if state.queue.is_empty() {
+                "uploaded"
+            } else {
+                "retrying"
+            }
+            .into();
             state.latest.queued_count = state.queue.len();
             state.latest.dropped_count = state.dropped_count;
             state.latest.clone()
@@ -478,7 +483,10 @@ mod tests {
         panic!("worker did not make {expected} collection calls");
     }
 
-    async fn wait_for_emits(emitted: &Arc<Mutex<Vec<NetworkDiagnosticsSnapshot>>>, expected: usize) {
+    async fn wait_for_emits(
+        emitted: &Arc<Mutex<Vec<NetworkDiagnosticsSnapshot>>>,
+        expected: usize,
+    ) {
         for _ in 0..100 {
             if emitted.lock().expect("事件锁已中毒").len() >= expected {
                 return;
@@ -698,14 +706,21 @@ mod tests {
         assert_eq!(emitted[0].upload_status, "pending");
         assert_eq!(emitted[1].upload_status, "uploaded");
         assert_eq!(emitted[1].queued_count, 0);
-        assert!(emitted.iter().any(|snapshot| snapshot.upload_status == "uploaded" && snapshot.queued_count == 0));
+        assert!(emitted
+            .iter()
+            .any(|snapshot| snapshot.upload_status == "uploaded" && snapshot.queued_count == 0));
         assert!(emitted.iter().any(|snapshot| {
-            snapshot.samples.iter().any(|sample| sample.route == "browser" && sample.error_code.is_none())
+            snapshot
+                .samples
+                .iter()
+                .any(|sample| sample.route == "browser" && sample.error_code.is_none())
         }));
         let browser = emitted
             .iter()
             .flat_map(|snapshot| snapshot.samples.iter())
-            .find(|sample| sample.route == "browser" && sample.error_code.as_deref() == Some("browser_closed"))
+            .find(|sample| {
+                sample.route == "browser" && sample.error_code.as_deref() == Some("browser_closed")
+            })
             .expect("browser closed sample should be emitted");
         assert_eq!(browser.error_code.as_deref(), Some("browser_closed"));
         assert_eq!(browser.browser_id.as_deref(), Some("7"));

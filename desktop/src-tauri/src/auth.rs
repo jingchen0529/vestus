@@ -1017,7 +1017,8 @@ impl DesktopAuthState {
         owner_generation: u64,
         payload: &T,
     ) -> AuthResult<NetworkDiagnosticsReceipt> {
-        let token = self.network_diagnostics_token(owner_user_id, owner_profile_key, owner_generation)?;
+        let token =
+            self.network_diagnostics_token(owner_user_id, owner_profile_key, owner_generation)?;
         let response = self
             .client()?
             .post(self.endpoint(NETWORK_DIAGNOSTICS_PATH)?)
@@ -1034,14 +1035,31 @@ impl DesktopAuthState {
         Ok(receipt)
     }
 
-    fn network_diagnostics_token(&self, owner_user_id: i64, owner_profile_key: &str, generation: u64) -> AuthResult<String> {
+    fn network_diagnostics_token(
+        &self,
+        owner_user_id: i64,
+        owner_profile_key: &str,
+        generation: u64,
+    ) -> AuthResult<String> {
         let state = self.session_guard()?;
         let matches = state.generation == generation
-            && state.user.as_ref().is_some_and(|user| user.id == owner_user_id)
+            && state
+                .user
+                .as_ref()
+                .is_some_and(|user| user.id == owner_user_id)
             && state.profile_key.as_deref() == Some(owner_profile_key)
             && session_is_current(&state, self.now());
-        if !matches { return Err(DesktopAuthError::new("session_changed", "网络诊断所属账号当前未登录")); }
-        state.token.clone().filter(|token| !token.is_empty()).ok_or_else(|| DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录"))
+        if !matches {
+            return Err(DesktopAuthError::new(
+                "session_changed",
+                "网络诊断所属账号当前未登录",
+            ));
+        }
+        state
+            .token
+            .clone()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录"))
     }
 
     fn activity_token(&self, owner_user_id: i64, owner_profile_key: &str) -> AuthResult<String> {
@@ -1746,21 +1764,47 @@ pub(crate) mod tests {
 
     #[test]
     fn network_diagnostics_rejects_stale_generation_for_same_profile() {
-        let state = DesktopAuthState::with_credentials(DEFAULT_API_BASE_URL, Arc::new(MemoryCredentialStore::default()));
-        state.persist_session(valid_test_token(), client_user()).unwrap();
+        let state = DesktopAuthState::with_credentials(
+            DEFAULT_API_BASE_URL,
+            Arc::new(MemoryCredentialStore::default()),
+        );
+        state
+            .persist_session(valid_test_token(), client_user())
+            .unwrap();
         state.set_profile_key(7, "profile-a".into()).unwrap();
         assert!(state.network_diagnostics_token(7, "profile-a", 1).is_ok());
         state.clear_memory().unwrap();
-        state.persist_session(valid_test_token(), client_user()).unwrap();
+        state
+            .persist_session(valid_test_token(), client_user())
+            .unwrap();
         state.set_profile_key(7, "profile-a".into()).unwrap();
-        assert_eq!(state.network_diagnostics_token(7, "profile-a", 1).unwrap_err().code, "session_changed");
+        assert_eq!(
+            state
+                .network_diagnostics_token(7, "profile-a", 1)
+                .unwrap_err()
+                .code,
+            "session_changed"
+        );
     }
 
     #[test]
     fn network_diagnostics_receipt_uses_camel_case_contract() {
-        let receipt: NetworkDiagnosticsReceipt = serde_json::from_value(serde_json::json!({"accepted": 2, "duplicate": 1, "protocolVersion": 1})).unwrap();
-        assert_eq!(receipt, NetworkDiagnosticsReceipt { accepted: 2, duplicate: 1, protocol_version: 1 });
-        assert!(serde_json::from_value::<NetworkDiagnosticsReceipt>(serde_json::json!({"accepted": 1, "duplicate": 0, "protocolVersion": 2})).is_ok());
+        let receipt: NetworkDiagnosticsReceipt = serde_json::from_value(
+            serde_json::json!({"accepted": 2, "duplicate": 1, "protocolVersion": 1}),
+        )
+        .unwrap();
+        assert_eq!(
+            receipt,
+            NetworkDiagnosticsReceipt {
+                accepted: 2,
+                duplicate: 1,
+                protocol_version: 1
+            }
+        );
+        assert!(serde_json::from_value::<NetworkDiagnosticsReceipt>(
+            serde_json::json!({"accepted": 1, "duplicate": 0, "protocolVersion": 2})
+        )
+        .is_ok());
     }
 
     #[tokio::test]
