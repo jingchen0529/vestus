@@ -71,7 +71,7 @@ async fn measure_http(url: &str, route: &str, target_kind: &str, network_mode: &
     let body_started = Instant::now();
     let body = match tokio::time::timeout(Duration::from_millis(MAX_PROBE_DURATION_MS.saturating_sub(elapsed)), read_limited(response)).await { Ok(Ok(b)) => b, Ok(Err(_)) => return failed_sample(route, target_kind, network_mode, started, MAX_PROBE_DURATION_MS, "connect"), Err(_) => return failed_sample(route, target_kind, network_mode, started, MAX_PROBE_DURATION_MS, "timeout") };
     if !status.is_success() { return failed_sample(route, target_kind, network_mode, started, elapsed, "http_status"); }
-    let bytes = body.len().min(MAX_RESPONSE_BYTES) as u64; let total = elapsed.min(MAX_PROBE_DURATION_MS);
+    let bytes = body.len().min(MAX_RESPONSE_BYTES) as u64; let total = start.elapsed().as_millis() as u64;
     NetworkSample { sample_id: sample_id(), route: route.into(), target_kind: target_kind.into(), network_mode: network_mode.into(), platform_id: None, browser_id: None, started_at_ms: started, duration_ms: Some(total), connect_ms: None, ttfb_ms: None, total_ms: Some(total), response_bytes: Some(bytes), download_kbps: Some(if body_started.elapsed().as_millis() == 0 { 0 } else { bytes.saturating_mul(8) / body_started.elapsed().as_millis() as u64 }), status: "ok".into(), error_code: None, client_version: None }
 }
 async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, reqwest::Error> { let mut body = Vec::new(); while let Some(chunk) = response.chunk().await? { let remaining = MAX_RESPONSE_BYTES.saturating_sub(body.len()); body.extend_from_slice(&chunk[..chunk.len().min(remaining)]); if body.len() >= MAX_RESPONSE_BYTES { break; } } Ok(body) }
@@ -100,6 +100,23 @@ mod tests {
      assert_eq!(sample.status, "ok");
      assert_eq!(sample.response_bytes, Some(5));
      assert!(sample.connect_ms.is_none() && sample.ttfb_ms.is_none() && sample.total_ms.is_some());
+     server.await.unwrap();
+ }
+
+ #[tokio::test]
+ async fn management_total_includes_slow_body_read() {
+     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+     let address = listener.local_addr().unwrap();
+     let server = tokio::spawn(async move {
+         let (mut stream, _) = listener.accept().await.unwrap();
+         let _ = crate::httpio::read_head(&mut stream).await.unwrap();
+         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nhello").await.unwrap();
+         tokio::time::sleep(Duration::from_millis(25)).await;
+         stream.write_all(b"world").await.unwrap();
+     });
+     let sample = measure_management(&format!("http://{address}/")).await;
+     assert_eq!(sample.status, "ok");
+     assert!(sample.total_ms.unwrap_or_default() >= 20);
      server.await.unwrap();
  }
 }

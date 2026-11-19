@@ -34,3 +34,12 @@
 - `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics -- --test-threads=1`：4 tests passed。
 - `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics_rejects_stale_generation -- --test-threads=1`：1 test passed。
 - 追加 `network_diagnostics_receipt_uses_camel_case_contract`，验证 `{accepted, duplicate, protocolVersion}` 反序列化契约，测试通过。
+
+## 评审修复轮次 2
+
+- 修正管理端成功样本的 `totalMs` 和 `durationMs`，现在从响应开始到固定上限 body 读取完成后统一计时，避免慢响应体被低估。
+- 新增慢 body fixture 回归测试，延迟 25ms 分段发送并断言总耗时至少 20ms。
+
+验证命令及结果：
+
+- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib management_total_includes_slow_body -- --test-threads=1`：1 test passed。
