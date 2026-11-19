@@ -396,11 +396,13 @@ pub async fn stop_network_diagnostics(
 mod tests {
     use super::*;
     use crate::browser::BrowserSessionManager;
+    use futures_util::{SinkExt, StreamExt};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     fn sample(id: usize) -> NetworkSample {
         NetworkSample::success(format!("sample-{id}"), "test", "test", "direct", 1, 0)
@@ -567,6 +569,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_emits_browser_closed_on_the_round_after_cdp_closes() {
+        let management_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let management_address = management_listener.local_addr().unwrap();
+        let management_server = tokio::spawn(async move {
+            let mut served = 0;
+            while served < 2 {
+                let (mut stream, _) = management_listener.accept().await.unwrap();
+                if crate::httpio::read_head(&mut stream).await.is_err() {
+                    continue;
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .await
+                    .unwrap();
+                served += 1;
+            }
+        });
+
+        let cdp_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let cdp_endpoint = crate::browser::DevToolsEndpoint {
+            port: cdp_listener.local_addr().unwrap().port(),
+            browser_path: "/devtools/browser/network-test".into(),
+        };
+        let cdp_server = tokio::spawn(async move {
+            let mut served = 0;
+            while served < 2 {
+                let (stream, _) = cdp_listener.accept().await.unwrap();
+                let Ok(mut socket) = accept_async(stream).await else {
+                    continue;
+                };
+                if socket.next().await.is_none() {
+                    continue;
+                }
+                if served == 1 {
+                    socket.send(Message::Close(None)).await.unwrap();
+                } else {
+                    if socket
+                        .send(Message::Text(r#"{"id":1,"result":{}}"#.into()))
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
+                }
+                served += 1;
+            }
+        });
+
+        let browsers = BrowserSessionManager::default();
+        browsers.insert_test_session(7, Some(cdp_endpoint));
+        browsers.note_browser_activity(7, 701, false);
+        let api = format!("http://{management_address}");
+        let collect: CollectHook = Arc::new({
+            let browsers = browsers.clone();
+            move || {
+                let browsers = browsers.clone();
+                let api = api.clone();
+                Box::pin(async move { collect_samples(&api, &browsers).await })
+            }
+        });
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emitted_once = Arc::new(Notify::new());
+        let emit: EmitHook = Arc::new({
+            let emitted = Arc::clone(&emitted);
+            let emitted_once = Arc::clone(&emitted_once);
+            move |snapshot| {
+                emitted.lock().expect("事件锁已中毒").push(snapshot.clone());
+                emitted_once.notify_one();
+            }
+        });
+        let hooks = WorkerHooks {
+            collect,
+            report: Arc::new(|_| {
+                Box::pin(async { Ok(()) }) as WorkerFuture<Result<(), ReportFailure>>
+            }),
+            emit,
+        };
+        let monitor = NetworkMonitor::default();
+        let handle = monitor
+            .start_test_worker(31, hooks, INTERVAL, RETRY_DELAYS)
+            .expect("worker should start");
+        emitted_once.notified().await;
+        monitor.wake();
+        emitted_once.notified().await;
+        monitor.stop();
+        handle.await.unwrap();
+        management_server.await.unwrap();
+        cdp_server.await.unwrap();
+
+        let emitted = emitted.lock().expect("事件锁已中毒");
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(
+            emitted[0]
+                .samples
+                .iter()
+                .find(|sample| sample.route == "browser")
+                .and_then(|sample| sample.error_code.as_deref()),
+            None
+        );
+        let browser = emitted[1]
+            .samples
+            .iter()
+            .find(|sample| sample.route == "browser")
+            .expect("browser sample should be emitted");
+        assert_eq!(browser.error_code.as_deref(), Some("browser_closed"));
+        assert_eq!(browser.browser_id.as_deref(), Some("7"));
+        assert_eq!(browser.platform_id.as_deref(), Some("701"));
+        assert_eq!(browser.network_mode, "proxy");
+    }
+
+    #[tokio::test]
     async fn recent_activity_hook_selects_latest_browser_for_browser_sample() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -712,6 +827,61 @@ mod tests {
             "cancellation should stop retry loop"
         );
         assert_eq!(monitor.queue_len(), 1, "failed report must be retained");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_backoff_progresses_through_five_thirty_and_one_twenty_second_boundaries() {
+        let monitor = NetworkMonitor::default();
+        monitor.enqueue(report(0));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempt_hook: ReportHook = Arc::new({
+            let attempts = Arc::clone(&attempts);
+            move |_| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(ReportFailure::Retryable) })
+                    as WorkerFuture<Result<(), ReportFailure>>
+            }
+        });
+        let (_stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let flushing = tokio::spawn({
+            let monitor = monitor.clone();
+            async move {
+                flush_queue_with(
+                    &monitor,
+                    &attempt_hook,
+                    &mut stop_rx,
+                    [
+                        Duration::from_secs(5),
+                        Duration::from_secs(30),
+                        Duration::from_secs(120),
+                    ],
+                )
+                .await
+            }
+        });
+
+        wait_for_calls(&attempts, 1).await;
+        tokio::time::advance(Duration::from_secs(4)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_calls(&attempts, 2).await;
+
+        tokio::time::advance(Duration::from_secs(29)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_calls(&attempts, 3).await;
+
+        tokio::time::advance(Duration::from_secs(119)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_calls(&attempts, 4).await;
+
+        assert!(!flushing.await.unwrap(), "retry budget should be exhausted");
+        assert_eq!(monitor.queue_len(), 1, "failed report must be retained");
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
