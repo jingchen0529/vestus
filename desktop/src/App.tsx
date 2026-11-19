@@ -62,12 +62,14 @@ function MainLayout() {
   const loginGenerationRef = useRef(0);
   const configSyncRef = useRef<ReturnType<typeof createDesktopConfigSync> | null>(null);
   const networkDiagnosticsRefreshRef = useRef<(() => void) | null>(null);
+  const networkDiagnosticsInvalidateRef = useRef<(() => void) | null>(null);
   const focusSyncRef = useRef<(() => void) | null>(null);
   const lastFocusSyncAtRef = useRef(0);
 
   const invalidateConfigSync = () => {
     loginGenerationRef.current += 1;
     configSyncRef.current?.invalidate();
+    networkDiagnosticsInvalidateRef.current?.();
     lastFocusSyncAtRef.current = 0;
     setDesktopConfigLoading(false);
     return loginGenerationRef.current;
@@ -117,6 +119,7 @@ function MainLayout() {
         } else if (announce) {
           success("桌面配置已同步", `已加载 ${config.platforms.length} 个平台入口`);
         }
+        networkDiagnosticsInvalidateRef.current?.();
         networkDiagnosticsRefreshRef.current?.();
       },
       onError: (reason, announce) => {
@@ -334,6 +337,7 @@ function MainLayout() {
     networkDiagnosticsRefreshRef.current = () => {
       if (active) void diagnostics.refresh();
     };
+    networkDiagnosticsInvalidateRef.current = diagnostics.invalidate;
     setNetworkDiagnosticsLoading(true);
     tauriBridge.onNetworkDiagnosticsChange((snapshot) => {
       if (active) {
@@ -352,7 +356,8 @@ function MainLayout() {
     return () => {
       active = false;
       unlistenNetworkDiagnostics?.();
-      if (networkDiagnosticsRefreshRef.current) networkDiagnosticsRefreshRef.current = null;
+      networkDiagnosticsRefreshRef.current = null;
+      networkDiagnosticsInvalidateRef.current = null;
       diagnostics.dispose();
       setNetworkDiagnostics(null);
     };

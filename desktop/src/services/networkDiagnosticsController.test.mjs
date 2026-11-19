@@ -39,6 +39,36 @@ test("successful config refreshes restart the monitor and refresh its snapshot w
   controller.dispose();
 });
 
+test("an invalidated refresh queues a new start when the previous snapshot is still pending", async () => {
+  const firstSnapshot = deferred();
+  const starts = [];
+  let snapshotCalls = 0;
+  const snapshots = [];
+  const controller = createNetworkDiagnosticsController({
+    start: async () => starts.push(starts.length + 1),
+    getSnapshot: async () => {
+      snapshotCalls += 1;
+      return snapshotCalls === 1 ? firstSnapshot.promise : { id: 2 };
+    },
+    stop: async () => {},
+    onSnapshot: (snapshot) => snapshots.push(snapshot),
+  });
+
+  const first = controller.refresh();
+  await new Promise(setImmediate);
+  assert.deepEqual(starts, [1]);
+  controller.invalidate();
+  const queued = controller.refresh();
+  assert.deepEqual(starts, [1], "the replacement waits for the old snapshot to settle");
+  firstSnapshot.resolve({ id: 1 });
+  await Promise.all([first, queued]);
+  await new Promise(setImmediate);
+
+  assert.deepEqual(starts, [1, 2]);
+  assert.deepEqual(snapshots, [{ id: 2 }], "the stale snapshot is discarded before the replacement refresh");
+  controller.dispose();
+});
+
 test("disposing during start prevents a late start from publishing a snapshot", async () => {
   const started = deferred();
   const stops = [];
@@ -59,7 +89,53 @@ test("disposing during start prevents a late start from publishing a snapshot", 
   assert.deepEqual(snapshots, []);
 });
 
+test("invalidating a pending snapshot suppresses the old owner without restarting until requested", async () => {
+  const pendingSnapshot = deferred();
+  const starts = [];
+  const snapshots = [];
+  const controller = createNetworkDiagnosticsController({
+    start: async () => starts.push(true),
+    getSnapshot: () => pendingSnapshot.promise,
+    stop: async () => {},
+    onSnapshot: (snapshot) => snapshots.push(snapshot),
+  });
+
+  const refresh = controller.refresh();
+  await new Promise(setImmediate);
+  controller.invalidate();
+  pendingSnapshot.resolve({ id: 1 });
+  await refresh;
+
+  assert.equal(starts.length, 1);
+  assert.deepEqual(snapshots, []);
+  controller.dispose();
+});
+
+test("a later logout invalidation cancels a queued replacement start", async () => {
+  const pendingSnapshot = deferred();
+  const starts = [];
+  const controller = createNetworkDiagnosticsController({
+    start: async () => starts.push(true),
+    getSnapshot: () => pendingSnapshot.promise,
+    stop: async () => {},
+    onSnapshot: () => {},
+  });
+
+  const first = controller.refresh();
+  await new Promise(setImmediate);
+  controller.invalidate();
+  const queued = controller.refresh();
+  controller.invalidate();
+  pendingSnapshot.resolve({ id: 1 });
+  await Promise.all([first, queued]);
+  await new Promise(setImmediate);
+
+  assert.equal(starts.length, 1, "logout must cancel a queued restart");
+  controller.dispose();
+});
+
 test("App refreshes diagnostics after every successful config sync and disposes on logout", () => {
   assert.match(appSource, /networkDiagnosticsRefreshRef\.current\?\.\(\)/);
+  assert.match(appSource, /networkDiagnosticsInvalidateRef\.current\?\.\(\)/);
   assert.match(appSource, /diagnostics\.dispose\(\)/);
 });

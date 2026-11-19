@@ -14,6 +14,9 @@ export function createNetworkDiagnosticsController(
   let active = true;
   let startPromise: Promise<void> | null = null;
   let stopRequested = false;
+  let revision = 0;
+  let runningRevision = 0;
+  let refreshQueued = false;
 
   const stop = () => {
     if (stopRequested) return;
@@ -23,27 +26,43 @@ export function createNetworkDiagnosticsController(
 
   const refresh = (): Promise<void> => {
     if (!active) return Promise.resolve();
-    if (startPromise) return startPromise;
+    if (startPromise) {
+      if (runningRevision !== revision) refreshQueued = true;
+      return startPromise;
+    }
+    const requestRevision = revision;
     const request = (async () => {
       options.onLoading?.(true);
       try {
         await options.start();
-        if (!active) {
-          stop();
+        if (!active || requestRevision !== revision) {
+          if (!active) stop();
           return;
         }
         const snapshot = await options.getSnapshot();
-        if (active) options.onSnapshot(snapshot);
+        if (active && requestRevision === revision) options.onSnapshot(snapshot);
       } catch {
         // A failed start or snapshot read is reflected by the loading state.
       } finally {
         if (active) options.onLoading?.(false);
       }
     })().finally(() => {
-      if (startPromise === request) startPromise = null;
+      if (startPromise === request) {
+        startPromise = null;
+        if (active && refreshQueued) {
+          refreshQueued = false;
+          void refresh();
+        }
+      }
     });
+    runningRevision = requestRevision;
     startPromise = request;
     return request;
+  };
+
+  const invalidate = () => {
+    revision += 1;
+    refreshQueued = false;
   };
 
   const dispose = () => {
@@ -52,5 +71,5 @@ export function createNetworkDiagnosticsController(
     stop();
   };
 
-  return { refresh, dispose };
+  return { refresh, invalidate, dispose };
 }
