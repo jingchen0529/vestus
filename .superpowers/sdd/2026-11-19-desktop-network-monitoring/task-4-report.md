@@ -33,4 +33,22 @@
 
 ## 已知限制
 
-- Task 3 当前 TypeScript `NetworkDiagnosticsSnapshot` 只暴露 `samples` 和 `deviceId`，因此上报回执、待上报和丢弃计数没有真实 IPC 数据来源。UI 已预留可选字段并在字段缺失时显示明确的暂无回执与 0，不伪造上传结果。
+- 对旧版 Rust worker 发出的快照，新增上报字段可能缺失。前端保留兼容默认值并显示暂无回执与 0。当前 Task 3 worker 已更新为真实维护这些字段。
+
+## 修复轮次 1（2026-11-19）
+
+- App 认证并完成配置同步后显式调用 `startNetworkDiagnostics`，事件订阅和初始快照读取均受登录代次与 active guard 保护。
+- 账号切换、组件清理、会话失效和显式退出会调用 `stopNetworkDiagnostics`，避免旧 worker 继续采样。
+- Rust `NetworkDiagnosticsSnapshot` 增加 `uploadStatus`、`queuedCount`、`droppedCount`，由监控 worker 在入队、上报成功和重试状态变更时更新并通过 IPC 事件发送。队列溢出累计丢弃计数。
+- TypeScript bridge 类型和卡片视图改为消费真实字段，保留缺失字段的兼容默认值。
+- DNS、TLS、未知及缺失错误码统一显示中文诊断状态，不泄漏原始码。
+
+新增验证：
+
+- `cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml`：通过。
+- `npm --prefix desktop run build`：通过。
+- `npm --prefix desktop test -- NetworkDiagnosticsCard.test.mjs`：通过。
+- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib commands::network -- --test-threads=1`：通过，9 个网络监控生命周期测试。
+- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics -- --test-threads=1`：通过，9 个诊断与 IPC 序列化测试。
+- `npm --prefix desktop run check:surfaces`：通过。
+- `git diff --check`：通过。

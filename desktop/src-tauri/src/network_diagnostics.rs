@@ -43,7 +43,13 @@ impl NetworkSample {
 pub struct NetworkDiagnosticsReport { pub protocol_version: u8, pub samples: Vec<NetworkSample>, pub device_id: Option<String> }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct NetworkDiagnosticsSnapshot { pub samples: Vec<NetworkSample>, pub device_id: Option<String> }
+pub struct NetworkDiagnosticsSnapshot {
+    pub samples: Vec<NetworkSample>,
+    pub device_id: Option<String>,
+    pub upload_status: String,
+    pub queued_count: usize,
+    pub dropped_count: u64,
+}
 impl NetworkDiagnosticsSnapshot { pub fn report(self) -> NetworkDiagnosticsReport { NetworkDiagnosticsReport { protocol_version: 1, samples: self.samples.into_iter().take(20).collect(), device_id: self.device_id } } }
 fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
 fn sample_id() -> String { format!("{:016x}", SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed) ^ now_ms()) }
@@ -83,6 +89,20 @@ mod tests {
  use tokio::io::AsyncWriteExt;
  use tokio::net::TcpListener;
  #[test] fn sample_serializes_camel_case_without_sensitive_fields() { let sample = NetworkSample::success("0123456789abcdef", "management", "api", "direct", 12, 3); let value = serde_json::to_value(&sample).unwrap(); assert_eq!(value["sampleId"], "0123456789abcdef"); assert!(value.get("sample_id").is_none()); let text = value.to_string(); for secret in ["http://", "token", "header", "response body"] { assert!(!text.contains(secret)); } }
+ #[test]
+ fn snapshot_serializes_upload_counters_for_ipc() {
+     let snapshot = NetworkDiagnosticsSnapshot {
+         samples: Vec::new(),
+         device_id: Some("device".into()),
+         upload_status: "retrying".into(),
+         queued_count: 3,
+         dropped_count: 2,
+     };
+     let value = serde_json::to_value(snapshot).unwrap();
+     assert_eq!(value["uploadStatus"], "retrying");
+     assert_eq!(value["queuedCount"], 3);
+     assert_eq!(value["droppedCount"], 2);
+ }
  #[test] fn timeout_is_bounded_to_eight_seconds() { assert_eq!(MAX_PROBE_DURATION_MS, 8000); }
  #[test] fn timeout_sample_has_no_partial_stages() { let sample = failed_sample("management", "api", "direct", 1, MAX_PROBE_DURATION_MS, "timeout"); assert_eq!(sample.total_ms, Some(8000)); assert!(sample.connect_ms.is_none() && sample.ttfb_ms.is_none()); }
  #[tokio::test] async fn proxy_disabled_is_classified_without_network_access() { let sample = measure_proxy(None, "http://127.0.0.1/").await; assert_eq!(sample.error_code.as_deref(), Some("proxy_disabled")); }

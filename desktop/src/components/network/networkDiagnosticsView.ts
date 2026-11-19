@@ -35,6 +35,10 @@ const STATUS_LABELS: Record<string, string> = {
   proxy_error: "代理失败",
   proxy_disabled: "代理未启用",
   http_status: "服务返回异常",
+  dns: "DNS 解析失败",
+  tls: "TLS 连接失败",
+  unknown: "网络诊断失败",
+  error: "网络诊断失败",
   cdp_unavailable: "CDP 不可用",
   browser_closed: "浏览器已关闭",
   unavailable: "暂不可用",
@@ -47,7 +51,7 @@ function effectiveStatus(sample: NetworkSample | null): string | undefined {
 
 function labelForStatus(status: string | undefined): string {
   if (!status) return "暂无采样";
-  return STATUS_LABELS[status] ?? status;
+  return STATUS_LABELS[status] ?? "网络诊断失败";
 }
 
 function toneForStatus(status: string | undefined): "success" | "warning" | "destructive" | "secondary" {
@@ -96,7 +100,7 @@ export function toNetworkDiagnosticsView(snapshot: NetworkDiagnosticsSnapshot | 
     }),
     uploadLabel,
     uploadTone,
-    queuedCount: extended?.queuedCount ?? extended?.queueCount ?? 0,
+      queuedCount: extended?.queuedCount ?? extended?.queueCount ?? 0,
     droppedCount: extended?.droppedCount ?? extended?.droppedSamples ?? 0,
   };
 }

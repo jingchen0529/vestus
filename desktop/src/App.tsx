@@ -84,6 +84,7 @@ function MainLayout() {
     setDesktopConfig(null);
     setDesktopConfigError(null);
     try {
+      await tauriBridge.stopNetworkDiagnostics().catch(() => undefined);
       await authService.logout();
     } catch (reason) {
       if (generation === loginGenerationRef.current) {
@@ -315,15 +316,9 @@ function MainLayout() {
   useEffect(() => {
     if (!desktopRuntime || !authReady || !currentUser || !authService.isAuthenticated()) return;
     let active = true;
+    let startRequested = false;
     let unlistenNetworkDiagnostics: (() => void) | undefined;
     setNetworkDiagnosticsLoading(true);
-    tauriBridge.getNetworkDiagnostics().then((snapshot) => {
-      if (active) setNetworkDiagnostics(snapshot);
-    }).catch(() => {
-      // 首次快照缺失时保留空态，后续事件仍可填充。
-    }).finally(() => {
-      if (active) setNetworkDiagnosticsLoading(false);
-    });
     tauriBridge.onNetworkDiagnosticsChange((snapshot) => {
       if (active) {
         setNetworkDiagnostics(snapshot);
@@ -335,9 +330,29 @@ function MainLayout() {
     }).catch(() => {
       if (active) setNetworkDiagnosticsLoading(false);
     });
+    void (async () => {
+      const synced = await syncDesktopConfig(false);
+      if (!active || !synced) {
+        if (active) setNetworkDiagnosticsLoading(false);
+        return;
+      }
+      startRequested = true;
+      try {
+        await tauriBridge.startNetworkDiagnostics();
+        const snapshot = await tauriBridge.getNetworkDiagnostics();
+        if (active) {
+          setNetworkDiagnostics(snapshot);
+          setNetworkDiagnosticsLoading(false);
+        }
+        else void tauriBridge.stopNetworkDiagnostics().catch(() => undefined);
+      } catch {
+        if (active) setNetworkDiagnosticsLoading(false);
+      }
+    })();
     return () => {
       active = false;
       unlistenNetworkDiagnostics?.();
+      if (startRequested) void tauriBridge.stopNetworkDiagnostics().catch(() => undefined);
       setNetworkDiagnostics(null);
     };
   }, [desktopRuntime, authReady, currentUser]);
@@ -396,6 +411,7 @@ function MainLayout() {
     const generation = invalidateConfigSync();
     let failure: string | null = null;
     try {
+      await tauriBridge.stopNetworkDiagnostics().catch(() => undefined);
       await authService.logout();
     } catch (reason) {
       failure = reason instanceof Error ? reason.message : "本地登录凭据清理失败";

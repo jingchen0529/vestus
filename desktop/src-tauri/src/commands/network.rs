@@ -61,6 +61,7 @@ struct MonitorState {
     stop: Option<tokio::sync::watch::Sender<bool>>,
     latest: NetworkDiagnosticsSnapshot,
     queue: VecDeque<NetworkDiagnosticsReport>,
+    dropped_count: u64,
 }
 
 impl Default for NetworkMonitor {
@@ -74,8 +75,12 @@ impl Default for NetworkMonitor {
                     latest: NetworkDiagnosticsSnapshot {
                         samples: Vec::new(),
                         device_id: device::wire_device_id(),
+                        upload_status: "idle".into(),
+                        queued_count: 0,
+                        dropped_count: 0,
                     },
                     queue: VecDeque::new(),
+                    dropped_count: 0,
                 }),
                 wake: tokio::sync::Notify::new(),
             }),
@@ -130,6 +135,7 @@ impl NetworkMonitor {
         state.queue.push_back(report);
         while state.queue.len() > MAX_QUEUE {
             state.queue.pop_front();
+            state.dropped_count = state.dropped_count.saturating_add(1);
         }
     }
 
@@ -257,26 +263,45 @@ async fn run_worker(
         let snapshot = NetworkDiagnosticsSnapshot {
             samples,
             device_id: device::wire_device_id(),
+            upload_status: "pending".into(),
+            queued_count: 0,
+            dropped_count: 0,
         };
         let current = {
             let mut state = monitor.inner.state.lock().expect("网络监控锁已中毒");
             if state.generation != generation || !state.running {
                 false
             } else {
-                state.latest = snapshot.clone();
                 state.queue.push_back(snapshot.clone().report());
                 while state.queue.len() > MAX_QUEUE {
                     state.queue.pop_front();
+                    state.dropped_count = state.dropped_count.saturating_add(1);
                 }
+                let mut snapshot = snapshot;
+                snapshot.upload_status = "pending".into();
+                snapshot.queued_count = state.queue.len();
+                snapshot.dropped_count = state.dropped_count;
+                state.latest = snapshot;
                 true
             }
         };
         if !current {
             break;
         }
-        (hooks.emit)(&snapshot);
-        if flush_queue_with(&monitor, &hooks.report, &mut stop_rx, retry_delays).await {
+        (hooks.emit)(&monitor.snapshot());
+        let stopped = flush_queue_with(&monitor, &hooks.report, &mut stop_rx, retry_delays).await;
+        let after_flush = {
+            let mut state = monitor.inner.state.lock().expect("网络监控锁已中毒");
+            state.latest.upload_status = if state.queue.is_empty() { "uploaded" } else { "retrying" }.into();
+            state.latest.queued_count = state.queue.len();
+            state.latest.dropped_count = state.dropped_count;
+            state.latest.clone()
+        };
+        if stopped {
             break;
+        }
+        if after_flush.queued_count > 0 {
+            (hooks.emit)(&after_flush);
         }
     }
     if let Ok(mut state) = monitor.inner.state.lock() {

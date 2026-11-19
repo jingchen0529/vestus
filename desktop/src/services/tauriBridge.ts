@@ -106,6 +106,9 @@ export interface NetworkSample {
 export interface NetworkDiagnosticsSnapshot {
   samples: NetworkSample[];
   deviceId?: string | null;
+  uploadStatus?: "idle" | "pending" | "uploaded" | "retrying" | string;
+  queuedCount?: number;
+  droppedCount?: number;
 }
 
 export interface DesktopFaqItemView {
