@@ -9,6 +9,7 @@ import { FaqView } from "@/components/faq/FaqView";
 import { SystemSettings } from "@/components/settings/SystemSettings";
 import { authService, UserAccount } from "@/services/authService";
 import { createDesktopConfigSync } from "@/services/desktopConfigSync";
+import { createNetworkDiagnosticsController } from "@/services/networkDiagnosticsController";
 import {
   DesktopConfigView,
   isTauri,
@@ -60,6 +61,7 @@ function MainLayout() {
   // Each login (including the same account logging in again) owns its own async results.
   const loginGenerationRef = useRef(0);
   const configSyncRef = useRef<ReturnType<typeof createDesktopConfigSync> | null>(null);
+  const networkDiagnosticsRefreshRef = useRef<(() => void) | null>(null);
   const focusSyncRef = useRef<(() => void) | null>(null);
   const lastFocusSyncAtRef = useRef(0);
 
@@ -115,6 +117,7 @@ function MainLayout() {
         } else if (announce) {
           success("桌面配置已同步", `已加载 ${config.platforms.length} 个平台入口`);
         }
+        networkDiagnosticsRefreshRef.current?.();
       },
       onError: (reason, announce) => {
         const err = reason as { code?: string; message?: string } | null;
@@ -316,8 +319,21 @@ function MainLayout() {
   useEffect(() => {
     if (!desktopRuntime || !authReady || !currentUser || !authService.isAuthenticated()) return;
     let active = true;
-    let startRequested = false;
     let unlistenNetworkDiagnostics: (() => void) | undefined;
+    const diagnostics = createNetworkDiagnosticsController({
+      start: () => tauriBridge.startNetworkDiagnostics(),
+      getSnapshot: () => tauriBridge.getNetworkDiagnostics(),
+      stop: () => tauriBridge.stopNetworkDiagnostics(),
+      onSnapshot: (snapshot) => {
+        if (active) setNetworkDiagnostics(snapshot);
+      },
+      onLoading: (loading) => {
+        if (active) setNetworkDiagnosticsLoading(loading);
+      },
+    });
+    networkDiagnosticsRefreshRef.current = () => {
+      if (active) void diagnostics.refresh();
+    };
     setNetworkDiagnosticsLoading(true);
     tauriBridge.onNetworkDiagnosticsChange((snapshot) => {
       if (active) {
@@ -330,29 +346,14 @@ function MainLayout() {
     }).catch(() => {
       if (active) setNetworkDiagnosticsLoading(false);
     });
-    void (async () => {
-      const synced = await syncDesktopConfig(false);
-      if (!active || !synced) {
-        if (active) setNetworkDiagnosticsLoading(false);
-        return;
-      }
-      startRequested = true;
-      try {
-        await tauriBridge.startNetworkDiagnostics();
-        const snapshot = await tauriBridge.getNetworkDiagnostics();
-        if (active) {
-          setNetworkDiagnostics(snapshot);
-          setNetworkDiagnosticsLoading(false);
-        }
-        else void tauriBridge.stopNetworkDiagnostics().catch(() => undefined);
-      } catch {
-        if (active) setNetworkDiagnosticsLoading(false);
-      }
-    })();
+    void syncDesktopConfig(false).then((synced) => {
+      if (active && !synced) setNetworkDiagnosticsLoading(false);
+    });
     return () => {
       active = false;
       unlistenNetworkDiagnostics?.();
-      if (startRequested) void tauriBridge.stopNetworkDiagnostics().catch(() => undefined);
+      if (networkDiagnosticsRefreshRef.current) networkDiagnosticsRefreshRef.current = null;
+      diagnostics.dispose();
       setNetworkDiagnostics(null);
     };
   }, [desktopRuntime, authReady, currentUser]);

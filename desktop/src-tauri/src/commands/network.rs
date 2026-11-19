@@ -195,6 +195,17 @@ impl NetworkMonitor {
         })
     }
 
+    fn can_report(&self, run_token: u64, stop_rx: &tokio::sync::watch::Receiver<bool>) -> bool {
+        if *stop_rx.borrow() {
+            return false;
+        }
+        self.inner
+            .state
+            .lock()
+            .map(|state| state.run_token == run_token && state.running)
+            .unwrap_or(false)
+    }
+
     fn update_upload_state(
         &self,
         run_token: u64,
@@ -492,6 +503,9 @@ async fn flush_queue_with(
         };
         let mut delays = retry_delays.into_iter();
         loop {
+            if !monitor.can_report(run_token, stop_rx) {
+                return true;
+            }
             if let Err(error) = report(payload.clone()).await {
                 if error == ReportFailure::SessionChanged {
                     monitor.stop();
@@ -1016,6 +1030,41 @@ mod tests {
             "cancellation should stop retry loop"
         );
         assert_eq!(monitor.queue_len(), 1, "failed report must be retained");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopping_after_a_retry_failure_does_not_report_the_stale_payload_again() {
+        let monitor = NetworkMonitor::default();
+        monitor.enqueue(report(0));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempt_hook: ReportHook = Arc::new({
+            let attempts = Arc::clone(&attempts);
+            let monitor = monitor.clone();
+            move |_| {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    monitor.stop();
+                }
+                Box::pin(async { Err(ReportFailure::Retryable) })
+                    as WorkerFuture<Result<(), ReportFailure>>
+            }
+        });
+        let (_stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+
+        let stopped = flush_queue_with(
+            &monitor,
+            1,
+            &attempt_hook,
+            &mut stop_rx,
+            [Duration::ZERO; 3],
+        )
+        .await;
+        assert!(stopped, "stopping during retry must terminate the flush");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a stopped monitor must not report the stale retry payload"
+        );
     }
 
     #[tokio::test(start_paused = true)]
