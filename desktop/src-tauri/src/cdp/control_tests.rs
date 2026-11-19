@@ -694,6 +694,9 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}workbench?advid=51")})).await;
         expected_report(&mut reports, &format!("{base}workbench"), Some("advid=51")).await;
+        assert_eq!(test_evaluate(&endpoint, &target,
+            "new Promise(resolve => document.documentElement ? resolve(true) : document.addEventListener('DOMContentLoaded', () => resolve(true), {once:true}))").await,
+            true, "navigation reports may arrive before the renderer has created its document element");
         assert_eq!(test_evaluate(&endpoint, &target, "({guard:Object.hasOwn(window,'__vestusManagedLoginGuard'),inert:document.documentElement.inert,binding:typeof window.__vestusReportActivity})").await,
             json!({"guard":true,"inert":false,"binding":"undefined"}));
         test_evaluate(&endpoint, &target, "window.open('/popup?advid=52','managed-popup','width=400,height=300'); true").await;

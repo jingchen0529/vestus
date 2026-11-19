@@ -198,6 +198,13 @@ function nativeCommand(command, args, options) {
   }
   assert.fail(`unexpected command ${command}`);
 }
+
+test("Windows Chromium extraction uses the compatible .NET ZipFile overload", () => {
+  const source = readFileSync(new URL("./prepare-chromium.mjs", import.meta.url), "utf8");
+  assert.match(source, /\[System\.IO\.Compression\.ZipFile\]::ExtractToDirectory\(\$\{psLiteral\(archive\)\}, \$\{psLiteral\(extractionRoot\)\}\)/);
+  assert.doesNotMatch(source, /Expand-Archive/);
+});
+
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "vestus-install-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

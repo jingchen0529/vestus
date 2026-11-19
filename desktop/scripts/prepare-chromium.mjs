@@ -188,7 +188,7 @@ export async function prepareChromium({ platform = process.platform, arch = proc
     const commandOptions = { cwd: commandRoot, stdio: "pipe", timeout: 5 * 60_000, shell: false };
     if (platform === "darwin") execFileImpl("/usr/bin/ditto", ["-x", "-k", archive, extractionRoot], commandOptions);
     else if (platform === "linux") execFileImpl("unzip", ["-q", archive, "-d", extractionRoot], commandOptions);
-    else execFileImpl("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath ${psLiteral(archive)} -DestinationPath ${psLiteral(extractionRoot)}`], commandOptions);
+    else execFileImpl("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory(${psLiteral(archive)}, ${psLiteral(extractionRoot)})`], commandOptions);
     const roots = readdirSync(extractionRoot);
     if (roots.length !== 1 || roots[0] !== pin.root) throw new Error("Extracted archive root mismatch");
     const source = join(extractionRoot, pin.root);
