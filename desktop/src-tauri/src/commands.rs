@@ -19,6 +19,7 @@ mod common;
 mod config;
 mod faq;
 mod managed;
+mod network;
 mod system;
 
 pub(crate) use browser::*;
@@ -26,6 +27,7 @@ pub(crate) use common::*;
 pub(crate) use config::*;
 pub(crate) use faq::*;
 pub(crate) use managed::*;
+pub(crate) use network::*;
 pub(crate) use system::*;
 
 #[cfg(test)]

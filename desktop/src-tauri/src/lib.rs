@@ -38,6 +38,7 @@ mod upstream;
 use activity::ActivityCollector;
 use auth::DesktopAuthState;
 use browser::BrowserSessionManager;
+use commands::NetworkMonitor;
 use state::AppState;
 use tauri::Manager;
 
@@ -50,6 +51,7 @@ pub fn run() {
         .manage(DesktopAuthState::default())
         .manage(BrowserSessionManager::default())
         .manage(ActivityCollector::default())
+        .manage(NetworkMonitor::default())
         .setup(|app| {
             match app.path().app_local_data_dir() {
                 Ok(root) => {
@@ -95,6 +97,9 @@ pub fn run() {
             commands::desktop_faq,
             commands::open_external_url,
             commands::check_github_release,
+            commands::get_network_diagnostics,
+            commands::start_network_diagnostics,
+            commands::stop_network_diagnostics,
         ])
         .build(tauri::generate_context!())
         .expect("启动 Tauri 应用失败");

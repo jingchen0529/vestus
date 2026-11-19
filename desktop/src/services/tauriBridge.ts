@@ -90,6 +90,24 @@ export interface BrowserProfileResetView {
   removed: number;
 }
 
+export interface NetworkSample {
+  sampleId: string;
+  route: string;
+  targetKind: string;
+  networkMode: string;
+  platformId?: string | null;
+  browserId?: string | null;
+  startedAtMs: number;
+  durationMs?: number | null;
+  status: string;
+  errorCode?: string | null;
+}
+
+export interface NetworkDiagnosticsSnapshot {
+  samples: NetworkSample[];
+  deviceId?: string | null;
+}
+
 export interface DesktopFaqItemView {
   question: string;
   answer: string;
@@ -155,6 +173,30 @@ export const tauriBridge = {
 
   async getStatus(): Promise<StatusView> {
     return await invokeDesktop<StatusView>("get_status");
+  },
+
+  async getNetworkDiagnostics(): Promise<NetworkDiagnosticsSnapshot> {
+    return await invokeDesktop<NetworkDiagnosticsSnapshot>("get_network_diagnostics");
+  },
+
+  async startNetworkDiagnostics(): Promise<void> {
+    await invokeDesktop<void>("start_network_diagnostics");
+  },
+
+  async stopNetworkDiagnostics(): Promise<void> {
+    await invokeDesktop<void>("stop_network_diagnostics");
+  },
+
+  async onNetworkDiagnosticsChange(
+    callback: (snapshot: NetworkDiagnosticsSnapshot) => void,
+  ): Promise<() => void> {
+    if (!isTauri()) {
+      throw new Error("该功能仅可在 Vestus 桌面客户端中使用");
+    }
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<NetworkDiagnosticsSnapshot>("network-diagnostics-changed", (event) => {
+      callback(event.payload);
+    });
   },
 
   /** 拉取管理员配置的「常见问题」内容；未配置返回 null。 */
