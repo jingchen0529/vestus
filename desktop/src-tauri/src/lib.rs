@@ -28,6 +28,7 @@ mod config;
 mod device;
 mod httpio;
 mod managed_cdp;
+mod network_diagnostics;
 mod probe;
 mod profile;
 mod rt;

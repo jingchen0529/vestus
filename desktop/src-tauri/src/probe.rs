@@ -11,8 +11,28 @@
 use std::time::Duration;
 
 use crate::upstream::{TunnelError, UpstreamProxy};
+use crate::browser::DevToolsEndpoint;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Issue a browser-level DevTools command without executing page JavaScript.
+pub(crate) async fn probe_browser(endpoint: &DevToolsEndpoint) -> Result<(), String> {
+    let stream = tokio::time::timeout(Duration::from_millis(8000), tokio::net::TcpStream::connect(("127.0.0.1", endpoint.port)))
+        .await.map_err(|_| "timeout".to_string()).and_then(|result| result.map_err(|error| error.to_string()))?;
+    let (mut socket, _) = tokio_tungstenite::client_async(endpoint.websocket_url(), stream).await.map_err(|error| error.to_string())?;
+    use futures_util::{SinkExt, StreamExt};
+    socket.send(tokio_tungstenite::tungstenite::Message::Text(r#"{"id":1,"method":"Browser.getVersion","params":{}}"#.into())).await.map_err(|error| error.to_string())?;
+    while let Some(frame) = socket.next().await {
+        let frame = frame.map_err(|error| error.to_string())?;
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+            let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            if value.get("id").and_then(serde_json::Value::as_i64) == Some(1) {
+                return if value.get("error").is_some() { Err("cdp_error".into()) } else { Ok(()) };
+            }
+        }
+    }
+    Err("cdp_closed".into())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {

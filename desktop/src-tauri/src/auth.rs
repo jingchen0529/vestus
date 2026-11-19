@@ -35,6 +35,7 @@ const DESKTOP_CONFIG_LEASE_PATH: &str = "/api/user/desktop-config/lease";
 const DESKTOP_FAQ_PATH: &str = "/api/user/desktop-faq";
 const PRODUCT_NAME_PATH: &str = "/api/product";
 const ACTIVITY_REPORT_PATH: &str = "/api/user/browser-activity/v2";
+const NETWORK_DIAGNOSTICS_PATH: &str = "/api/user/network-diagnostics";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -308,6 +309,14 @@ pub(crate) struct ManagedSessionReportReceipt {
     pub(crate) auto_relogin: bool,
     #[serde(default)]
     pub(crate) recovery_status: String,
+}
+
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkDiagnosticsReceipt {
+    pub(crate) accepted: u32,
+    pub(crate) duplicate: u32,
+    pub(crate) protocol_version: u8,
 }
 
 #[derive(Default)]
@@ -1000,6 +1009,30 @@ impl DesktopAuthState {
         validate_activity_acknowledgement(&ack, batch_id)
     }
 
+    /// Upload bounded network diagnostics while preserving the current session.
+    pub(crate) async fn report_network_diagnostics<T: Serialize + ?Sized>(
+        &self,
+        owner_user_id: i64,
+        owner_profile_key: &str,
+        payload: &T,
+    ) -> AuthResult<NetworkDiagnosticsReceipt> {
+        let token = self.activity_token(owner_user_id, owner_profile_key)?;
+        let response = self
+            .client()?
+            .post(self.endpoint(NETWORK_DIAGNOSTICS_PATH)?)
+            .bearer_auth(token)
+            .json(payload)
+            .send()
+            .await
+            .map_err(network_error)?;
+        let receipt: NetworkDiagnosticsReceipt =
+            decode_success_json(response, "网络诊断上报响应格式错误").await?;
+        if receipt.protocol_version != 1 {
+            return Err(DesktopAuthError::invalid_response("网络诊断协议版本错误"));
+        }
+        Ok(receipt)
+    }
+
     fn activity_token(&self, owner_user_id: i64, owner_profile_key: &str) -> AuthResult<String> {
         let state = self.session_guard()?;
         let matches = state
@@ -1041,6 +1074,7 @@ impl DesktopAuthState {
                 | DESKTOP_CONFIG_LEASE_PATH
                 | PRODUCT_NAME_PATH
                 | ACTIVITY_REPORT_PATH
+                | NETWORK_DIAGNOSTICS_PATH
         ));
         Ok(format!("{base}{path}"))
     }
