@@ -300,9 +300,7 @@ async fn run_worker(
         if stopped {
             break;
         }
-        if after_flush.queued_count > 0 {
-            (hooks.emit)(&after_flush);
-        }
+        (hooks.emit)(&after_flush);
     }
     if let Ok(mut state) = monitor.inner.state.lock() {
         if state.generation == generation {
@@ -478,6 +476,16 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("worker did not make {expected} collection calls");
+    }
+
+    async fn wait_for_emits(emitted: &Arc<Mutex<Vec<NetworkDiagnosticsSnapshot>>>, expected: usize) {
+        for _ in 0..100 {
+            if emitted.lock().expect("事件锁已中毒").len() >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("worker did not emit {expected} snapshots");
     }
 
     #[tokio::test(start_paused = true)]
@@ -677,29 +685,28 @@ mod tests {
         let handle = monitor
             .start_test_worker(31, hooks, INTERVAL, RETRY_DELAYS)
             .expect("worker should start");
-        emitted_once.notified().await;
+        wait_for_emits(&emitted, 1).await;
         monitor.wake();
-        emitted_once.notified().await;
+        wait_for_emits(&emitted, 4).await;
         monitor.stop();
         handle.await.unwrap();
         management_server.await.unwrap();
         cdp_server.await.unwrap();
 
         let emitted = emitted.lock().expect("事件锁已中毒");
-        assert_eq!(emitted.len(), 2);
-        assert_eq!(
-            emitted[0]
-                .samples
-                .iter()
-                .find(|sample| sample.route == "browser")
-                .and_then(|sample| sample.error_code.as_deref()),
-            None
-        );
-        let browser = emitted[1]
-            .samples
+        assert_eq!(emitted.len(), 4);
+        assert_eq!(emitted[0].upload_status, "pending");
+        assert_eq!(emitted[1].upload_status, "uploaded");
+        assert_eq!(emitted[1].queued_count, 0);
+        assert!(emitted.iter().any(|snapshot| snapshot.upload_status == "uploaded" && snapshot.queued_count == 0));
+        assert!(emitted.iter().any(|snapshot| {
+            snapshot.samples.iter().any(|sample| sample.route == "browser" && sample.error_code.is_none())
+        }));
+        let browser = emitted
             .iter()
-            .find(|sample| sample.route == "browser")
-            .expect("browser sample should be emitted");
+            .flat_map(|snapshot| snapshot.samples.iter())
+            .find(|sample| sample.route == "browser" && sample.error_code.as_deref() == Some("browser_closed"))
+            .expect("browser closed sample should be emitted");
         assert_eq!(browser.error_code.as_deref(), Some("browser_closed"));
         assert_eq!(browser.browser_id.as_deref(), Some("7"));
         assert_eq!(browser.platform_id.as_deref(), Some("701"));

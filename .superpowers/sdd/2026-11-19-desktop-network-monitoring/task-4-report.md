@@ -52,3 +52,12 @@
 - `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics -- --test-threads=1`：通过，9 个诊断与 IPC 序列化测试。
 - `npm --prefix desktop run check:surfaces`：通过。
 - `git diff --check`：通过。
+
+## 修复轮次 2（2026-11-19）
+
+- 成功上报后即使队列变为 0，worker 也发布更新后的快照事件，React 可以收到 `uploadStatus=uploaded` 和 `queuedCount=0`。
+- 生命周期测试增加上传状态事件断言，并保留浏览器关闭样本断言。
+
+验证：
+
+- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib commands::network -- --test-threads=1`：通过，9 个测试。
