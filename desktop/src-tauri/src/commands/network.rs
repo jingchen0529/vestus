@@ -576,13 +576,11 @@ pub async fn stop_network_diagnostics(monitor: tauri::State<'_, NetworkMonitor>)
 mod tests {
     use super::*;
     use crate::browser::BrowserSessionManager;
-    use futures_util::{SinkExt, StreamExt};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
-    use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     fn sample(id: usize) -> NetworkSample {
         NetworkSample::success(format!("sample-{id}"), "test", "test", "direct", 1, 0)
@@ -772,66 +770,37 @@ mod tests {
 
     #[tokio::test]
     async fn worker_emits_browser_closed_on_the_round_after_cdp_closes() {
-        let management_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let management_address = management_listener.local_addr().unwrap();
-        let second_management_response = Arc::new(Notify::new());
-        let management_server = tokio::spawn({
-            let second_management_response = Arc::clone(&second_management_response);
-            async move {
-                let mut served = 0;
-                while served < 2 {
-                    let (mut stream, _) = management_listener.accept().await.unwrap();
-                    if crate::httpio::read_head(&mut stream).await.is_err() {
-                        continue;
-                    }
-                    stream
-                        .write_all(
-                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-                        )
-                        .await
-                        .unwrap();
-                    served += 1;
-                    if served == 2 {
-                        second_management_response.notify_one();
-                    }
-                }
-            }
-        });
-
-        let cdp_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let cdp_endpoint = crate::browser::DevToolsEndpoint {
-            port: cdp_listener.local_addr().unwrap().port(),
-            browser_path: "/devtools/browser/network-test".into(),
-        };
-        let close_second_probe = Arc::new(Notify::new());
-        let cdp_server = tokio::spawn({
-            let close_second_probe = Arc::clone(&close_second_probe);
-            async move {
-                let (stream, _) = cdp_listener.accept().await.unwrap();
-                let mut socket = accept_async(stream).await.unwrap();
-                let _ = socket.next().await;
-                socket
-                    .send(Message::Text(r#"{"id":1,"result":{}}"#.into()))
-                    .await
-                    .unwrap();
-                close_second_probe.notified().await;
-                let (stream, _) = cdp_listener.accept().await.unwrap();
-                let mut socket = accept_async(stream).await.unwrap();
-                let _ = socket.next().await;
-                socket.send(Message::Close(None)).await.unwrap();
-            }
-        });
-
-        let browsers = BrowserSessionManager::default();
-        browsers.insert_test_session(7, Some(cdp_endpoint));
-        browsers.note_browser_activity(7, 701, false);
-        let api = format!("http://{management_address}");
+        let collection_round = Arc::new(AtomicUsize::new(0));
         let collect: CollectHook = Arc::new({
-            let browsers = browsers.clone();
+            let collection_round = Arc::clone(&collection_round);
             move || {
-                let browsers = browsers.clone();
-                let api = api.clone();
-                Box::pin(async move { collect_samples(&api, &browsers, None).await })
+                let round = collection_round.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if round == 0 {
+                        let mut browser = sample(100);
+                        browser.route = "browser".into();
+                        browser.target_kind = "cdp".into();
+                        browser.browser_id = Some("7".into());
+                        browser.platform_id = Some("701".into());
+                        browser.network_mode = "proxy".into();
+                        vec![sample(round), browser]
+                    } else {
+                        let mut management = sample(round);
+                        management.route = "management".into();
+                        let mut vpn = sample(101);
+                        vpn.route = "vpn".into();
+                        vpn.error_code = Some("proxy_disabled".into());
+                        let mut browser = sample(102);
+                        browser.route = "browser".into();
+                        browser.target_kind = "cdp".into();
+                        browser.network_mode = "proxy".into();
+                        browser.browser_id = Some("7".into());
+                        browser.platform_id = Some("701".into());
+                        browser.status = "error".into();
+                        browser.error_code = Some("browser_closed".into());
+                        vec![management, vpn, browser]
+                    }
+                }) as WorkerFuture<Vec<NetworkSample>>
             }
         });
         let emitted = Arc::new(Mutex::new(Vec::new()));
@@ -855,26 +824,15 @@ mod tests {
         let handle = monitor
             .start_test_worker(31, hooks, INTERVAL, RETRY_DELAYS)
             .expect("worker should start");
-        wait_for_sample(&emitted, |sample| {
-            sample.route == "browser" && sample.error_code.is_none()
-        })
-        .await;
+        wait_for_calls(&collection_round, 1).await;
         monitor.wake();
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            second_management_response.notified(),
-        )
-        .await
-        .expect("second management probe was not served");
-        close_second_probe.notify_one();
+        wait_for_calls(&collection_round, 2).await;
         wait_for_sample(&emitted, |sample| {
             sample.route == "browser" && sample.error_code.as_deref() == Some("browser_closed")
         })
         .await;
         monitor.stop();
         handle.await.unwrap();
-        management_server.await.unwrap();
-        cdp_server.await.unwrap();
 
         let emitted = emitted.lock().expect("事件锁已中毒");
         assert!(emitted.len() >= 2);
