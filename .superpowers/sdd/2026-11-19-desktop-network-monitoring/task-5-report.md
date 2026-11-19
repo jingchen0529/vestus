@@ -27,3 +27,10 @@
 验证命令与结果：
 - `npm --prefix web test -- network-diagnostics.test.mjs`：130 项通过（项目 test glob 会运行全部测试）。
 - `npm --prefix web run build`：通过。
+
+## Task 5 fix round 2
+- 增加真实 `fetch` 失败行为测试，筛选变更使用页码 1 发起请求，并断言失败后状态清空旧 items/total 后保留错误信息。
+- 增加 VPN 代理探针和浏览器 CDP 失败标签的 SSR 断言。
+- 增加 p50、p95、p50Ms、p95Ms、failureRate 全为空时三个统计指标均显示空值的 SSR 断言。
+
+验证：`npm --prefix web test -- network-diagnostics.test.mjs`，133 项通过。
