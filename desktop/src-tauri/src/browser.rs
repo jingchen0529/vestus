@@ -644,6 +644,28 @@ impl BrowserSessionManager {
         result
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_test_session(&self, browser_id: u64, endpoint: Option<DevToolsEndpoint>) {
+        let session = Arc::new(ManagedBrowser {
+            process: Arc::new(Mutex::new(None)),
+            profile_dir: PathBuf::new(),
+            endpoint: Arc::new(Mutex::new(endpoint)),
+            ephemeral: false,
+            closing: AtomicBool::new(false),
+            close_reason: OnceLock::new(),
+            finish: Mutex::new(BrowserFinish { lease: None }),
+            finished: Condvar::new(),
+            platform_id: Mutex::new(None),
+            direct_mode: AtomicBool::new(false),
+            last_active_ms: std::sync::atomic::AtomicU64::new(0),
+        });
+        self.inner
+            .sessions
+            .lock()
+            .expect("浏览器会话锁已中毒")
+            .insert(browser_id, session);
+    }
+
     /// Close every Chromium process owned by this desktop session. Ordinary
     /// profiles keep graceful persistence; managed directories are erased by
     /// the lifecycle finalizer before their leases are released.
