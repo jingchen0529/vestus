@@ -8,30 +8,35 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runControlTest } from "./test-browser-control.mjs";
 
-const passing = "running 2 tests\ntest cdp::control_tests::target_commands_work_against_a_real_browser ... ok\ntest cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.01s\n";
+const passing = [
+  "running 1 test\ntest cdp::control_tests::target_commands_work_against_a_real_browser ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 333 filtered out; finished in 0.01s\n",
+  "running 1 test\ntest cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 333 filtered out; finished in 0.01s\n",
+].join("");
 
-async function exercise(t, { output = passing, code = 0, signal = null, error, throws = false, chrome = process.execPath } = {}) {
+async function exercise(t, { output, code = 0, signal = null, error, throws = false, chrome = process.execPath } = {}) {
   const root = mkdtempSync(join(tmpdir(), "vestus-control-runner-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const resultDir = join(root, "results");
   let stdout = "";
   let stderr = "";
-  let invocation;
+  const invocations = [];
   const status = await runControlTest({
     env: { VESTUS_CONTROL_CHROMIUM: chrome },
     resultDir,
     stdout: { write: (data) => { stdout += data.toString(); } },
     stderr: { write: (data) => { stderr += data.toString(); } },
     spawnProcess: (...args) => {
-      invocation = args;
+      invocations.push(args);
       if (throws) throw error;
       const child = new EventEmitter();
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
       queueMicrotask(() => {
-        child.stdout.emit("data", Buffer.from(output.slice(0, 17)));
-        child.stdout.emit("data", Buffer.from(output.slice(17)));
-        child.stderr.emit("data", Buffer.from("cargo diagnostics\n"));
+        const selectedOutput = passing.split(/(?=running 1 test\n)/)[invocations.length - 1];
+        const testOutput = output ?? selectedOutput;
+        child.stdout.emit("data", Buffer.from(testOutput.slice(0, 17)));
+        child.stdout.emit("data", Buffer.from(testOutput.slice(17)));
+        if (invocations.length === 1) child.stderr.emit("data", Buffer.from("cargo diagnostics\n"));
         if (error) child.emit("error", error);
         child.emit("close", code, signal);
       });
@@ -39,7 +44,7 @@ async function exercise(t, { output = passing, code = 0, signal = null, error, t
     },
   });
   return {
-    status, stdout, stderr, invocation,
+    status, stdout, stderr, invocations,
     log: readFileSync(join(resultDir, "control.log"), "utf8"),
     result: JSON.parse(readFileSync(join(resultDir, "control.json"), "utf8")),
   };
@@ -55,33 +60,38 @@ test("missing cargo error followed by close cannot pass and is recorded and prin
   assert.match(run.result.error, /spawn cargo ENOENT/);
 });
 
-test("both named real-browser tests succeed with locked serial ignored-test selection", async (t) => {
+test("only the two required real-browser tests succeed with locked serial selection", async (t) => {
   const run = await exercise(t);
   assert.equal(run.status, 0);
   assert.equal(run.result.passed, true);
   assert.equal(run.result.exitCode, 0);
   assert.equal(run.result.signal, null);
-  assert.equal(run.invocation[0], "cargo");
-  assert.deepEqual(run.invocation[1], [
-    "test", "--locked", "--lib", "cdp::control_tests::",
-    "--", "--ignored", "--test-threads=1",
+  assert.equal(run.invocations.length, 2);
+  assert.deepEqual(run.invocations.map(([command, args]) => [command, args.at(-1)]), [
+    ["cargo", "cdp::control_tests::target_commands_work_against_a_real_browser"],
+    ["cargo", "cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser"],
   ]);
-  assert.equal(run.invocation[2].cwd, fileURLToPath(new URL("../src-tauri", import.meta.url)));
-  assert.equal(run.invocation[2].env.VESTUS_CONTROL_CHROMIUM, process.execPath);
-  assert.deepEqual(run.invocation[2].stdio, ["ignore", "pipe", "pipe"]);
-  assert.ok(run.stdout.includes(passing));
+  for (const invocation of run.invocations) {
+    assert.deepEqual(invocation[1].slice(0, 3), ["test", "--locked", "--lib"]);
+    assert.deepEqual(invocation[1].slice(3, 5), ["--", "--ignored"]);
+    assert.equal(invocation[1][5], "--test-threads=1");
+    assert.equal(invocation[2].cwd, fileURLToPath(new URL("../src-tauri", import.meta.url)));
+    assert.equal(invocation[2].env.VESTUS_CONTROL_CHROMIUM, process.execPath);
+    assert.deepEqual(invocation[2].stdio, ["ignore", "pipe", "pipe"]);
+  }
+  assert.ok(passing.split("\n").filter((line) => line.startsWith("test cdp::")).every((line) => run.stdout.includes(line)));
   assert.match(run.stderr, /cargo diagnostics/);
-  assert.ok(run.log.includes(passing));
+  assert.ok(passing.split("\n").filter((line) => line.startsWith("test cdp::")).every((line) => run.log.includes(line)));
   assert.match(run.log, /cargo diagnostics/);
-  assert.equal(run.result.stdout, passing);
+  assert.equal(run.result.stdout.split("\n").filter((line) => line.startsWith("test cdp::")).length, 2);
   assert.equal(run.result.stderr, "cargo diagnostics\n");
 });
 
 for (const [name, options] of [
   ["zero tests selected", { output: "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out;\n" }],
   ["all ignored", { output: "running 1 test\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 42 filtered out;\n" }],
-  ["unexpected extra passing test", { output: passing.replace("2 passed", "3 passed") }],
-  ["missing URL-only test", { output: passing.replace(/^test cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser \.\.\. ok\n/m, "") }],
+  ["unexpected extra passing test", { output: passing.replace("1 passed", "2 passed") }],
+  ["missing URL-only test", { output: passing.replace(/^running 1 test\ntest cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser \.\.\. ok\n\ntest result: ok\. 1 passed; 0 failed; 0 ignored; 333 filtered out; finished in 0\.01s\n/m, "") }],
   ["renamed URL-only test", { output: passing.replace("url_only_collection_and_managed_guard_against_a_real_browser", "unrelated_real_browser_test") }],
   ["passing plus ignored", { output: passing.replace("0 ignored", "1 ignored") }],
   ["no test summary", { output: "cargo diagnostics only\n" }],
@@ -115,7 +125,7 @@ for (const chrome of ["relative/chrome", join(tmpdir(), "vestus-control-missing-
   test(`invalid Chromium path ${JSON.stringify(chrome)} never invokes cargo`, async (t) => {
     const run = await exercise(t, { chrome });
     assert.equal(run.status, 1);
-    assert.equal(run.invocation, undefined);
+    assert.equal(run.invocations.length, 0);
     assert.match(run.stderr, /existing absolute executable path/);
   });
 }
@@ -169,4 +179,11 @@ test("release gates real control on every platform between core and unchanged pe
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.scripts["test:control"], "node scripts/test-browser-control.mjs");
   assert.ok(pkg.scripts.test.includes("scripts/*.test.mjs"));
+});
+
+test("control runner invokes only the required real Chromium tests by exact name", () => {
+  const runner = readFileSync(new URL("./test-browser-control.mjs", import.meta.url), "utf8");
+  assert.match(runner, /for \(const testName of requiredTests\)/);
+  assert.match(runner, /\[\.\.\.args, testName\]/);
+  assert.doesNotMatch(runner, /"test", "--locked", "--lib", "cdp::control_tests::"/);
 });

@@ -11,7 +11,7 @@ const requiredTests = [
   "cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser",
 ];
 const args = [
-  "test", "--locked", "--lib", "cdp::control_tests::",
+  "test", "--locked", "--lib",
   "--", "--ignored", "--test-threads=1",
 ];
 
@@ -46,28 +46,32 @@ export async function runControlTest({
     }
     accessSync(chrome, constants.X_OK);
     stdout.write(`Testing ${chrome}\nResults: ${resultDir}\n`);
-    const result = await new Promise((resolveResult) => {
-      const child = spawnProcess("cargo", [...args], {
-        cwd: join(desktop, "src-tauri"),
-        env: { ...env, VESTUS_CONTROL_CHROMIUM: chrome },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      for (const [stream, destination, isError] of [
-        [child.stdout, stdout, false], [child.stderr, stderr, true],
-      ]) {
-        stream?.on("data", (data) => {
-          if (isError) capturedErr += data.toString();
-          else capturedOut += data.toString();
-          appendFileSync(logPath, data);
-          destination.write(data);
+    const results = [];
+    for (const testName of requiredTests) {
+      const result = await new Promise((resolveResult) => {
+        const child = spawnProcess("cargo", [...args, testName], {
+          cwd: join(desktop, "src-tauri"),
+          env: { ...env, VESTUS_CONTROL_CHROMIUM: chrome },
+          stdio: ["ignore", "pipe", "pipe"],
         });
-      }
-      child.on("error", recordError);
-      child.on("close", (code, closedSignal) => resolveResult({ code, signal: closedSignal }));
-      // Promise also rejects a synchronous spawn failure.
-    });
-    exitCode = result.code;
-    signal = result.signal;
+        for (const [stream, destination, isError] of [
+          [child.stdout, stdout, false], [child.stderr, stderr, true],
+        ]) {
+          stream?.on("data", (data) => {
+            if (isError) capturedErr += data.toString();
+            else capturedOut += data.toString();
+            appendFileSync(logPath, data);
+            destination.write(data);
+          });
+        }
+        child.on("error", recordError);
+        child.on("close", (code, closedSignal) => resolveResult({ code, signal: closedSignal }));
+      });
+      results.push(result);
+      if (result.code !== 0 || result.signal || failure) break;
+    }
+    exitCode = results.find((result) => result.code !== 0)?.code ?? results[0]?.code ?? null;
+    signal = results.find((result) => result.signal)?.signal ?? null;
   } catch (error) {
     recordError(error);
   }
@@ -77,9 +81,9 @@ export async function runControlTest({
     /^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;/gm,
   )];
   const testNames = [...output.matchAll(/^test (\S+) \.\.\. ok$/gm)].map((match) => match[1]);
-  const ran = summaries.length === 1 && summaries[0][1] === "ok"
-    && Number(summaries[0][2]) === requiredTests.length
-    && summaries[0][3] === "0" && summaries[0][4] === "0"
+  const ran = summaries.length === requiredTests.length
+    && summaries.every((summary) => summary[1] === "ok"
+      && summary[2] === "1" && summary[3] === "0" && summary[4] === "0")
     && testNames.length === requiredTests.length
     && requiredTests.every((name) => testNames.includes(name));
   const passed = !failure && exitCode === 0 && !signal && ran;
@@ -88,9 +92,10 @@ export async function runControlTest({
     appendFileSync(logPath, message);
     stderr.write(message);
   }
+  const resultArgs = requiredTests.map((testName) => [...args, testName]);
   writeFileSync(join(resultDir, "control.json"), JSON.stringify({
     startedAt, finishedAt: new Date().toISOString(), platform: process.platform,
-    architecture: process.arch, executable: chrome, args,
+    architecture: process.arch, executable: chrome, args: resultArgs,
     exitCode, signal, passed, error: failure, stdout: capturedOut, stderr: capturedErr,
   }, null, 2) + "\n");
   return passed ? 0 : 1;

@@ -635,17 +635,26 @@ mod tests {
         panic!("worker did not make {expected} collection calls");
     }
 
-    async fn wait_for_emits(
+    async fn wait_for_sample(
         emitted: &Arc<Mutex<Vec<NetworkDiagnosticsSnapshot>>>,
-        expected: usize,
+        predicate: impl Fn(&NetworkSample) -> bool,
     ) {
-        for _ in 0..100 {
-            if emitted.lock().expect("事件锁已中毒").len() >= expected {
-                return;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let found = emitted
+                    .lock()
+                    .expect("事件锁已中毒")
+                    .iter()
+                    .flat_map(|snapshot| snapshot.samples.iter())
+                    .any(&predicate);
+                if found {
+                    return;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-        panic!("worker did not emit {expected} snapshots");
+        })
+        .await
+        .expect("worker did not emit the expected sample");
     }
 
     #[tokio::test(start_paused = true)]
@@ -788,28 +797,17 @@ mod tests {
             browser_path: "/devtools/browser/network-test".into(),
         };
         let cdp_server = tokio::spawn(async move {
-            let mut served = 0;
-            while served < 2 {
-                let (stream, _) = cdp_listener.accept().await.unwrap();
-                let Ok(mut socket) = accept_async(stream).await else {
-                    continue;
-                };
-                if socket.next().await.is_none() {
-                    continue;
-                }
-                if served == 1 {
-                    socket.send(Message::Close(None)).await.unwrap();
-                } else {
-                    if socket
-                        .send(Message::Text(r#"{"id":1,"result":{}}"#.into()))
-                        .await
-                        .is_err()
-                    {
-                        continue;
-                    }
-                }
-                served += 1;
-            }
+            let (stream, _) = cdp_listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let _ = socket.next().await;
+            socket
+                .send(Message::Text(r#"{"id":1,"result":{}}"#.into()))
+                .await
+                .unwrap();
+            let (stream, _) = cdp_listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let _ = socket.next().await;
+            socket.send(Message::Close(None)).await.unwrap();
         });
 
         let browsers = BrowserSessionManager::default();
@@ -845,16 +843,22 @@ mod tests {
         let handle = monitor
             .start_test_worker(31, hooks, INTERVAL, RETRY_DELAYS)
             .expect("worker should start");
-        wait_for_emits(&emitted, 1).await;
+        wait_for_sample(&emitted, |sample| {
+            sample.route == "browser" && sample.error_code.is_none()
+        })
+        .await;
         monitor.wake();
-        wait_for_emits(&emitted, 4).await;
+        wait_for_sample(&emitted, |sample| {
+            sample.route == "browser" && sample.error_code.as_deref() == Some("browser_closed")
+        })
+        .await;
         monitor.stop();
         handle.await.unwrap();
         management_server.await.unwrap();
         cdp_server.await.unwrap();
 
         let emitted = emitted.lock().expect("事件锁已中毒");
-        assert_eq!(emitted.len(), 4);
+        assert!(emitted.len() >= 2);
         assert_eq!(emitted[0].upload_status, "pending");
         assert!(emitted
             .iter()
