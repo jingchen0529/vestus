@@ -14,6 +14,7 @@ use crate::managed_cdp;
 use crate::profile::{self, ProfileSpec};
 use crate::rt;
 use crate::state::AppState;
+use crate::commands::NetworkMonitor;
 
 use super::*;
 
@@ -63,6 +64,7 @@ pub async fn open_browser<R: Runtime>(
     state: tauri::State<'_, AppState>,
     auth: tauri::State<'_, DesktopAuthState>,
     browsers: tauri::State<'_, BrowserSessionManager>,
+    network: tauri::State<'_, NetworkMonitor>,
     activity: tauri::State<'_, ActivityCollector>,
     platform_id: i64,
     managed_account_id: Option<i64>,
@@ -207,6 +209,7 @@ pub async fn open_browser<R: Runtime>(
 
     if let Some(browser_id) = browsers.running_browser(profile.dir()) {
         browsers.note_browser_activity(browser_id, platform_id, direct_mode);
+        network.wake();
         // 已有浏览器只能激活已存在的平台标签。端点不可用、标签不存在或激活失败时
         // 直接失败；不创建第二个标签，也不转交到另一个窗口。
         // 托管复用也不再次注入：watcher 始终对应该进程最初使用的 bootstrap 身份。
@@ -370,6 +373,7 @@ pub async fn open_browser<R: Runtime>(
         return Err(browser_command_error(error));
     }
     browsers.note_browser_activity(browser_id, platform_id, direct_mode);
+    network.wake();
 
     if let Some(rx) = ready_rx.take() {
         let ready = tokio::time::timeout(Duration::from_secs(35), rx).await;

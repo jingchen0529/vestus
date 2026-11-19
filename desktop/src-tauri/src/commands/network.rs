@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::auth::DesktopAuthState;
 use crate::browser::BrowserSessionManager;
 use crate::device;
-use crate::network_diagnostics::{measure_browser_cdp, measure_management, NetworkDiagnosticsReport, NetworkDiagnosticsSnapshot, NetworkSample};
+use crate::network_diagnostics::{measure_browser_cdp, measure_management, measure_proxy, NetworkDiagnosticsReport, NetworkDiagnosticsSnapshot, NetworkSample};
 use crate::state::AppState;
 use super::{auth_command_error, require_desktop_auth, CmdResult, CommandError};
 
@@ -23,6 +23,7 @@ pub struct NetworkMonitor {
 
 struct MonitorInner {
     state: Mutex<MonitorState>,
+    wake: tokio::sync::Notify,
 }
 
 struct MonitorState {
@@ -39,7 +40,7 @@ impl Default for NetworkMonitor {
             running: false, generation: 0, stop: None,
             latest: NetworkDiagnosticsSnapshot { samples: Vec::new(), device_id: device::wire_device_id() },
             queue: VecDeque::new(),
-        }) }) }
+        }), wake: tokio::sync::Notify::new() }) }
     }
 }
 
@@ -55,6 +56,8 @@ impl NetworkMonitor {
         if let Some(stop) = state.stop.take() { let _ = stop.send(true); }
     }
 
+    pub fn wake(&self) { self.inner.wake.notify_one(); }
+
     fn start<R: Runtime>(&self, app: AppHandle<R>, auth: DesktopAuthState, browsers: BrowserSessionManager, owner: (i64, String, u64), api: String) -> CmdResult<()> {
         let (user_id, profile_key, generation) = owner;
         let mut state = self.inner.state.lock().expect("网络监控锁已中毒");
@@ -68,7 +71,7 @@ impl NetworkMonitor {
             let mut first = true;
             loop {
                 if !first {
-                    tokio::select! { _ = tokio::time::sleep(INTERVAL) => {}, changed = stop_rx.changed() => { if changed.is_err() || *stop_rx.borrow() { break; } } }
+                    tokio::select! { _ = tokio::time::sleep(INTERVAL) => {}, _ = monitor.inner.wake.notified() => {}, changed = stop_rx.changed() => { if changed.is_err() || *stop_rx.borrow() { break; } } }
                 }
                 first = false;
                 if *stop_rx.borrow() { break; }
@@ -84,13 +87,17 @@ impl NetworkMonitor {
                 let _ = app.emit("network-diagnostics-changed", &snapshot);
                 if flush_queue(&monitor, &auth, user_id, &profile_key, generation).await { break; }
             }
+            if let Ok(mut state) = monitor.inner.state.lock() {
+                if state.generation == generation { state.running = false; state.stop = None; }
+            }
         });
         Ok(())
     }
 }
 
 async fn collect_samples(api: &str, browsers: &BrowserSessionManager) -> Vec<NetworkSample> {
-    let mut samples = vec![measure_management(&format!("{api}/api/product")).await];
+    let mut samples = vec![measure_management(&format!("{api}/api/product")).await,
+        measure_proxy(None, &format!("{api}/api/product")).await];
     if let Some(browser) = browsers.recent_sessions().into_iter().next() {
         let mut sample = measure_browser_cdp(browser.endpoint.as_ref()).await;
         sample.platform_id = Some(browser.platform_id.to_string());
@@ -103,11 +110,14 @@ async fn collect_samples(api: &str, browsers: &BrowserSessionManager) -> Vec<Net
 
 /// Returns true when the owner session changed and the worker must terminate.
 async fn flush_queue(monitor: &NetworkMonitor, auth: &DesktopAuthState, user: i64, profile: &str, generation: u64) -> bool {
+    let mut retry_delays = [Duration::from_secs(5), Duration::from_secs(30), Duration::from_secs(120)].into_iter();
     loop {
         let report = { monitor.inner.state.lock().ok().and_then(|state| state.queue.front().cloned()) };
         let Some(report) = report else { return false; };
         if let Err(error) = auth.report_network_diagnostics(user, profile, generation, &report).await {
-            return matches!(error.code.as_str(), "session_changed" | "unauthenticated");
+            if matches!(error.code.as_str(), "session_changed" | "unauthenticated") { return true; }
+            if let Some(delay) = retry_delays.next() { tokio::time::sleep(delay).await; continue; }
+            return false;
         }
         if let Ok(mut state) = monitor.inner.state.lock() { state.queue.pop_front(); }
     }
