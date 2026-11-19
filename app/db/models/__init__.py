@@ -17,6 +17,7 @@ from app.db.models.managed_platform import (
     ManagedPlatformAccount,
     ManagedPlatformBinding,
 )
+from app.db.models.network_metric import NetworkMetric
 from app.db.models.platform import Platform
 from app.db.models.proxy import Proxy
 from app.db.models.setting import SystemSetting
@@ -34,6 +35,7 @@ __all__ = [
     "ManagedBrowserSession",
     "ManagedPlatformAccount",
     "ManagedPlatformBinding",
+    "NetworkMetric",
     "Platform",
     "Proxy",
     "SystemSetting",

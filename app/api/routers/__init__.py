@@ -24,6 +24,7 @@ from app.api.routers import (
     legacy_auth,
     logs,
     managed_platforms,
+    network_metrics,
     platforms,
     proxies,
     settings,
@@ -50,6 +51,7 @@ ROUTERS: List[APIRouter] = [
     managed_platforms.router,
     logs.router,
     browser_activity.router,
+    network_metrics.router,
     advertiser_accounts.router,
     client.router,
 ]
