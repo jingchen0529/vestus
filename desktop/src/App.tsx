@@ -14,6 +14,7 @@ import {
   isTauri,
   tauriBridge,
   StatusView,
+  NetworkDiagnosticsSnapshot,
 } from "@/services/tauriBridge";
 
 function MainLayout() {
@@ -30,6 +31,8 @@ function MainLayout() {
   const [desktopConfig, setDesktopConfig] = useState<DesktopConfigView | null>(null);
   const [desktopConfigLoading, setDesktopConfigLoading] = useState(false);
   const [desktopConfigError, setDesktopConfigError] = useState<string | null>(null);
+  const [networkDiagnostics, setNetworkDiagnostics] = useState<NetworkDiagnosticsSnapshot | null>(null);
+  const [networkDiagnosticsLoading, setNetworkDiagnosticsLoading] = useState(false);
   const [proxyEnabled, setProxyEnabled] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem("vestus-desktop-proxy-enabled");
@@ -309,6 +312,36 @@ function MainLayout() {
     };
   }, [desktopRuntime, authReady, currentUser]);
 
+  useEffect(() => {
+    if (!desktopRuntime || !authReady || !currentUser || !authService.isAuthenticated()) return;
+    let active = true;
+    let unlistenNetworkDiagnostics: (() => void) | undefined;
+    setNetworkDiagnosticsLoading(true);
+    tauriBridge.getNetworkDiagnostics().then((snapshot) => {
+      if (active) setNetworkDiagnostics(snapshot);
+    }).catch(() => {
+      // 首次快照缺失时保留空态，后续事件仍可填充。
+    }).finally(() => {
+      if (active) setNetworkDiagnosticsLoading(false);
+    });
+    tauriBridge.onNetworkDiagnosticsChange((snapshot) => {
+      if (active) {
+        setNetworkDiagnostics(snapshot);
+        setNetworkDiagnosticsLoading(false);
+      }
+    }).then((unlisten) => {
+      if (active) unlistenNetworkDiagnostics = unlisten;
+      else unlisten();
+    }).catch(() => {
+      if (active) setNetworkDiagnosticsLoading(false);
+    });
+    return () => {
+      active = false;
+      unlistenNetworkDiagnostics?.();
+      setNetworkDiagnostics(null);
+    };
+  }, [desktopRuntime, authReady, currentUser]);
+
   // 管理员处理完凭据（如重新保存 Cookie）后，用户切回本窗口即自动同步一次
   // 登录状态，免去手动点「刷新」；60 秒节流，避免频繁触发服务端会话探测。
   focusSyncRef.current = () => {
@@ -504,6 +537,8 @@ function MainLayout() {
             proxyEnabled={proxyEnabled}
             onRetryConfig={() => syncDesktopConfig(true)}
             onOpenBrowser={handleOpenBrowser}
+            networkDiagnostics={networkDiagnostics}
+            networkDiagnosticsLoading={networkDiagnosticsLoading}
           />
         ) : activeTab === "faq" ? (
           <FaqView />
@@ -521,6 +556,8 @@ function MainLayout() {
             onSandboxEnabledChange={handleSandboxEnabledChange}
             onResetBrowserProfiles={handleResetBrowserProfiles}
             onSyncConfig={() => syncDesktopConfig(true)}
+            networkDiagnostics={networkDiagnostics}
+            networkDiagnosticsLoading={networkDiagnosticsLoading}
           />
         )}
       </main>

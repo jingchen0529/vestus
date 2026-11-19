@@ -27,7 +27,8 @@ import { ACCENT_COLOR_PRESETS, AccentColor } from "@/theme/accentColors";
 import { cn } from "@/lib/utils";
 import { getDirectConnectionStatus, getProxyIpDisplay } from "@/components/settings/proxyIpDisplay";
 import { UserAccount } from "@/services/authService";
-import { tauriBridge, DesktopConfigView, StatusView } from "@/services/tauriBridge";
+import { tauriBridge, DesktopConfigView, StatusView, NetworkDiagnosticsSnapshot } from "@/services/tauriBridge";
+import { NetworkDiagnosticsCard } from "@/components/network/NetworkDiagnosticsCard";
 import {
   versionService,
   VersionCheckResult,
@@ -50,6 +51,8 @@ interface SystemSettingsProps {
   /** 删掉当前账号在本机的全部浏览器环境。调用方负责提示结果，这里只管按钮状态。 */
   onResetBrowserProfiles?: () => Promise<void>;
   onSyncConfig: () => void;
+  networkDiagnostics: NetworkDiagnosticsSnapshot | null;
+  networkDiagnosticsLoading?: boolean;
 }
 
 export const SystemSettings: React.FC<SystemSettingsProps> = ({
@@ -65,6 +68,8 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
   onSandboxEnabledChange,
   onResetBrowserProfiles,
   onSyncConfig,
+  networkDiagnostics,
+  networkDiagnosticsLoading = false,
 }) => {
   const { accentColor, setAccentColor } = useTheme();
   const [directIp, setDirectIp] = React.useState<string | null>(null);
@@ -202,6 +207,8 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({
           代理环境状态、本机偏好与软件信息
         </p>
       </header>
+
+      <NetworkDiagnosticsCard snapshot={networkDiagnostics} loading={networkDiagnosticsLoading} />
 
       {/* 1. 代理与网络状态 */}
       <Card>

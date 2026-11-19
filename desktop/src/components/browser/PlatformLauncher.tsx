@@ -14,7 +14,9 @@ import {
   DesktopManagedAccount,
   DesktopPlatform,
   StatusView,
+  NetworkDiagnosticsSnapshot,
 } from "@/services/tauriBridge";
+import { NetworkDiagnosticsCard } from "@/components/network/NetworkDiagnosticsCard";
 import { cn } from "@/lib/utils";
 
 // 自动登录恢复中的账号不再要求用户联系管理员：系统会自行恢复并重开浏览器。
@@ -32,6 +34,8 @@ interface PlatformLauncherProps {
   proxyEnabled?: boolean;
   onRetryConfig: () => void;
   onOpenBrowser: (platformId: number, managedAccountId?: number) => Promise<void> | void;
+  networkDiagnostics: NetworkDiagnosticsSnapshot | null;
+  networkDiagnosticsLoading?: boolean;
 }
 
 /** 统一提示条：三种语气共用一套骨架，避免每条自己配色。 */
@@ -107,6 +111,8 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
   proxyEnabled = true,
   onRetryConfig,
   onOpenBrowser,
+  networkDiagnostics,
+  networkDiagnosticsLoading = false,
 }) => {
   const [launchingPlatformKey, setLaunchingPlatformKey] = useState<string | null>(null);
   const platforms = desktopConfig?.platforms || [];
@@ -154,6 +160,8 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
 
   return (
     <section className="mx-auto w-full max-w-3xl space-y-3.5">
+      <NetworkDiagnosticsCard snapshot={networkDiagnostics} loading={networkDiagnosticsLoading} />
+
       {/* 页头 */}
       <header className="flex items-end justify-between gap-3">
         <div className="min-w-0">
