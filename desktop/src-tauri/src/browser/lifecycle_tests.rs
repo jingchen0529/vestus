@@ -554,6 +554,7 @@ fn real_headless_chromium_force_kill_and_rapid_reopen() {
                     target_url: "about:blank",
                     window: None,
                     disable_sandbox: false,
+                    disable_field_trial_config: false,
                 },
                 move |endpoint| {
                     let _ = tx.send(endpoint);

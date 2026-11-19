@@ -440,6 +440,118 @@ async fn test_evaluate(endpoint: &DevToolsEndpoint, target: &str, expression: &s
     result["result"]["value"].clone()
 }
 
+fn material_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| panic!("set {name} for the material regression"))
+}
+
+async fn material_endpoint(profile: &std::path::Path) -> DevToolsEndpoint {
+    let port_file = profile.join(crate::profile::DEVTOOLS_PORT_FILE);
+    let deadline = TokioInstant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(&port_file) {
+            if let Some(endpoint) = crate::browser::parse_devtools_active_port(&contents) {
+                if control_command(&endpoint, "Browser.getVersion", json!({}))
+                    .await
+                    .is_ok()
+                {
+                    return endpoint;
+                }
+            }
+        }
+        assert!(
+            TokioInstant::now() < deadline,
+            "material browser CDP endpoint timeout"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn material_target(endpoint: &DevToolsEndpoint, url_prefix: &str) -> String {
+    let targets = page_targets(endpoint)
+        .await
+        .expect("list material page targets");
+    let target_id = std::env::var("VESTUS_MATERIAL_TARGET_ID").ok();
+    targets
+        .into_iter()
+        .find(|(id, url)| {
+            target_id.as_deref().is_some_and(|expected| expected == id)
+                || (target_id.is_none() && url.starts_with(url_prefix))
+        })
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no material page target matched the configured profile"))
+}
+
+fn material_selector_literal(selector: &str) -> String {
+    serde_json::to_string(selector).expect("serialize material selector")
+}
+
+async fn material_click(endpoint: &DevToolsEndpoint, target: &str, selector: &str) {
+    let expression = format!(
+        "(() => {{ const element = document.querySelector({}); if (!element) return null; const rect = element.getBoundingClientRect(); return {{ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height }}; }})()",
+        material_selector_literal(selector)
+    );
+    let rect = test_evaluate(endpoint, target, &expression).await;
+    let x = rect["x"].as_f64().filter(|value| value.is_finite());
+    let y = rect["y"].as_f64().filter(|value| value.is_finite());
+    assert!(
+        x.zip(y).is_some_and(|(x, y)| x >= 0.0
+            && y >= 0.0
+            && rect["width"].as_f64().unwrap_or(0.0) > 0.0
+            && rect["height"].as_f64().unwrap_or(0.0) > 0.0),
+        "material selector is missing or not visible"
+    );
+    let (x, y) = (x.unwrap(), y.unwrap());
+    for (event_type, buttons) in [("mousePressed", 1), ("mouseReleased", 0)] {
+        test_page_command(
+            endpoint,
+            target,
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": event_type,
+                "x": x,
+                "y": y,
+                "button": "left",
+                "buttons": buttons,
+                "clickCount": 1,
+            }),
+        )
+        .await;
+    }
+}
+
+async fn material_sample(endpoint: &DevToolsEndpoint, target: &str, round: usize) -> Value {
+    test_page_command(endpoint, target, "HeapProfiler.collectGarbage", json!({})).await;
+    test_page_command(endpoint, target, "HeapProfiler.collectGarbage", json!({})).await;
+    let heap = test_page_command(endpoint, target, "Runtime.getHeapUsage", json!({})).await;
+    let dom = test_page_command(endpoint, target, "Memory.getDOMCounters", json!({})).await;
+    let metrics = test_page_command(endpoint, target, "Performance.getMetrics", json!({})).await;
+    let page = test_evaluate(
+        endpoint,
+        target,
+        "({elements:document.getElementsByTagName('*').length,videos:document.querySelectorAll('video').length,readyState:document.readyState})",
+    )
+    .await;
+    let metric = |name: &str| {
+        metrics["metrics"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["name"] == name))
+            .and_then(|item| item["value"].as_f64())
+    };
+    json!({
+        "round": round,
+        "heapUsedSize": heap["usedSize"],
+        "heapTotalSize": heap["totalSize"],
+        "domNodes": dom["nodes"],
+        "domDocuments": dom["documents"],
+        "domEventListeners": dom["jsEventListeners"],
+        "performanceNodes": metric("Nodes"),
+        "performanceEventListeners": metric("JSEventListeners"),
+        "elements": page["elements"],
+        "videos": page["videos"],
+        "readyState": page["readyState"],
+    })
+}
+
 fn assert_url_only(report: &PageReport) {
     assert_eq!(report.visits, 1);
     assert_eq!(
@@ -677,5 +789,89 @@ fn target_commands_work_against_a_real_browser() {
             .terminate()
             .expect("verified owned tree cleanup");
         eprintln!("Control browser process tree terminated successfully");
+    });
+}
+
+/// Run the real material pagination sequence against one already-authenticated
+/// VESTUS browser. The browser is intentionally owned by the caller so the A/B
+/// launch variant and the proxy/profile remain exactly the ones being tested.
+#[test]
+#[ignore = "requires VESTUS_MATERIAL_PROFILE, selectors and a running VESTUS browser"]
+fn material_selection_30_flip_regression() {
+    let profile = PathBuf::from(material_env("VESTUS_MATERIAL_PROFILE"));
+    assert!(
+        profile.is_dir(),
+        "material profile directory does not exist"
+    );
+    let url_prefix = material_env("VESTUS_MATERIAL_URL");
+    let next_selector = material_env("VESTUS_MATERIAL_NEXT_SELECTOR");
+    let previous_selector = material_env("VESTUS_MATERIAL_PREV_SELECTOR");
+    let variant = material_env("VESTUS_MATERIAL_VARIANT");
+    assert!(
+        matches!(variant.as_str(), "A" | "B"),
+        "material variant must be A or B"
+    );
+    let result_path = PathBuf::from(material_env("VESTUS_MATERIAL_RESULT"));
+    let settle_ms = std::env::var("VESTUS_MATERIAL_SETTLE_MS")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .expect("material settle time must be an integer")
+        })
+        .unwrap_or(1_000);
+    let open_selector = std::env::var("VESTUS_MATERIAL_OPEN_SELECTOR").ok();
+
+    crate::rt::runtime().block_on(async {
+        let endpoint = material_endpoint(&profile).await;
+        let version = control_command(&endpoint, "Browser.getVersion", json!({}))
+            .await
+            .expect("read material browser version");
+        assert!(
+            version["product"].as_str().is_some(),
+            "material browser did not return a product"
+        );
+        let target = material_target(&endpoint, &url_prefix).await;
+        test_page_command(&endpoint, &target, "Performance.enable", json!({})).await;
+
+        if let Some(selector) = open_selector.as_deref() {
+            material_click(&endpoint, &target, selector).await;
+            tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+        }
+
+        let baseline = material_sample(&endpoint, &target, 0).await;
+        let mut samples = vec![baseline];
+        for round in 1..=30 {
+            let started = Instant::now();
+            material_click(&endpoint, &target, &next_selector).await;
+            tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+            material_click(&endpoint, &target, &previous_selector).await;
+            tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+            assert_eq!(
+                test_evaluate(&endpoint, &target, "document.readyState === 'complete'").await,
+                true,
+                "material page stopped responding after pagination round {round}"
+            );
+            let mut sample = material_sample(&endpoint, &target, round).await;
+            sample["roundLatencyMs"] = json!(started.elapsed().as_secs_f64() * 1000.0);
+            samples.push(sample);
+            eprintln!("material regression round {round}/30 completed");
+        }
+
+        if let Some(parent) = result_path.parent() {
+            std::fs::create_dir_all(parent).expect("create material result directory");
+        }
+        let result = json!({
+            "variant": variant,
+            "rounds": 30,
+            "samples": samples,
+            "browserProduct": version["product"],
+        });
+        std::fs::write(
+            &result_path,
+            serde_json::to_vec_pretty(&result).expect("serialize material regression result"),
+        )
+        .expect("write material regression result");
+        eprintln!("material regression result written");
     });
 }

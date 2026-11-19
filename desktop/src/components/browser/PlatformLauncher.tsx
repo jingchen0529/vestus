@@ -160,7 +160,11 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
 
   return (
     <section className="mx-auto w-full max-w-3xl space-y-3.5">
-      <NetworkDiagnosticsCard snapshot={networkDiagnostics} loading={networkDiagnosticsLoading} />
+      <NetworkDiagnosticsCard
+        snapshot={networkDiagnostics}
+        loading={networkDiagnosticsLoading}
+        compact
+      />
 
       {/* 页头 */}
       <header className="flex items-end justify-between gap-3">

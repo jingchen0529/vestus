@@ -81,6 +81,10 @@
 //!
 //! `--no-sandbox` 与代理正交：它只动沙箱，不碰 `--proxy-server`，关掉沙箱后代理
 //! 链路逐字节不变。
+//!
+//! CfT 的 field-trial testing config 可通过 `VESTUS_DISABLE_FIELD_TRIAL_CONFIG` 做 A/B
+//! 对照。值为 `1`、`true`、`yes` 或 `on` 时追加 `--disable-field-trial-config`，缺省保持
+//! 原有启动行为。该开关只影响浏览器实验配置，不改变代理、沙箱或 profile 语义。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -128,6 +132,7 @@ impl TestBrowserProcess {
 
 #[cfg(any(debug_assertions, test))]
 const CHROMIUM_PATH_ENV: &str = "VESTUS_CHROMIUM_PATH";
+const DISABLE_FIELD_TRIAL_CONFIG_ENV: &str = "VESTUS_DISABLE_FIELD_TRIAL_CONFIG";
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Chromium 写 `DevToolsActivePort` 的等待上限。超时就放弃采集，浏览器照常用。
 const DEVTOOLS_PORT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -305,6 +310,8 @@ struct LaunchProcessRequest<'a> {
     /// 关掉浏览器沙箱（追加 `--no-sandbox`）。给沙箱拉不起来的机器留的逃生阀，
     /// 见模块文档「沙箱逃生阀」。与代理正交。
     disable_sandbox: bool,
+    /// Disable CfT's testing field-trial configuration for controlled A/B runs.
+    disable_field_trial_config: bool,
 }
 
 impl Default for BrowserSessionManager {
@@ -426,6 +433,7 @@ impl BrowserSessionManager {
                 target_url,
                 window,
                 disable_sandbox,
+                disable_field_trial_config: disable_field_trial_config_from_env(),
             },
             on_ready,
             on_exit,
@@ -489,6 +497,7 @@ impl BrowserSessionManager {
                 target_url,
                 window,
                 disable_sandbox,
+                disable_field_trial_config: false,
             },
             on_ready,
             on_exit,
@@ -519,6 +528,7 @@ impl BrowserSessionManager {
             target_url,
             window,
             disable_sandbox,
+            disable_field_trial_config,
         } = request;
         if !self.inner.accepting_launches.load(Ordering::Acquire) {
             return Err(BrowserError::ShuttingDown);
@@ -540,6 +550,7 @@ impl BrowserSessionManager {
             target_url,
             window,
             disable_sandbox,
+            disable_field_trial_config,
         );
         #[cfg(test)]
         let arguments = {
@@ -1441,6 +1452,7 @@ fn chromium_arguments(
     target_url: &str,
     window: Option<WindowGeometry>,
     disable_sandbox: bool,
+    disable_field_trial_config: bool,
 ) -> Vec<OsString> {
     // 占用检测按这个参数去认进程，所以必须和 profile 模块用同一个函数拼。
     let mut args = vec![OsString::from(profile::user_data_dir_argument(profile_dir))];
@@ -1454,6 +1466,9 @@ fn chromium_arguments(
     // 不影响 --proxy-server；见模块文档「沙箱逃生阀」。
     if disable_sandbox {
         args.push(OsString::from("--no-sandbox"));
+    }
+    if disable_field_trial_config {
+        args.push(OsString::from("--disable-field-trial-config"));
     }
     args.extend(vec![
         // 端口 0 = 由内核分配，每次启动都换一个，只写进这个 profile 的
@@ -1492,6 +1507,19 @@ fn chromium_arguments(
     args
 }
 
+fn disable_field_trial_config_from_env() -> bool {
+    std::env::var(DISABLE_FIELD_TRIAL_CONFIG_ENV)
+        .ok()
+        .is_some_and(|value| parse_boolean_env(&value))
+}
+
+fn parse_boolean_env(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1509,6 +1537,7 @@ mod tests {
             Some("http://127.0.0.1:51234"),
             "https://platform.example.test/",
             None,
+            false,
             false,
         );
         let rendered: Vec<String> = arguments
@@ -1552,6 +1581,7 @@ mod tests {
             "https://platform.example.test/",
             None,
             true,
+            false,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1575,6 +1605,7 @@ mod tests {
             "https://platform.example.test/",
             None,
             true,
+            false,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1597,6 +1628,7 @@ mod tests {
             "https://platform.example.test/",
             None,
             false,
+            false,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1604,6 +1636,58 @@ mod tests {
 
         assert!(!rendered.contains(&"--incognito".into()));
         assert!(!rendered.contains(&"--new-window".into()));
+    }
+
+    #[test]
+    fn chromium_arguments_can_toggle_field_trial_testing_config() {
+        let disabled = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            None,
+            false,
+            true,
+        );
+        let disabled: Vec<String> = disabled
+            .into_iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            disabled
+                .iter()
+                .filter(|argument| argument.as_str() == "--disable-field-trial-config")
+                .count(),
+            1
+        );
+        assert_eq!(disabled.last().unwrap(), "https://platform.example.test/");
+        assert!(disabled.contains(&"--proxy-server=http://127.0.0.1:51234".into()));
+
+        let default = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            Some("http://127.0.0.1:51234"),
+            "https://platform.example.test/",
+            None,
+            false,
+            false,
+        );
+        let default: Vec<String> = default
+            .into_iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        assert!(!default.contains(&"--disable-field-trial-config".into()));
+    }
+
+    #[test]
+    fn field_trial_environment_switch_accepts_explicit_true_values_only() {
+        for value in ["1", "true", "TRUE", "yes", "on", " on "] {
+            assert!(parse_boolean_env(value), "expected {value:?} to enable");
+        }
+        for value in ["", "0", "false", "no", "off", "random"] {
+            assert!(
+                !parse_boolean_env(value),
+                "expected {value:?} to stay disabled"
+            );
+        }
     }
 
     /// 拿到显示器几何时必须显式下发窗口大小，而不是靠启动后再最大化——那次
@@ -1621,6 +1705,7 @@ mod tests {
             Some("http://127.0.0.1:51234"),
             "https://platform.example.test/",
             Some(geometry),
+            false,
             false,
         )
         .into_iter()
@@ -1643,6 +1728,7 @@ mod tests {
             None,
             "https://platform.example.test/",
             None,
+            false,
             false,
         )
         .into_iter()
@@ -1746,8 +1832,14 @@ mod tests {
     #[test]
     fn chromium_arguments_direct_mode_uses_no_proxy_server() {
         let profile = Path::new("/tmp/vestus-profile-test-direct");
-        let arguments =
-            chromium_arguments(profile, None, "https://platform.example.test/", None, false);
+        let arguments = chromium_arguments(
+            profile,
+            None,
+            "https://platform.example.test/",
+            None,
+            false,
+            false,
+        );
         let rendered: Vec<String> = arguments
             .into_iter()
             .map(|value| value.to_string_lossy().into_owned())
@@ -2280,6 +2372,7 @@ mod tests {
                     target_url: "https://platform.example.test/",
                     window: None,
                     disable_sandbox: false,
+                    disable_field_trial_config: false,
                 },
                 |_| {},
                 || {},

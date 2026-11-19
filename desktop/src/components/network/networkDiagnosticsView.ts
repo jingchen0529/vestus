@@ -100,7 +100,7 @@ export function toNetworkDiagnosticsView(snapshot: NetworkDiagnosticsSnapshot | 
     }),
     uploadLabel,
     uploadTone,
-      queuedCount: extended?.queuedCount ?? extended?.queueCount ?? 0,
+    queuedCount: extended?.queuedCount ?? extended?.queueCount ?? 0,
     droppedCount: extended?.droppedCount ?? extended?.droppedSamples ?? 0,
   };
 }
@@ -108,4 +108,20 @@ export function toNetworkDiagnosticsView(snapshot: NetworkDiagnosticsSnapshot | 
 export function formatDiagnosticsTime(timestamp: number | null): string {
   if (timestamp === null) return "等待首次采样";
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(timestamp);
+}
+
+export function formatDiagnosticsTimestampLabel(timestamp: number | null): string {
+  if (timestamp === null) return "等待首次采样";
+  return `最近采样 ${formatDiagnosticsTime(timestamp)}`;
+}
+
+export function formatCompactUploadSummary(
+  view: Pick<NetworkDiagnosticsViewModel, "uploadLabel" | "uploadTone" | "queuedCount" | "droppedCount">,
+): string {
+  if (view.uploadTone === "destructive") return view.uploadLabel;
+  if (view.droppedCount > 0) return `待上报 ${view.queuedCount} · 丢弃 ${view.droppedCount}`;
+  if (view.uploadTone === "success") {
+    return view.queuedCount > 0 ? `已上报 · 待上报 ${view.queuedCount}` : view.uploadLabel;
+  }
+  return view.queuedCount > 0 ? `待上报 ${view.queuedCount}` : view.uploadLabel;
 }
