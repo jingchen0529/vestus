@@ -12,7 +12,7 @@ from app.db.base import TABLE_ARGS, Base, DateTime6, IdType, utc_now
 class NetworkMetric(Base):
     __tablename__ = "desktop_network_metric"
     __table_args__ = (
-        UniqueConstraint("sample_id", name="uq_desktop_network_metric_sample_id"),
+        UniqueConstraint("user_id", "sample_id", name="uq_desktop_network_metric_user_sample"),
         Index("ix_network_metric_user_measured", "user_id", "measured_at"),
         Index("ix_network_metric_device", "device_id"),
         Index("ix_network_metric_route_mode", "route", "network_mode"),

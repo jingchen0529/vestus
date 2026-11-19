@@ -9,8 +9,11 @@ from sqlalchemy.orm import Session
 from app.db.models import NetworkMetric, User
 
 
-def find_sample(session: Session, sample_id: str) -> Optional[NetworkMetric]:
-    return session.scalar(select(NetworkMetric).where(NetworkMetric.sample_id == sample_id))
+def find_sample(session: Session, sample_id: str, user_id: Optional[int] = None) -> Optional[NetworkMetric]:
+    stmt = select(NetworkMetric).where(NetworkMetric.sample_id == sample_id)
+    if user_id is not None:
+        stmt = stmt.where(NetworkMetric.user_id == user_id)
+    return session.scalar(stmt)
 
 
 def visible_user_ids(session: Session, admin_id: Optional[int]) -> Optional[Sequence[int]]:
@@ -54,6 +57,6 @@ def query(session: Session, *, user_ids: Optional[Sequence[int]], user_id: Optio
 
 
 def summary_values(session: Session, *, user_ids: Optional[Sequence[int]], user_id: Optional[int], device_id: Optional[str], route: Optional[str], network_mode: Optional[str], status: Optional[str], start_at: Optional[datetime], end_at: Optional[datetime]) -> list[NetworkMetric]:
-    rows, _ = query(session, user_ids=user_ids, user_id=user_id, device_id=device_id, route=route, network_mode=network_mode, status=status, start_at=start_at, end_at=end_at, page=1, page_size=10_000_000)
+    rows, _ = query(session, user_ids=user_ids, user_id=user_id, device_id=device_id, route=route, network_mode=network_mode, status=status, start_at=start_at, end_at=end_at, page=1, page_size=2_147_483_647)
     return rows
 

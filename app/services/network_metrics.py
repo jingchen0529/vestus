@@ -7,9 +7,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
 from app.db.base import parse_datetime, utc_now
-from app.db.models import NetworkMetric
+from app.db.models import NetworkMetric, User
 from app.db.session import Database
 from app.repositories import network_metrics as repo
 from app.schemas.network_metric import NetworkDiagnosticsReport
@@ -36,10 +37,11 @@ def record_report(database: Database, report: NetworkDiagnosticsReport, *, user_
     now = utc_now()
     device_id = report.device_id or device_id or "unknown"
     with database.session() as session:
+        session.execute(select(User.id).where(User.id == user_id).with_for_update()).first()
         for sample in report.samples:
-            existing = repo.find_sample(session, sample.sample_id)
+            existing = repo.find_sample(session, sample.sample_id, user_id)
             if existing is not None:
-                if _same(existing, sample, report.device_id):
+                if _same(existing, sample, device_id):
                     duplicate += 1
                     continue
                 raise ConflictError("sampleId 已存在但内容不一致")
@@ -52,7 +54,7 @@ def record_report(database: Database, report: NetworkDiagnosticsReport, *, user_
                 except (OverflowError, OSError, ValueError):
                     pass
             item = NetworkMetric(
-                sample_id=sample.sample_id, user_id=user_id, device_id=report.device_id,
+                sample_id=sample.sample_id, user_id=user_id, device_id=device_id,
                 route=sample.route, target_kind=sample.target_kind, network_mode=sample.network_mode,
                 platform_id=sample.platform_id, browser_id=sample.browser_id,
                 measured_at=measured_at, received_at=now, started_at_ms=sample.started_at_ms,

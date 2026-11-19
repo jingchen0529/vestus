@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(16), nullable=False), sa.Column("error_code", sa.String(32)),
         sa.Column("client_version", sa.String(50)),
         sa.ForeignKeyConstraint(["user_id"], ["user.id"]),
-        sa.UniqueConstraint("sample_id", name="uq_desktop_network_metric_sample_id"),
+        sa.UniqueConstraint("user_id", "sample_id", name="uq_desktop_network_metric_user_sample"),
         mysql_engine="InnoDB", mysql_charset="utf8mb4")
     op.create_index("ix_network_metric_user_measured", "desktop_network_metric", ["user_id", "measured_at"])
     op.create_index("ix_network_metric_device", "desktop_network_metric", ["device_id"])
