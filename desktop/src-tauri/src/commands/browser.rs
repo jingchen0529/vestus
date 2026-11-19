@@ -1,5 +1,6 @@
 //! 浏览器生命周期命令:打开平台、重置持久 profile。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Runtime};
@@ -255,6 +256,7 @@ pub async fn open_browser<R: Runtime>(
     let app_for_exit = app.clone();
     // 采集通道：调试端点可读时才开，开不起来也只是这次会话没有日志。
     let activity_collector = activity.inner().clone();
+    let browsers_for_activity = browsers.inner().clone();
     // Activity uploads are authorized against the server-issued base profile
     // key.  The managed account/version suffix is only the local Chromium
     // namespace and must never be sent as the owner's profile identity.
@@ -356,7 +358,11 @@ pub async fn open_browser<R: Runtime>(
             if injection.is_err() {
                 return;
             }
-            activity_collector.start(activity_key, endpoint, activity_owner, managed_watch);
+            let browser_touch = {
+                let browsers = browsers_for_activity.clone();
+                Arc::new(move || browsers.note_browser_activity(browser_id, platform_id, direct_mode))
+            };
+            activity_collector.start(activity_key, endpoint, activity_owner, managed_watch, Some(browser_touch));
         },
         move || {
             if let Some(tx) = watch_exit_tx {

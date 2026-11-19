@@ -354,6 +354,7 @@ impl ActivityCollector {
         endpoint: DevToolsEndpoint,
         owner: ActivityOwner,
         managed: Option<crate::cdp::ManagedWatch>,
+        activity_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     ) {
         let Some(outbox) = self.outbox.get().cloned() else {
             eprintln!("activity collection unavailable: durable queue was not initialized");
@@ -374,6 +375,7 @@ impl ActivityCollector {
         let wake = self.wake.clone();
         let capture = rt::runtime().spawn(async move {
             while let Some(event) = receiver.recv().await {
+                if let Some(hook) = &activity_hook { hook(); }
                 let Some(payload) = live_observation_payload(&key, &session_key, now_ms(), event)
                 else {
                     continue;

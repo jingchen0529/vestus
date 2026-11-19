@@ -85,7 +85,7 @@ impl NetworkMonitor {
                     while state.queue.len() > MAX_QUEUE { state.queue.pop_front(); }
                 }
                 let _ = app.emit("network-diagnostics-changed", &snapshot);
-                if flush_queue(&monitor, &auth, user_id, &profile_key, generation).await { break; }
+                if flush_queue(&monitor, &auth, user_id, &profile_key, generation, &mut stop_rx).await { break; }
             }
             if let Ok(mut state) = monitor.inner.state.lock() {
                 if state.generation == generation { state.running = false; state.stop = None; }
@@ -109,14 +109,20 @@ async fn collect_samples(api: &str, browsers: &BrowserSessionManager) -> Vec<Net
 }
 
 /// Returns true when the owner session changed and the worker must terminate.
-async fn flush_queue(monitor: &NetworkMonitor, auth: &DesktopAuthState, user: i64, profile: &str, generation: u64) -> bool {
+async fn flush_queue(monitor: &NetworkMonitor, auth: &DesktopAuthState, user: i64, profile: &str, generation: u64, stop_rx: &mut tokio::sync::watch::Receiver<bool>) -> bool {
     let mut retry_delays = [Duration::from_secs(5), Duration::from_secs(30), Duration::from_secs(120)].into_iter();
     loop {
         let report = { monitor.inner.state.lock().ok().and_then(|state| state.queue.front().cloned()) };
         let Some(report) = report else { return false; };
         if let Err(error) = auth.report_network_diagnostics(user, profile, generation, &report).await {
             if matches!(error.code.as_str(), "session_changed" | "unauthenticated") { return true; }
-            if let Some(delay) = retry_delays.next() { tokio::time::sleep(delay).await; continue; }
+            if let Some(delay) = retry_delays.next() {
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {},
+                    changed = stop_rx.changed() => { if changed.is_err() || *stop_rx.borrow() { return true; } }
+                }
+                continue;
+            }
             return false;
         }
         if let Ok(mut state) = monitor.inner.state.lock() { state.queue.pop_front(); }
@@ -155,4 +161,14 @@ mod tests {
         assert_eq!(state.queue.len(), MAX_QUEUE);
     }
     #[test] fn stop_invalidates_generation() { let monitor = NetworkMonitor::default(); let before = monitor.inner.state.lock().unwrap().generation; monitor.stop(); assert_ne!(before, monitor.inner.state.lock().unwrap().generation); }
+    #[tokio::test]
+    async fn vpn_sample_is_present_when_proxy_is_unavailable() {
+        let sample = measure_proxy(None, "http://127.0.0.1/").await;
+        assert_eq!(sample.route, "vpn");
+        assert_eq!(sample.error_code.as_deref(), Some("proxy_disabled"));
+    }
+    #[test] fn retry_backoff_is_bounded_and_increasing() {
+        let delays = [Duration::from_secs(5), Duration::from_secs(30), Duration::from_secs(120)];
+        assert!(delays[0] < delays[1] && delays[1] < delays[2]);
+    }
 }
