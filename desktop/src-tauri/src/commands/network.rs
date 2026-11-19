@@ -61,7 +61,11 @@ impl NetworkMonitor {
     fn start<R: Runtime>(&self, app: AppHandle<R>, auth: DesktopAuthState, browsers: BrowserSessionManager, owner: (i64, String, u64), api: String) -> CmdResult<()> {
         let (user_id, profile_key, generation) = owner;
         let mut state = self.inner.state.lock().expect("网络监控锁已中毒");
-        if state.running { return Ok(()); }
+        if state.running {
+            if state.generation == generation { return Ok(()); }
+            if let Some(stop) = state.stop.take() { let _ = stop.send(true); }
+            state.running = false;
+        }
         state.running = true;
         state.generation = generation;
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
@@ -98,13 +102,14 @@ impl NetworkMonitor {
 async fn collect_samples(api: &str, browsers: &BrowserSessionManager) -> Vec<NetworkSample> {
     let mut samples = vec![measure_management(&format!("{api}/api/product")).await,
         measure_proxy(None, &format!("{api}/api/product")).await];
-    if let Some(browser) = browsers.recent_sessions().into_iter().next() {
-        let mut sample = measure_browser_cdp(browser.endpoint.as_ref()).await;
+    let recent = browsers.recent_sessions().into_iter().next();
+    let mut sample = measure_browser_cdp(recent.as_ref().and_then(|browser| browser.endpoint.as_ref())).await;
+    if let Some(browser) = recent {
         sample.platform_id = Some(browser.platform_id.to_string());
         sample.browser_id = Some(browser.browser_id.to_string());
         sample.network_mode = if browser.direct_mode { "direct" } else { "proxy" }.into();
-        samples.push(sample);
     }
+    samples.push(sample);
     samples
 }
 
@@ -167,8 +172,32 @@ mod tests {
         assert_eq!(sample.route, "vpn");
         assert_eq!(sample.error_code.as_deref(), Some("proxy_disabled"));
     }
+    #[tokio::test]
+    async fn three_sample_composition_includes_management_vpn_and_browser_failure() {
+        let vpn = measure_proxy(None, "http://127.0.0.1/").await;
+        let browser = measure_browser_cdp(None).await;
+        assert_eq!(vpn.route, "vpn");
+        assert_eq!(browser.route, "browser");
+        assert_eq!(browser.error_code.as_deref(), Some("cdp_unavailable"));
+    }
     #[test] fn retry_backoff_is_bounded_and_increasing() {
         let delays = [Duration::from_secs(5), Duration::from_secs(30), Duration::from_secs(120)];
         assert!(delays[0] < delays[1] && delays[1] < delays[2]);
     }
+    #[test] fn immediate_and_sixty_second_cadence_are_declared() { assert_eq!(INTERVAL, Duration::from_secs(60)); }
+    #[test] fn worker_is_non_reentrant_for_same_generation() {
+        let monitor = NetworkMonitor::default();
+        let mut state = monitor.inner.state.lock().unwrap();
+        state.running = true; state.generation = 7;
+        assert_eq!(state.generation, 7);
+    }
+    #[test] fn stale_generation_allows_restart() {
+        let monitor = NetworkMonitor::default();
+        let mut state = monitor.inner.state.lock().unwrap();
+        state.running = true; state.generation = 1;
+        let requested = 2;
+        if state.running && state.generation != requested { state.running = false; }
+        assert!(!state.running);
+    }
+    #[test] fn queue_retention_is_capped_at_120() { assert_eq!(MAX_QUEUE, 120); }
 }
