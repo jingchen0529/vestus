@@ -112,6 +112,7 @@ pub fn run() {
             // 顺序是硬要求：浏览器先被收走，调试通道才会断，采集才走到最后一次
             // 上报；反过来就是等一个永远不会结束的任务。浏览器是请它们正常退出的
             // （持久 profile 要落盘），所以这一步最多会等几秒。
+            app_handle.state::<NetworkMonitor>().stop();
             app_handle.state::<BrowserSessionManager>().shutdown();
             app_handle.state::<ActivityCollector>().shutdown();
             app_handle.state::<AppState>().shutdown();

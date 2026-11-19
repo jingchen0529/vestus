@@ -14,7 +14,9 @@ from app.db.models import NetworkMetric, User
 from app.db.session import Database
 from app.repositories import network_metrics as repo
 from app.schemas.network_metric import NetworkDiagnosticsReport
-from app.services.errors import ConflictError
+from app.services.errors import BadRequestError, ConflictError
+
+MAX_QUERY_WINDOW = timedelta(days=31)
 
 
 def _payload_hash(report: NetworkDiagnosticsReport) -> str:
@@ -130,8 +132,7 @@ def list_metrics(
     visible_admin_id: Optional[int] = None,
 ) -> dict[str, Any]:
     page, page_size = max(1, int(page)), min(200, max(1, int(page_size)))
-    start = parse_datetime(start_at) if start_at else now_minus_day()
-    end = parse_datetime(end_at, end_of_day=True) if end_at else utc_now()
+    start, end = query_window(start_at, end_at)
     with database.session() as session:
         ids = repo.visible_user_ids(session, visible_admin_id)
         rows, total = repo.query(
@@ -203,9 +204,19 @@ def list_metrics(
     }
 
 
-def now_minus_day() -> datetime:
-    return utc_now() - timedelta(days=1)
-
+def query_window(start_at: Any = None, end_at: Any = None) -> tuple[datetime, datetime]:
+    """Parse and bound an admin query before it reaches pagination or summary."""
+    now = utc_now()
+    try:
+        start = parse_datetime(start_at) if start_at else now - timedelta(days=1)
+        end = parse_datetime(end_at, end_of_day=True) if end_at else now
+    except (TypeError, ValueError, OverflowError):
+        raise BadRequestError("时间范围格式无效") from None
+    if start is None or end is None or start > end:
+        raise BadRequestError("时间范围无效")
+    if end - start > MAX_QUERY_WINDOW:
+        raise BadRequestError("时间范围不能超过 31 天")
+    return start, end
 
 record_network_diagnostics = record_report
 list_network_metrics = list_metrics

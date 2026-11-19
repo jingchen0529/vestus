@@ -326,6 +326,7 @@ pub async fn sync_desktop_config<R: Runtime>(
     state: tauri::State<'_, AppState>,
     auth: tauri::State<'_, DesktopAuthState>,
     browsers: tauri::State<'_, BrowserSessionManager>,
+    network: tauri::State<'_, NetworkMonitor>,
 ) -> CmdResult<DesktopConfigSyncReport> {
     // Keep the entire server fetch + proxy probe + adapter install atomic from
     // the desktop user's perspective. The auth check intentionally happens
@@ -348,8 +349,15 @@ pub async fn sync_desktop_config<R: Runtime>(
                 Some(CloseReason::LeaseValidationFailed)
             };
             if let Some(reason) = reason {
-                invalidate_config_runtime(&state, &browsers, user_id, auth_generation, reason)
-                    .await;
+                invalidate_config_runtime(
+                    &state,
+                    &browsers,
+                    &network,
+                    user_id,
+                    auth_generation,
+                    reason,
+                )
+                .await;
             }
             emit_status(&app, &state);
             return Err(auth_command_error(error));
@@ -362,6 +370,7 @@ pub async fn sync_desktop_config<R: Runtime>(
             invalidate_config_runtime(
                 &state,
                 &browsers,
+                &network,
                 user_id,
                 auth_generation,
                 CloseReason::LeaseValidationFailed,
@@ -379,6 +388,7 @@ pub async fn sync_desktop_config<R: Runtime>(
             invalidate_config_runtime(
                 &state,
                 &browsers,
+                &network,
                 user_id,
                 auth_generation,
                 CloseReason::AuthenticationInvalid,
@@ -422,6 +432,7 @@ pub async fn sync_desktop_config<R: Runtime>(
             "browser_cleanup_pending",
         ));
     }
+    network.stop();
     state.teardown();
     auth.set_profile_key(user_id, validated.profile_key.clone())
         .map_err(auth_command_error)?;
@@ -448,6 +459,7 @@ pub async fn sync_desktop_config<R: Runtime>(
                 proxy_assigned: false,
                 proxy_ip: None,
                 direct_hosts: Vec::new(),
+                upstream: None,
             },
         ) {
             return Err(CommandError::new(
@@ -455,6 +467,7 @@ pub async fn sync_desktop_config<R: Runtime>(
                 "session_changed",
             ));
         }
+        network.set_upstream(None);
         // Platform-only configurations still need lease monitoring so a
         // revoked platform allowlist closes any direct browser sessions.
         if should_spawn_session_watchdog(&validated) {
@@ -466,6 +479,7 @@ pub async fn sync_desktop_config<R: Runtime>(
                 auth_generation,
                 assignment_revision,
                 validated.lease.clone(),
+                (*network).clone(),
             );
         }
         emit_status(&app, &state);
@@ -502,6 +516,7 @@ pub async fn sync_desktop_config<R: Runtime>(
         })
         .unwrap_or(false);
     if !session_still_current {
+        network.stop();
         if state.invalidate_desktop_session(user_id, auth_generation, assignment_revision) {
             emit_status(&app, &state);
         }
@@ -517,6 +532,7 @@ pub async fn sync_desktop_config<R: Runtime>(
     {
         Ok(true) => {}
         Ok(false) => {
+            network.stop();
             if state.invalidate_desktop_configuration(user_id, auth_generation, assignment_revision)
             {
                 emit_status(&app, &state);
@@ -529,6 +545,7 @@ pub async fn sync_desktop_config<R: Runtime>(
         Err(error) => {
             let error = auth_command_error(error);
             if error.code == "unauthenticated" {
+                network.stop();
                 state.invalidate_desktop_session(user_id, auth_generation, assignment_revision);
             } else if error.code != "session_changed"
                 && state.desktop_assignment_matches(user_id, auth_generation, assignment_revision)
@@ -541,9 +558,10 @@ pub async fn sync_desktop_config<R: Runtime>(
     }
 
     let upstream = proxy_config.upstream();
+    let monitor_upstream = upstream.clone();
     let direct_hosts = proxy_config.direct_hosts.clone();
     let direct_host_view = direct_hosts.entries();
-    let handle = match start_adapter(upstream, direct_hosts).await {
+    let handle = match start_adapter(upstream.clone(), direct_hosts).await {
         Ok(handle) => handle,
         Err(error) => {
             if state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
@@ -563,6 +581,7 @@ pub async fn sync_desktop_config<R: Runtime>(
         .unwrap_or(false);
     if !session_still_current {
         handle.stop();
+        network.stop();
         if state.invalidate_desktop_session(user_id, auth_generation, assignment_revision) {
             emit_status(&app, &state);
         }
@@ -591,6 +610,7 @@ pub async fn sync_desktop_config<R: Runtime>(
             proxy_assigned: true,
             proxy_ip: Some(proxy_ip.clone()),
             direct_hosts: direct_host_view.clone(),
+            upstream: Some(monitor_upstream),
         },
     ) {
         return Err(CommandError::new(
@@ -598,6 +618,7 @@ pub async fn sync_desktop_config<R: Runtime>(
             "session_changed",
         ));
     }
+    network.set_upstream(Some(upstream));
     spawn_session_watchdog(
         app.clone(),
         state.inner().clone(),
@@ -606,6 +627,7 @@ pub async fn sync_desktop_config<R: Runtime>(
         auth_generation,
         assignment_revision,
         validated.lease,
+        (*network).clone(),
     );
     emit_status(&app, &state);
     Ok(DesktopConfigSyncReport {
@@ -619,10 +641,12 @@ pub async fn sync_desktop_config<R: Runtime>(
 async fn invalidate_config_runtime(
     state: &AppState,
     browsers: &BrowserSessionManager,
+    network: &NetworkMonitor,
     user_id: i64,
     auth_generation: u64,
     reason: CloseReason,
 ) {
+    network.stop();
     let Some(revision) = state.desktop_assignment_revision(user_id, auth_generation) else {
         return;
     };
@@ -652,6 +676,7 @@ pub(crate) fn spawn_session_watchdog<R: Runtime>(
     auth_generation: u64,
     assignment_revision: u64,
     expected_lease: String,
+    network: NetworkMonitor,
 ) {
     rt::runtime().spawn(async move {
         loop {
@@ -664,6 +689,7 @@ pub(crate) fn spawn_session_watchdog<R: Runtime>(
                 auth_generation,
                 assignment_revision,
                 &expected_lease,
+                &network,
             )
             .await
             {
@@ -683,6 +709,7 @@ pub(crate) async fn check_desktop_session<R: Runtime>(
     auth_generation: u64,
     assignment_revision: u64,
     expected_lease: &str,
+    network: &NetworkMonitor,
 ) -> bool {
     if !state.desktop_assignment_matches(user_id, auth_generation, assignment_revision) {
         return false;
@@ -698,6 +725,7 @@ pub(crate) async fn check_desktop_session<R: Runtime>(
         invalidate_config_runtime(
             state,
             app.state::<BrowserSessionManager>().inner(),
+            network,
             user_id,
             auth_generation,
             CloseReason::LeaseValidationFailed,
@@ -739,6 +767,7 @@ pub(crate) async fn check_desktop_session<R: Runtime>(
             invalidate_config_runtime(
                 state,
                 app.state::<BrowserSessionManager>().inner(),
+                network,
                 user_id,
                 auth_generation,
                 reason,

@@ -16,19 +16,20 @@ class NetworkMetric(Base):
         Index("ix_network_metric_user_measured", "user_id", "measured_at"),
         Index("ix_network_metric_device", "device_id"),
         Index("ix_network_metric_route_mode", "route", "network_mode"),
+        Index("ix_network_metric_received_at", "received_at"),
         {**TABLE_ARGS},
     )
 
     id: Mapped[int] = mapped_column(IdType, primary_key=True, autoincrement=True)
     sample_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    user_id: Mapped[int] = mapped_column(IdType, ForeignKey("user.id"), nullable=False, index=True)
-    device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(IdType, ForeignKey("user.id"), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False)
     route: Mapped[str] = mapped_column(String(16), nullable=False)
     target_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     network_mode: Mapped[str] = mapped_column(String(16), nullable=False)
     platform_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     browser_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    measured_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, index=True)
+    measured_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime6, nullable=False, default=utc_now)
     started_at_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

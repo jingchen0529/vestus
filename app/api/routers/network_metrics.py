@@ -18,7 +18,7 @@ def report_network_diagnostics(
     report: NetworkDiagnosticsReport, auth: Dict[str, Any] = Depends(user_auth), db: Database = Depends(get_db)
 ) -> Dict[str, Any]:
     return service.record_report(
-        db, report, user_id=auth["id"], device_id=getattr(auth.get("model"), "last_device_id", None)
+        db, report, user_id=auth["id"], device_id=None
     )
 
 

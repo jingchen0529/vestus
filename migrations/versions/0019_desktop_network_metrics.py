@@ -33,8 +33,7 @@ def upgrade() -> None:
     op.create_index("ix_network_metric_user_measured", "desktop_network_metric", ["user_id", "measured_at"])
     op.create_index("ix_network_metric_device", "desktop_network_metric", ["device_id"])
     op.create_index("ix_network_metric_route_mode", "desktop_network_metric", ["route", "network_mode"])
-    op.create_index("ix_desktop_network_metric_user_id", "desktop_network_metric", ["user_id"])
-    op.create_index("ix_desktop_network_metric_measured_at", "desktop_network_metric", ["measured_at"])
+    op.create_index("ix_network_metric_received_at", "desktop_network_metric", ["received_at"])
 
 def downgrade() -> None:
     op.drop_table("desktop_network_metric")

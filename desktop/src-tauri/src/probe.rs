@@ -127,6 +127,7 @@ pub async fn probe_via_upstream(
     parse_ip(&String::from_utf8_lossy(&body)).ok_or(ProbeError::Unparsable)
 }
 
+#[allow(dead_code)]
 pub(crate) async fn probe_via_upstream_timed(
     upstream: &UpstreamProxy,
     probe_url: &str,
@@ -167,6 +168,48 @@ pub(crate) async fn probe_via_upstream_timed(
     let text = String::from_utf8_lossy(&body).to_string();
     let ip = parse_ip(&text).ok_or(ProbeError::Unparsable)?;
     Ok((ip, body_len, elapsed))
+}
+
+/// Through the configured upstream, measure a bounded fixed HTTP response.
+/// This intentionally does not parse the body as an exit IP. Network
+/// diagnostics use it for the management endpoint's small response while the
+/// configuration preflight above continues to use the IP-specific probe.
+pub(crate) async fn probe_via_upstream_http_timed(
+    upstream: &UpstreamProxy,
+    probe_url: &str,
+) -> Result<(u64, u64), ProbeError> {
+    let parsed = url::Url::parse(probe_url).map_err(|e| ProbeError::BadUrl(e.to_string()))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| ProbeError::BadUrl("缺少主机名".into()))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| ProbeError::BadUrl("无法确定端口".into()))?;
+    upstream.open_tunnel(&host, port).await?;
+    let proxy = reqwest::Proxy::all(upstream.proxy_url_without_credentials())
+        .map_err(|e| ProbeError::Request(describe(&e)))?
+        .basic_auth(upstream.username(), upstream.expose_password());
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
+    let response = client
+        .get(probe_url)
+        .send()
+        .await
+        .map_err(|e| ProbeError::Request(describe(&e)))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+        return Err(ProbeError::Tunnel(TunnelError::AuthFailed));
+    }
+    if !status.is_success() {
+        return Err(ProbeError::Status(status.as_u16()));
+    }
+    let started = std::time::Instant::now();
+    let body = read_bounded(response).await.map_err(ProbeError::Request)?;
+    Ok((body.len() as u64, started.elapsed().as_millis() as u64))
 }
 
 async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, String> {

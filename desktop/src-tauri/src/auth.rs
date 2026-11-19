@@ -18,6 +18,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{
     browser::{BrowserSessionManager, CloseReason},
+    commands::NetworkMonitor,
     state::AppState,
 };
 
@@ -1296,6 +1297,7 @@ pub async fn desktop_login<R: Runtime>(
     // An account switch must never leave the previous user's browser active
     // while the new login request is in flight.
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
+    app.state::<NetworkMonitor>().stop();
     app.state::<BrowserSessionManager>()
         .close_all_with_reason(CloseReason::AccountSwitch)
         .await;
@@ -1323,6 +1325,7 @@ pub async fn desktop_restore_session<R: Runtime>(
     // Restore is a lifecycle transition too: a repeated IPC call must not
     // change auth generation underneath a published adapter or browser.
     let browsers = app.state::<BrowserSessionManager>().inner().clone();
+    app.state::<NetworkMonitor>().stop();
     perform_desktop_restore(proxy_state.inner(), state.inner(), async move {
         browsers
             .close_all_with_reason(CloseReason::SessionRestore)
@@ -1352,6 +1355,7 @@ pub async fn desktop_logout<R: Runtime>(
     // in-flight sync finishes, close the browser and adapter before the
     // best-effort server revoke, and prevent a late adapter publication.
     let browsers = app.state::<BrowserSessionManager>().inner().clone();
+    app.state::<NetworkMonitor>().stop();
     perform_desktop_logout(proxy_state.inner(), state.inner(), async move {
         browsers
             .close_all_with_reason(CloseReason::DesktopLogout)
@@ -1369,6 +1373,7 @@ pub async fn desktop_change_password<R: Runtime>(
     new_password: String,
 ) -> AuthResult<()> {
     let _lifecycle_guard = proxy_state.lock_desktop_sync().await;
+    app.state::<NetworkMonitor>().stop();
     let result = state.change_password(current_password, new_password).await;
     if result.is_ok() {
         app.state::<BrowserSessionManager>()

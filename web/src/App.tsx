@@ -242,8 +242,39 @@ export function App() {
   const [networkPageSize, setNetworkPageSize] = useState(50);
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
+  const networkViewerRef = useRef<number | null>(user?.id ?? null);
+  networkViewerRef.current = user?.id ?? null;
+  const networkRequestRef = useRef(0);
+  const clearNetworkDiagnostics = useCallback(() => {
+    networkRequestRef.current += 1;
+    setNetworkDiagnostics(emptyNetworkDiagnosticsResponse);
+    setNetworkError(null);
+    setNetworkLoading(false);
+  }, []);
+  useEffect(() => {
+    clearNetworkDiagnostics();
+    setNetworkPage(1);
+  }, [user?.id, clearNetworkDiagnostics]);
   const handleNetworkFiltersChange = useCallback((next: NetworkDiagnosticsFilters) => { const state = networkDiagnosticsFilterState(networkFilters, next); setNetworkFilters(state.filters); setNetworkPage(state.page); }, [networkFilters]);
-  const loadNetworkDiagnostics = useCallback(async () => { setNetworkLoading(true); setNetworkError(null); try { const res = await api.listNetworkDiagnostics({ page: networkPage, pageSize: networkPageSize, ...toNetworkDiagnosticsQuery(networkFilters) }); setNetworkDiagnostics(res); } catch (err: any) { setNetworkDiagnostics(prev => networkDiagnosticsFailureState(prev, err?.message || "加载网络诊断失败").data); setNetworkError(err?.message || "加载网络诊断失败"); } finally { setNetworkLoading(false); } }, [networkPage, networkPageSize, networkFilters]);
+  const loadNetworkDiagnostics = useCallback(async () => {
+    const viewer = user?.id ?? null;
+    if (viewer === null) return;
+    const request = ++networkRequestRef.current;
+    setNetworkLoading(true);
+    setNetworkError(null);
+    try {
+      const res = await api.listNetworkDiagnostics({ page: networkPage, pageSize: networkPageSize, ...toNetworkDiagnosticsQuery(networkFilters) });
+      if (request === networkRequestRef.current && networkViewerRef.current === viewer) setNetworkDiagnostics(res);
+    } catch (err: any) {
+      const message = err?.message || "加载网络诊断失败";
+      if (request === networkRequestRef.current && networkViewerRef.current === viewer) {
+        setNetworkDiagnostics(prev => networkDiagnosticsFailureState(prev, message).data);
+        setNetworkError(message);
+      }
+    } finally {
+      if (request === networkRequestRef.current && networkViewerRef.current === viewer) setNetworkLoading(false);
+    }
+  }, [networkPage, networkPageSize, networkFilters, user?.id]);
 
   // 改筛选条件就回到第一页：留在第 7 页上换条件，多半只会看到空列表。
   const handleSessionFiltersChange = useCallback((next: BrowserSessionFilters) => {

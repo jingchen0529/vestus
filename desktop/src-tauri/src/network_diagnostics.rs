@@ -1,6 +1,6 @@
 //! Bounded, privacy-preserving network diagnostics.
 use crate::browser::DevToolsEndpoint;
-use crate::probe::{probe_browser, probe_via_upstream_timed};
+use crate::probe::{probe_browser, probe_via_upstream_http_timed};
 use crate::upstream::UpstreamProxy;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,15 +90,6 @@ pub struct NetworkDiagnosticsSnapshot {
     pub queued_count: usize,
     pub dropped_count: u64,
 }
-impl NetworkDiagnosticsSnapshot {
-    pub fn report(self) -> NetworkDiagnosticsReport {
-        NetworkDiagnosticsReport {
-            protocol_version: 1,
-            samples: self.samples.into_iter().take(20).collect(),
-            device_id: self.device_id,
-        }
-    }
-}
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -140,9 +131,30 @@ fn failed_sample(
 }
 
 pub async fn measure_management(url: &str) -> NetworkSample {
-    measure_http(url, "management", "api", "direct").await
+    measure_management_until(
+        url,
+        tokio::time::Instant::now() + Duration::from_millis(MAX_PROBE_DURATION_MS),
+    )
+    .await
 }
+pub async fn measure_management_until(url: &str, deadline: tokio::time::Instant) -> NetworkSample {
+    measure_http_until(url, "management", "api", "direct", deadline).await
+}
+
 pub async fn measure_proxy(upstream: Option<&UpstreamProxy>, url: &str) -> NetworkSample {
+    measure_proxy_until(
+        upstream,
+        url,
+        tokio::time::Instant::now() + Duration::from_millis(MAX_PROBE_DURATION_MS),
+    )
+    .await
+}
+
+pub async fn measure_proxy_until(
+    upstream: Option<&UpstreamProxy>,
+    url: &str,
+    deadline: tokio::time::Instant,
+) -> NetworkSample {
     let Some(upstream) = upstream else {
         return failed_sample(
             "vpn",
@@ -155,13 +167,9 @@ pub async fn measure_proxy(upstream: Option<&UpstreamProxy>, url: &str) -> Netwo
     };
     let started = now_ms();
     let start = Instant::now();
-    match tokio::time::timeout(
-        Duration::from_millis(MAX_PROBE_DURATION_MS),
-        probe_via_upstream_timed(upstream, url),
-    )
-    .await
-    {
-        Ok(Ok((_, bytes, body_ms))) => NetworkSample::success(
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    match tokio::time::timeout(remaining, probe_via_upstream_http_timed(upstream, url)).await {
+        Ok(Ok((bytes, body_ms))) => NetworkSample::success(
             sample_id(),
             "vpn",
             "proxy_probe",
@@ -194,25 +202,40 @@ pub async fn measure_proxy(upstream: Option<&UpstreamProxy>, url: &str) -> Netwo
         ),
     }
 }
+#[allow(dead_code)]
 pub async fn measure_browser_cdp(endpoint: Option<&DevToolsEndpoint>) -> NetworkSample {
-    let started = now_ms();
-    let start = Instant::now();
+    measure_browser_cdp_with_deadline(
+        endpoint,
+        tokio::time::Instant::now() + Duration::from_millis(MAX_PROBE_DURATION_MS),
+    )
+    .await
+}
+
+pub async fn measure_browser_cdp_with_deadline(
+    endpoint: Option<&DevToolsEndpoint>,
+    deadline: tokio::time::Instant,
+) -> NetworkSample {
     let Some(endpoint) = endpoint else {
         return failed_sample(
             "browser",
             "cdp",
             "unavailable",
-            started,
+            now_ms(),
             0,
             "cdp_unavailable",
         );
     };
-    match tokio::time::timeout(
-        Duration::from_millis(MAX_PROBE_DURATION_MS),
-        probe_browser(endpoint),
-    )
-    .await
-    {
+    measure_browser_cdp_until(endpoint, deadline).await
+}
+
+pub async fn measure_browser_cdp_until(
+    endpoint: &DevToolsEndpoint,
+    deadline: tokio::time::Instant,
+) -> NetworkSample {
+    let started = now_ms();
+    let start = Instant::now();
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    match tokio::time::timeout(remaining, probe_browser(endpoint)).await {
         Ok(Ok(_)) => NetworkSample::success(
             sample_id(),
             "browser",
@@ -243,11 +266,12 @@ pub async fn measure_browser_cdp(endpoint: Option<&DevToolsEndpoint>) -> Network
         ),
     }
 }
-async fn measure_http(
+async fn measure_http_until(
     url: &str,
     route: &str,
     target_kind: &str,
     network_mode: &str,
+    deadline: tokio::time::Instant,
 ) -> NetworkSample {
     let started = now_ms();
     let start = Instant::now();
@@ -259,12 +283,8 @@ async fn measure_http(
         Ok(c) => c,
         Err(_) => return failed_sample(route, target_kind, network_mode, started, 0, "connect"),
     };
-    let response = match tokio::time::timeout(
-        Duration::from_millis(MAX_PROBE_DURATION_MS),
-        client.get(url).send(),
-    )
-    .await
-    {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let response = match tokio::time::timeout(remaining, client.get(url).send()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             return failed_sample(
@@ -290,12 +310,8 @@ async fn measure_http(
     let elapsed = start.elapsed().as_millis() as u64;
     let status = response.status();
     let body_started = Instant::now();
-    let body = match tokio::time::timeout(
-        Duration::from_millis(MAX_PROBE_DURATION_MS.saturating_sub(elapsed)),
-        read_limited(response),
-    )
-    .await
-    {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let body = match tokio::time::timeout(remaining, read_limited(response)).await {
         Ok(Ok(b)) => b,
         Ok(Err(_)) => {
             return failed_sample(
@@ -430,6 +446,14 @@ mod tests {
     async fn proxy_disabled_is_classified_without_network_access() {
         let sample = measure_proxy(None, "http://127.0.0.1/").await;
         assert_eq!(sample.error_code.as_deref(), Some("proxy_disabled"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_expired_shared_deadline_returns_an_eight_second_timeout_sample() {
+        let deadline = tokio::time::Instant::now() - Duration::from_millis(1);
+        let sample = measure_management_until("http://127.0.0.1:9/", deadline).await;
+        assert_eq!(sample.error_code.as_deref(), Some("timeout"));
+        assert_eq!(sample.total_ms, Some(MAX_PROBE_DURATION_MS));
     }
 
     #[tokio::test]

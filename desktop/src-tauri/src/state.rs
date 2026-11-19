@@ -13,6 +13,7 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::adapter::AdapterHandle;
 use crate::config::DesktopPlatform;
+use crate::upstream::UpstreamProxy;
 
 /// 浏览器 / 代理的整体阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -62,6 +63,7 @@ pub(crate) struct AppliedDesktopConfig {
     pub proxy_assigned: bool,
     pub proxy_ip: Option<String>,
     pub direct_hosts: Vec<String>,
+    pub upstream: Option<UpstreamProxy>,
 }
 
 /// Immutable data needed to construct one browser window. Upstream credentials
@@ -293,6 +295,22 @@ impl AppState {
                 desktop.user_id == user_id && desktop.auth_generation == auth_generation
             })
             .map(|desktop| desktop.revision)
+    }
+
+    pub(crate) fn desktop_upstream(
+        &self,
+        user_id: i64,
+        auth_generation: u64,
+    ) -> Option<UpstreamProxy> {
+        let guard = self.inner.lock().expect("状态锁已中毒");
+        guard
+            .desktop
+            .as_ref()
+            .filter(|desktop| {
+                desktop.user_id == user_id && desktop.auth_generation == auth_generation
+            })
+            .and_then(|desktop| desktop.applied.as_ref())
+            .and_then(|applied| applied.upstream.clone())
     }
 
     pub fn desktop_assignment_matches(

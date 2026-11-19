@@ -13,10 +13,10 @@ use crate::auth::DesktopAuthState;
 use crate::browser::BrowserSessionManager;
 use crate::device;
 use crate::network_diagnostics::{
-    measure_browser_cdp, measure_management, measure_proxy, NetworkDiagnosticsReport,
-    NetworkDiagnosticsSnapshot, NetworkSample,
+    NetworkDiagnosticsReport, NetworkDiagnosticsSnapshot, NetworkSample,
 };
 use crate::state::AppState;
+use crate::upstream::UpstreamProxy;
 
 const INTERVAL: Duration = Duration::from_secs(60);
 const MAX_QUEUE: usize = 120;
@@ -58,10 +58,13 @@ struct MonitorInner {
 struct MonitorState {
     running: bool,
     generation: u64,
+    run_token: u64,
     stop: Option<tokio::sync::watch::Sender<bool>>,
     latest: NetworkDiagnosticsSnapshot,
-    queue: VecDeque<NetworkDiagnosticsReport>,
+    queue: VecDeque<NetworkSample>,
     dropped_count: u64,
+    last_flush_at: Option<tokio::time::Instant>,
+    upstream: Option<UpstreamProxy>,
 }
 
 impl Default for NetworkMonitor {
@@ -71,6 +74,7 @@ impl Default for NetworkMonitor {
                 state: Mutex::new(MonitorState {
                     running: false,
                     generation: 0,
+                    run_token: 0,
                     stop: None,
                     latest: NetworkDiagnosticsSnapshot {
                         samples: Vec::new(),
@@ -81,6 +85,8 @@ impl Default for NetworkMonitor {
                     },
                     queue: VecDeque::new(),
                     dropped_count: 0,
+                    last_flush_at: None,
+                    upstream: None,
                 }),
                 wake: tokio::sync::Notify::new(),
             }),
@@ -102,16 +108,29 @@ impl NetworkMonitor {
         let mut state = self.inner.state.lock().expect("网络监控锁已中毒");
         state.running = false;
         state.generation = state.generation.wrapping_add(1).max(1);
+        state.run_token = state.run_token.wrapping_add(1).max(1);
         if let Some(stop) = state.stop.take() {
             let _ = stop.send(true);
         }
+        state.queue.clear();
+        state.latest.samples.clear();
+        state.latest.upload_status = "idle".into();
+        state.latest.queued_count = 0;
+        state.latest.dropped_count = 0;
+        state.last_flush_at = None;
+        state.upstream = None;
+    }
+
+    pub fn set_upstream(&self, upstream: Option<UpstreamProxy>) {
+        let mut state = self.inner.state.lock().expect("网络监控锁已中毒");
+        state.upstream = upstream;
     }
 
     pub fn wake(&self) {
         self.inner.wake.notify_one();
     }
 
-    fn prepare_start(&self, generation: u64) -> Option<tokio::sync::watch::Receiver<bool>> {
+    fn prepare_start(&self, generation: u64) -> Option<(u64, tokio::sync::watch::Receiver<bool>)> {
         let mut state = self.inner.state.lock().expect("网络监控锁已中毒");
         if state.running {
             if state.generation == generation {
@@ -121,18 +140,98 @@ impl NetworkMonitor {
                 let _ = stop.send(true);
             }
             state.running = false;
+            state.queue.clear();
+            state.latest.samples.clear();
+            state.latest.upload_status = "idle".into();
+            state.latest.queued_count = 0;
+            state.latest.dropped_count = 0;
+            state.last_flush_at = None;
         }
         state.running = true;
         state.generation = generation;
+        state.run_token = state.run_token.wrapping_add(1).max(1);
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         state.stop = Some(stop_tx);
-        Some(stop_rx)
+        Some((state.run_token, stop_rx))
+    }
+
+    fn emit_if_current(&self, run_token: u64, emit: &EmitHook) {
+        let Ok(state) = self.inner.state.lock() else {
+            return;
+        };
+        if state.run_token == run_token && state.running {
+            emit(&state.latest);
+        }
+    }
+
+    fn should_flush(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .map(|state| {
+                state.queue.len() >= 5
+                    || state
+                        .last_flush_at
+                        .is_some_and(|at| at.elapsed() >= Duration::from_secs(5 * 60))
+            })
+            .unwrap_or(false)
+    }
+
+    fn next_payload(&self, run_token: u64) -> Option<(NetworkDiagnosticsReport, usize)> {
+        self.inner.state.lock().ok().and_then(|state| {
+            if state.run_token != run_token || !state.running || state.queue.is_empty() {
+                return None;
+            }
+            let samples: Vec<_> = state.queue.iter().take(20).cloned().collect();
+            let count = samples.len();
+            Some((
+                NetworkDiagnosticsReport {
+                    protocol_version: 1,
+                    samples,
+                    device_id: device::wire_device_id(),
+                },
+                count,
+            ))
+        })
+    }
+
+    fn update_upload_state(
+        &self,
+        run_token: u64,
+        attempted: bool,
+    ) -> Option<NetworkDiagnosticsSnapshot> {
+        let mut state = self.inner.state.lock().ok()?;
+        if state.run_token != run_token || !state.running {
+            return None;
+        }
+        state.latest.upload_status = if state.queue.is_empty() {
+            if attempted {
+                "uploaded"
+            } else {
+                "pending"
+            }
+        } else if attempted {
+            "retrying"
+        } else {
+            "pending"
+        }
+        .into();
+        state.latest.queued_count = state.queue.len();
+        state.latest.dropped_count = state.dropped_count;
+        Some(state.latest.clone())
     }
 
     #[cfg(test)]
     fn enqueue(&self, report: NetworkDiagnosticsReport) {
         let mut state = self.inner.state.lock().expect("网络监控锁已中毒");
-        state.queue.push_back(report);
+        if !state.running {
+            state.running = true;
+            state.run_token = state.run_token.wrapping_add(1).max(1);
+        }
+        if state.last_flush_at.is_none() {
+            state.last_flush_at = Some(tokio::time::Instant::now());
+        }
+        state.queue.extend(report.samples);
         while state.queue.len() > MAX_QUEUE {
             state.queue.pop_front();
             state.dropped_count = state.dropped_count.saturating_add(1);
@@ -158,6 +257,11 @@ impl NetworkMonitor {
             .queue
             .iter()
             .cloned()
+            .map(|sample| NetworkDiagnosticsReport {
+                protocol_version: 1,
+                samples: vec![sample],
+                device_id: None,
+            })
             .collect()
     }
 
@@ -166,20 +270,23 @@ impl NetworkMonitor {
         app: AppHandle<R>,
         auth: DesktopAuthState,
         browsers: BrowserSessionManager,
+        upstream: Option<UpstreamProxy>,
         owner: (i64, String, u64),
         api: String,
     ) -> CmdResult<()> {
         let (user_id, profile_key, generation) = owner;
-        let Some(stop_rx) = self.prepare_start(generation) else {
+        let Some((run_token, stop_rx)) = self.prepare_start(generation) else {
             return Ok(());
         };
         let api = api.clone();
         let browsers = browsers.clone();
+        self.set_upstream(upstream.clone());
         let monitor = self.clone();
         let collect: CollectHook = Arc::new(move || {
             let api = api.clone();
             let browsers = browsers.clone();
-            Box::pin(async move { collect_samples(&api, &browsers).await })
+            let upstream = upstream.clone();
+            Box::pin(async move { collect_samples(&api, &browsers, upstream.as_ref()).await })
         });
         let report: ReportHook = Arc::new(move |payload| {
             let auth = auth.clone();
@@ -207,7 +314,7 @@ impl NetworkMonitor {
         };
         crate::rt::runtime().spawn(run_worker(
             monitor,
-            generation,
+            run_token,
             stop_rx,
             hooks,
             INTERVAL,
@@ -224,10 +331,10 @@ impl NetworkMonitor {
         interval: Duration,
         retry_delays: [Duration; 3],
     ) -> Option<tokio::task::JoinHandle<()>> {
-        let stop_rx = self.prepare_start(generation)?;
+        let (run_token, stop_rx) = self.prepare_start(generation)?;
         Some(tokio::spawn(run_worker(
             self.clone(),
-            generation,
+            run_token,
             stop_rx,
             hooks,
             interval,
@@ -238,7 +345,7 @@ impl NetworkMonitor {
 
 async fn run_worker(
     monitor: NetworkMonitor,
-    generation: u64,
+    run_token: u64,
     mut stop_rx: tokio::sync::watch::Receiver<bool>,
     hooks: WorkerHooks,
     interval: Duration,
@@ -269,10 +376,13 @@ async fn run_worker(
         };
         let current = {
             let mut state = monitor.inner.state.lock().expect("网络监控锁已中毒");
-            if state.generation != generation || !state.running {
+            if state.run_token != run_token || !state.running {
                 false
             } else {
-                state.queue.push_back(snapshot.clone().report());
+                if state.last_flush_at.is_none() {
+                    state.last_flush_at = Some(tokio::time::Instant::now());
+                }
+                state.queue.extend(snapshot.samples.iter().cloned());
                 while state.queue.len() > MAX_QUEUE {
                     state.queue.pop_front();
                     state.dropped_count = state.dropped_count.saturating_add(1);
@@ -288,94 +398,124 @@ async fn run_worker(
         if !current {
             break;
         }
-        (hooks.emit)(&monitor.snapshot());
-        let stopped = flush_queue_with(&monitor, &hooks.report, &mut stop_rx, retry_delays).await;
-        let after_flush = {
-            let mut state = monitor.inner.state.lock().expect("网络监控锁已中毒");
-            state.latest.upload_status = if state.queue.is_empty() {
-                "uploaded"
-            } else {
-                "retrying"
+        monitor.emit_if_current(run_token, &hooks.emit);
+        let should_flush = monitor.should_flush();
+        let stopped = if should_flush {
+            flush_queue_with(
+                &monitor,
+                run_token,
+                &hooks.report,
+                &mut stop_rx,
+                retry_delays,
+            )
+            .await
+        } else {
+            false
+        };
+        let Some(_after_flush) = monitor.update_upload_state(run_token, should_flush) else {
+            if stopped {
+                break;
             }
-            .into();
-            state.latest.queued_count = state.queue.len();
-            state.latest.dropped_count = state.dropped_count;
-            state.latest.clone()
+            continue;
         };
         if stopped {
             break;
         }
-        (hooks.emit)(&after_flush);
+        monitor.emit_if_current(run_token, &hooks.emit);
     }
     if let Ok(mut state) = monitor.inner.state.lock() {
-        if state.generation == generation {
+        if state.run_token == run_token {
             state.running = false;
             state.stop = None;
         }
     }
 }
 
-async fn collect_samples(api: &str, browsers: &BrowserSessionManager) -> Vec<NetworkSample> {
-    let mut samples = vec![
-        measure_management(&format!("{api}/api/product")).await,
-        measure_proxy(None, &format!("{api}/api/product")).await,
-    ];
+async fn collect_samples(
+    api: &str,
+    browsers: &BrowserSessionManager,
+    upstream: Option<&UpstreamProxy>,
+) -> Vec<NetworkSample> {
+    let management_url = format!("{api}/api/product");
     let recent = browsers.recent_sessions().into_iter().next();
-    let mut sample = measure_browser_cdp(
-        recent
-            .as_ref()
-            .and_then(|browser| browser.endpoint.as_ref()),
-    )
-    .await;
-    if let Some(browser) = recent {
-        sample.platform_id = Some(browser.platform_id.to_string());
-        sample.browser_id = Some(browser.browser_id.to_string());
-        sample.network_mode = if browser.direct_mode {
-            "direct"
-        } else {
-            "proxy"
+    let browser_endpoint = recent
+        .as_ref()
+        .and_then(|browser| browser.endpoint.as_ref());
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_millis(crate::network_diagnostics::MAX_PROBE_DURATION_MS);
+    let (management, proxy, browser) = tokio::join!(
+        crate::network_diagnostics::measure_management_until(&management_url, deadline),
+        crate::network_diagnostics::measure_proxy_until(upstream, &management_url, deadline),
+        async {
+            if recent.is_some() {
+                Some(
+                    crate::network_diagnostics::measure_browser_cdp_with_deadline(
+                        browser_endpoint,
+                        deadline,
+                    )
+                    .await,
+                )
+            } else {
+                None
+            }
+        },
+    );
+    let mut samples = vec![management, proxy];
+    if let Some(mut sample) = browser {
+        if let Some(browser) = recent {
+            sample.platform_id = Some(browser.platform_id.to_string());
+            sample.browser_id = Some(browser.browser_id.to_string());
+            sample.network_mode = if browser.direct_mode {
+                "direct"
+            } else {
+                "proxy"
+            }
+            .into();
         }
-        .into();
+        samples.push(sample);
     }
-    samples.push(sample);
     samples
 }
 
 /// Returns true when the owner session changed and the worker must terminate.
 async fn flush_queue_with(
     monitor: &NetworkMonitor,
+    run_token: u64,
     report: &ReportHook,
     stop_rx: &mut tokio::sync::watch::Receiver<bool>,
     retry_delays: [Duration; 3],
 ) -> bool {
-    let mut retry_delays = retry_delays.into_iter();
     loop {
-        let payload = {
-            monitor
-                .inner
-                .state
-                .lock()
-                .ok()
-                .and_then(|state| state.queue.front().cloned())
-        };
-        let Some(payload) = payload else {
+        let payload = monitor.next_payload(run_token);
+        let Some((payload, count)) = payload else {
             return false;
         };
-        if let Err(error) = report(payload).await {
-            if error == ReportFailure::SessionChanged {
-                return true;
-            }
-            if let Some(delay) = retry_delays.next() {
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {},
-                    changed = stop_rx.changed() => { if changed.is_err() || *stop_rx.borrow() { return true; } }
+        let mut delays = retry_delays.into_iter();
+        loop {
+            if let Err(error) = report(payload.clone()).await {
+                if error == ReportFailure::SessionChanged {
+                    monitor.stop();
+                    return true;
                 }
-                continue;
+                if let Some(delay) = delays.next() {
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {},
+                        changed = stop_rx.changed() => { if changed.is_err() || *stop_rx.borrow() { return true; } }
+                    }
+                    continue;
+                }
+                return false;
             }
-            return false;
-        }
-        if let Ok(mut state) = monitor.inner.state.lock() {
-            state.queue.pop_front();
+            if let Ok(mut state) = monitor.inner.state.lock() {
+                if state.run_token != run_token || !state.running {
+                    return true;
+                }
+                for _ in 0..count {
+                    state.queue.pop_front();
+                }
+                state.last_flush_at = Some(tokio::time::Instant::now());
+            }
+            break;
         }
     }
 }
@@ -395,27 +535,25 @@ pub async fn start_network_diagnostics<R: Runtime>(
     monitor: tauri::State<'_, NetworkMonitor>,
     auth: tauri::State<'_, DesktopAuthState>,
     browsers: tauri::State<'_, BrowserSessionManager>,
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> CmdResult<()> {
     require_desktop_auth(&auth)?;
     let (user, profile, generation) = auth.current_identity().map_err(auth_command_error)?;
     let profile = profile.ok_or_else(|| CommandError::new("请先同步桌面配置", "not_ready"))?;
+    let upstream = state.desktop_upstream(user, generation);
     let api = auth.api_base_url().map_err(auth_command_error)?.to_string();
     monitor.start(
         app,
         (*auth).clone(),
         (*browsers).clone(),
+        upstream,
         (user, profile, generation),
         api,
     )
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn stop_network_diagnostics(
-    monitor: tauri::State<'_, NetworkMonitor>,
-    auth: tauri::State<'_, DesktopAuthState>,
-) -> CmdResult<()> {
-    require_desktop_auth(&auth)?;
+pub async fn stop_network_diagnostics(monitor: tauri::State<'_, NetworkMonitor>) -> CmdResult<()> {
     monitor.stop();
     Ok(())
 }
@@ -579,7 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_samples_returns_management_vpn_and_browser_samples() {
+    async fn collect_samples_omits_browser_without_recent_active_session() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -593,20 +731,20 @@ mod tests {
         let samples = collect_samples(
             &format!("http://{address}"),
             &BrowserSessionManager::default(),
+            None,
         )
         .await;
         server.await.unwrap();
-        assert_eq!(samples.len(), 3);
+        assert_eq!(samples.len(), 2);
         assert_eq!(
             samples
                 .iter()
                 .map(|sample| sample.route.as_str())
                 .collect::<Vec<_>>(),
-            ["management", "vpn", "browser"]
+            ["management", "vpn"]
         );
         assert_eq!(samples[0].status, "ok");
         assert_eq!(samples[1].error_code.as_deref(), Some("proxy_disabled"));
-        assert_eq!(samples[2].error_code.as_deref(), Some("cdp_unavailable"));
     }
 
     #[tokio::test]
@@ -669,7 +807,7 @@ mod tests {
             move || {
                 let browsers = browsers.clone();
                 let api = api.clone();
-                Box::pin(async move { collect_samples(&api, &browsers).await })
+                Box::pin(async move { collect_samples(&api, &browsers, None).await })
             }
         });
         let emitted = Arc::new(Mutex::new(Vec::new()));
@@ -704,11 +842,9 @@ mod tests {
         let emitted = emitted.lock().expect("事件锁已中毒");
         assert_eq!(emitted.len(), 4);
         assert_eq!(emitted[0].upload_status, "pending");
-        assert_eq!(emitted[1].upload_status, "uploaded");
-        assert_eq!(emitted[1].queued_count, 0);
         assert!(emitted
             .iter()
-            .any(|snapshot| snapshot.upload_status == "uploaded" && snapshot.queued_count == 0));
+            .any(|snapshot| snapshot.upload_status == "uploaded"));
         assert!(emitted.iter().any(|snapshot| {
             snapshot
                 .samples
@@ -746,7 +882,7 @@ mod tests {
         browsers.note_browser_activity(7, 701, true);
         std::thread::sleep(Duration::from_millis(2));
         browsers.note_browser_activity(8, 801, false);
-        let samples = collect_samples(&format!("http://{address}"), &browsers).await;
+        let samples = collect_samples(&format!("http://{address}"), &browsers, None).await;
         server.await.unwrap();
         assert_eq!(samples[2].browser_id.as_deref(), Some("8"));
         assert_eq!(samples[2].platform_id.as_deref(), Some("801"));
@@ -808,13 +944,18 @@ mod tests {
         wait_for_calls(&new_calls, 1).await;
         release_old.notify_one();
         old_handle.await.unwrap();
+        monitor.stop();
         new_handle.await.unwrap();
         assert!(
             old_emitted.lock().unwrap().is_empty(),
             "old generation must not emit a sample"
         );
-        assert_eq!(new_emitted.lock().unwrap().len(), 1);
-        assert_eq!(monitor.queue_len(), 1, "stale auth keeps the unsent report");
+        assert!(new_emitted.lock().unwrap().len() >= 1);
+        assert_eq!(
+            monitor.queue_len(),
+            0,
+            "owner change must discard unsent samples"
+        );
 
         let recovery_calls = Arc::new(AtomicUsize::new(0));
         let recovery_hooks = hooks(
@@ -850,6 +991,7 @@ mod tests {
             async move {
                 flush_queue_with(
                     &monitor,
+                    1,
                     &attempt_hook,
                     &mut stop_rx,
                     [
@@ -895,6 +1037,7 @@ mod tests {
             async move {
                 flush_queue_with(
                     &monitor,
+                    1,
                     &attempt_hook,
                     &mut stop_rx,
                     [
@@ -932,14 +1075,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_flush_deletes_report_and_queue_keeps_latest_120() {
+    async fn successful_flush_deletes_samples_and_queue_keeps_latest_120_samples() {
         let monitor = NetworkMonitor::default();
         for id in 0..=120 {
-            monitor.enqueue(report(id));
+            monitor.enqueue(NetworkDiagnosticsReport {
+                protocol_version: 1,
+                samples: vec![sample(id), sample(id + 1000), sample(id + 2000)],
+                device_id: None,
+            });
         }
         let queued = monitor.queued_reports();
         assert_eq!(queued.len(), 120);
-        assert_eq!(queued[0].samples[0].sample_id, "sample-1");
+        assert_eq!(queued[0].samples[0].sample_id, "sample-81");
         let sent = Arc::new(Mutex::new(Vec::new()));
         let report_hook: ReportHook = Arc::new({
             let sent = Arc::clone(&sent);
@@ -949,8 +1096,73 @@ mod tests {
             }
         });
         let (_stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-        assert!(!flush_queue_with(&monitor, &report_hook, &mut stop_rx, [Duration::ZERO; 3]).await);
+        assert!(
+            !flush_queue_with(&monitor, 1, &report_hook, &mut stop_rx, [Duration::ZERO; 3]).await
+        );
         assert!(monitor.queue_len() == 0);
-        assert_eq!(sent.lock().unwrap().len(), 120);
+        assert_eq!(
+            sent.lock()
+                .unwrap()
+                .iter()
+                .map(|report| report.samples.len())
+                .sum::<usize>(),
+            120
+        );
+    }
+
+    #[test]
+    fn stopping_monitor_clears_unconfirmed_samples_and_snapshot() {
+        let monitor = NetworkMonitor::default();
+        monitor.enqueue(report(0));
+        monitor.stop();
+        assert_eq!(monitor.queue_len(), 0);
+        let snapshot = monitor.snapshot();
+        assert!(snapshot.samples.is_empty());
+        assert_eq!(snapshot.queued_count, 0);
+        assert_eq!(snapshot.upload_status, "idle");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_backoff_restarts_for_each_sample_batch() {
+        let monitor = NetworkMonitor::default();
+        for id in 0..21 {
+            monitor.enqueue(report(id));
+        }
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempt_hook: ReportHook = Arc::new({
+            let attempts = Arc::clone(&attempts);
+            move |_| {
+                let current = attempts.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if current == 0 {
+                        Err(ReportFailure::Retryable)
+                    } else {
+                        Ok(())
+                    }
+                }) as WorkerFuture<Result<(), ReportFailure>>
+            }
+        });
+        let (_stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let flushing = tokio::spawn({
+            let monitor = monitor.clone();
+            async move {
+                flush_queue_with(
+                    &monitor,
+                    1,
+                    &attempt_hook,
+                    &mut stop_rx,
+                    [
+                        Duration::from_secs(5),
+                        Duration::from_secs(30),
+                        Duration::from_secs(120),
+                    ],
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        flushing.await.unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 }

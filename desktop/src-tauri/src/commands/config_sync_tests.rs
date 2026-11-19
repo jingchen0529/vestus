@@ -69,6 +69,7 @@ fn app(server: &ConfigServer) -> tauri::App<MockRuntime> {
         .manage(AppState::default())
         .manage(crate::auth::tests::authenticated_state(&server.base))
         .manage(BrowserSessionManager::default())
+        .manage(crate::commands::NetworkMonitor::default())
         .build(mock_context(noop_assets()))
         .unwrap()
 }
@@ -79,6 +80,7 @@ async fn sync(app: &tauri::App<MockRuntime>) -> CmdResult<DesktopConfigSyncRepor
         app.state::<AppState>(),
         app.state::<DesktopAuthState>(),
         app.state::<BrowserSessionManager>(),
+        app.state::<crate::commands::NetworkMonitor>(),
     )
     .await
 }
@@ -296,6 +298,7 @@ async fn lease_watchdog_survives_repeated_outages_without_retiring_browsers() {
     sync(&app).await.unwrap();
     let state = app.state::<AppState>();
     let auth = app.state::<DesktopAuthState>();
+    let network = app.state::<crate::commands::NetworkMonitor>();
     let generation = auth.current_identity().unwrap().2;
     let revision = state.desktop_assignment_revision(7, generation).unwrap();
     state.mark_browser_opened(true).unwrap();
@@ -310,7 +313,8 @@ async fn lease_watchdog_survives_repeated_outages_without_retiring_browsers() {
                 7,
                 generation,
                 revision,
-                &"a".repeat(64)
+                &"a".repeat(64),
+                &network,
             )
             .await
         );
@@ -330,7 +334,8 @@ async fn lease_watchdog_survives_repeated_outages_without_retiring_browsers() {
             7,
             generation,
             revision,
-            &"a".repeat(64)
+            &"a".repeat(64),
+            &network,
         )
         .await
     );
@@ -346,6 +351,7 @@ async fn watchdog_still_closes_revoked_sessions_and_ignores_stale_revisions() {
     sync(&app).await.unwrap();
     let state = app.state::<AppState>();
     let auth = app.state::<DesktopAuthState>();
+    let network = app.state::<crate::commands::NetworkMonitor>();
     let generation = auth.current_identity().unwrap().2;
     let original_revision = state.desktop_assignment_revision(7, generation).unwrap();
     state.mark_browser_opened(true).unwrap();
@@ -358,7 +364,8 @@ async fn watchdog_still_closes_revoked_sessions_and_ignores_stale_revisions() {
             7,
             generation,
             original_revision,
-            &"a".repeat(64)
+            &"a".repeat(64),
+            &network,
         )
         .await
     );
@@ -380,7 +387,8 @@ async fn watchdog_still_closes_revoked_sessions_and_ignores_stale_revisions() {
             7,
             generation,
             original_revision,
-            &"a".repeat(64)
+            &"a".repeat(64),
+            &network,
         )
         .await
     );
@@ -395,7 +403,8 @@ async fn watchdog_still_closes_revoked_sessions_and_ignores_stale_revisions() {
             7,
             generation,
             revision,
-            &"b".repeat(64)
+            &"b".repeat(64),
+            &network,
         )
         .await
     );
