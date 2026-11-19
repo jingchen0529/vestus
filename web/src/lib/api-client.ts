@@ -49,6 +49,7 @@ import {
   DailyActivityResponse,
   toBrowserSessionQuery,
 } from "@/types/browser-activity";
+import { NetworkDiagnosticsQuery, NetworkDiagnosticsResponse } from "@/types/network-diagnostics";
 import {
   AdminDesktopFaqResponse,
   DesktopFaqDocument,
@@ -587,6 +588,18 @@ export const api = {
 
   async listAdvertiserSources(platformId: number, advertiserId: string, params: AdvertiserAccountQuery = {}): Promise<AdvertiserPage<AdvertiserSource>> {
     return request(`/api/admin/advertiser-accounts/${platformId}/${encodeURIComponent(advertiserId)}/sources${advertiserSearch({ page: 1, pageSize: 10, ...params })}`);
+  },
+
+  // Network diagnostics
+  async listNetworkDiagnostics(params: NetworkDiagnosticsQuery = {}): Promise<NetworkDiagnosticsResponse> {
+    const searchParams = new URLSearchParams();
+    searchParams.set("page", String(params.page || 1));
+    searchParams.set("pageSize", String(params.pageSize || 50));
+    for (const key of ["userId", "deviceId", "route", "networkMode", "status", "startAt", "endAt"] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") searchParams.set(key, String(value));
+    }
+    return request<NetworkDiagnosticsResponse>(`/api/admin/network-diagnostics?${searchParams.toString()}`);
   },
 
   // Browser activity

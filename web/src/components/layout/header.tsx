@@ -18,6 +18,7 @@ const tabTitles: Record<NavTab, { title: string; subtitle: string }> = {
   faq: { title: "帮助内容", subtitle: "维护桌面端「常见问题」菜单展示的客户 Q&A" },
   "faq-groups": { title: "帮助分组", subtitle: "维护「常见问题」的栏目结构、顺序与启用状态" },
   activity: { title: "会话追踪", subtitle: "桌面端内置浏览器会话链路、访问地址与交互统计" },
+  network: { title: "网络诊断", subtitle: "管理接口、代理探针与浏览器连接质量" },
   logs: { title: "审计日志", subtitle: "完整追踪桌面端与管理员操作轨迹" },
   settings: { title: "系统配置", subtitle: "自定义管理端与桌面端品牌名称、Logo 图标及主题配色风格" },
 };

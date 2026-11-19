@@ -13,6 +13,7 @@ import { FaqGroupsView } from "@/components/desktop-faq/desktop-faq-groups-view"
 import { AdminsView } from "@/components/admins/admins-view";
 import { LogsView } from "@/components/logs/logs-view";
 import { ActivityView } from "@/components/activity/activity-view";
+import { NetworkDiagnosticsView } from "@/components/network/network-diagnostics-view";
 import { SettingsView } from "@/components/settings/settings-view";
 import { Toaster } from "@/components/ui/sonner";
 import { api } from "@/lib/api-client";
@@ -37,6 +38,7 @@ import {
   EMPTY_BROWSER_SESSION_FILTERS,
   toBrowserSessionQuery,
 } from "@/types/browser-activity";
+import { EMPTY_NETWORK_DIAGNOSTICS_FILTERS, NetworkDiagnosticsFilters, NetworkDiagnosticsResponse, toNetworkDiagnosticsQuery } from "@/types/network-diagnostics";
 import { Loader2, Layers } from "lucide-react";
 import { toast } from "sonner";
 
@@ -50,6 +52,7 @@ const VALID_TABS: NavTab[] = [
   "faq",
   "faq-groups",
   "activity",
+  "network",
   "logs",
   "settings",
 ];
@@ -232,6 +235,15 @@ export function App() {
     EMPTY_BROWSER_SESSION_FILTERS,
   );
 
+  const [networkDiagnostics, setNetworkDiagnostics] = useState<NetworkDiagnosticsResponse>({ items: [], total: 0, page: 1, pageSize: 50, pages: 0, summary: {} });
+  const [networkFilters, setNetworkFilters] = useState<NetworkDiagnosticsFilters>(EMPTY_NETWORK_DIAGNOSTICS_FILTERS);
+  const [networkPage, setNetworkPage] = useState(1);
+  const [networkPageSize, setNetworkPageSize] = useState(50);
+  const [networkLoading, setNetworkLoading] = useState(false);
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const handleNetworkFiltersChange = useCallback((next: NetworkDiagnosticsFilters) => { setNetworkFilters(next); setNetworkPage(1); }, []);
+  const loadNetworkDiagnostics = useCallback(async () => { setNetworkLoading(true); setNetworkError(null); try { const res = await api.listNetworkDiagnostics({ page: networkPage, pageSize: networkPageSize, ...toNetworkDiagnosticsQuery(networkFilters) }); setNetworkDiagnostics(res); } catch (err: any) { setNetworkDiagnostics(prev => ({ ...prev, items: [], total: 0, pages: 0, summary: {} })); setNetworkError(err?.message || "加载网络诊断失败"); } finally { setNetworkLoading(false); } }, [networkPage, networkPageSize, networkFilters]);
+
   // 改筛选条件就回到第一页：留在第 7 页上换条件，多半只会看到空列表。
   const handleSessionFiltersChange = useCallback((next: BrowserSessionFilters) => {
     setSessionFilters(next);
@@ -403,11 +415,12 @@ export function App() {
         loadAdmins(),
         loadLogs(),
         loadSessions(),
+        loadNetworkDiagnostics(),
       ]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadManagedAccounts, loadManagedBindings, loadAdmins, loadLogs, loadSessions]);
+  }, [loadUsers, loadUserStats, loadProxies, loadPlatforms, loadManagedAccounts, loadManagedBindings, loadAdmins, loadLogs, loadSessions, loadNetworkDiagnostics]);
 
   // Initial Load on login
   useEffect(() => {
@@ -459,6 +472,8 @@ export function App() {
     }, 250);
     return () => clearTimeout(timer);
   }, [sessionPage, sessionPageSize, sessionFilters, user]);
+
+  useEffect(() => { if (!user) return; const timer = setTimeout(() => { void loadNetworkDiagnostics(); }, 250); return () => clearTimeout(timer); }, [loadNetworkDiagnostics, user]);
 
   // User Mutators
   const handleCreateUser = async (payload: CreateUserPayload) => {
@@ -825,6 +840,8 @@ export function App() {
             onLoadDetail={loadSessionDetail}
           />
         )}
+
+        {currentTab === "network" && (<NetworkDiagnosticsView items={networkDiagnostics.items} total={networkDiagnostics.total} page={networkPage} pageSize={networkPageSize} pages={networkDiagnostics.pages} summary={networkDiagnostics.summary} filters={networkFilters} users={users} isLoading={networkLoading} error={networkError} onFiltersChange={handleNetworkFiltersChange} onPageChange={setNetworkPage} onPageSizeChange={(size) => { setNetworkPageSize(size); setNetworkPage(1); }} onRefresh={() => loadNetworkDiagnostics()} />)}
 
         {/* Tab 6: Audit Logs */}
         {currentTab === "logs" && (

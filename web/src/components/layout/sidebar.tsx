@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   FileText,
   Activity,
+  Network,
   ChevronLeft,
   ChevronRight,
   Shield,
@@ -40,7 +41,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export type NavTab = "dashboard" | "users" | "bindings" | "desktop" | "platforms" | "faq" | "faq-groups" | "admins" | "activity" | "logs" | "settings";
+export type NavTab = "dashboard" | "users" | "bindings" | "desktop" | "platforms" | "faq" | "faq-groups" | "admins" | "activity" | "network" | "logs" | "settings";
 
 interface NavItem {
   id: NavTab;
@@ -181,6 +182,7 @@ export function Sidebar({
       icon: Activity,
       group: "监控与审计",
     },
+    { id: "network", label: "网络诊断", icon: Network, group: "监控与审计" },
     {
       id: "logs",
       label: "审计日志",
