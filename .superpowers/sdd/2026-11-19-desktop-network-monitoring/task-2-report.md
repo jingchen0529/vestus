@@ -33,3 +33,4 @@
 
 - `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics -- --test-threads=1`：4 tests passed。
 - `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics_rejects_stale_generation -- --test-threads=1`：1 test passed。
+- 追加 `network_diagnostics_receipt_uses_camel_case_contract`，验证 `{accepted, duplicate, protocolVersion}` 反序列化契约，测试通过。
