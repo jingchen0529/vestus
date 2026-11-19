@@ -38,7 +38,7 @@ import {
   EMPTY_BROWSER_SESSION_FILTERS,
   toBrowserSessionQuery,
 } from "@/types/browser-activity";
-import { EMPTY_NETWORK_DIAGNOSTICS_FILTERS, NetworkDiagnosticsFilters, NetworkDiagnosticsResponse, toNetworkDiagnosticsQuery } from "@/types/network-diagnostics";
+import { EMPTY_NETWORK_DIAGNOSTICS_FILTERS, NetworkDiagnosticsFilters, NetworkDiagnosticsResponse, toNetworkDiagnosticsQuery, networkDiagnosticsPageAfterFilterChange } from "@/types/network-diagnostics";
 import { Loader2, Layers } from "lucide-react";
 import { toast } from "sonner";
 
@@ -241,7 +241,7 @@ export function App() {
   const [networkPageSize, setNetworkPageSize] = useState(50);
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
-  const handleNetworkFiltersChange = useCallback((next: NetworkDiagnosticsFilters) => { setNetworkFilters(next); setNetworkPage(1); }, []);
+  const handleNetworkFiltersChange = useCallback((next: NetworkDiagnosticsFilters) => { setNetworkFilters(next); setNetworkPage(networkDiagnosticsPageAfterFilterChange(networkPage, true)); }, [networkPage]);
   const loadNetworkDiagnostics = useCallback(async () => { setNetworkLoading(true); setNetworkError(null); try { const res = await api.listNetworkDiagnostics({ page: networkPage, pageSize: networkPageSize, ...toNetworkDiagnosticsQuery(networkFilters) }); setNetworkDiagnostics(res); } catch (err: any) { setNetworkDiagnostics(prev => ({ ...prev, items: [], total: 0, pages: 0, summary: {} })); setNetworkError(err?.message || "加载网络诊断失败"); } finally { setNetworkLoading(false); } }, [networkPage, networkPageSize, networkFilters]);
 
   // 改筛选条件就回到第一页：留在第 7 页上换条件，多半只会看到空列表。

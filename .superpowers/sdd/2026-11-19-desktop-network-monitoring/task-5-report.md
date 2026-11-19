@@ -17,3 +17,13 @@
 
 ## 已知限制
 - 页面按现有管理端模式由 App 维护列表请求状态，未增加导出功能。
+
+## Task 5 fix round 1
+- 将原先仅源码正则断言的测试改为 Vite SSR 行为测试。
+- API 测试实际 mock `fetch`，断言 userId、deviceId、route、networkMode、status、startAt、endAt 的 camelCase 查询参数、分页参数、信封解包和请求 credentials。
+- 页面测试实际服务端渲染组件，断言 p50/p95/失败率、空值、空状态、错误状态、代理/CDP 路由和中文错误码。
+- 筛选分页使用可执行的页码重置 helper 测试，验证筛选改变回到第一页。
+
+验证命令与结果：
+- `npm --prefix web test -- network-diagnostics.test.mjs`：130 项通过（项目 test glob 会运行全部测试）。
+- `npm --prefix web run build`：通过。
