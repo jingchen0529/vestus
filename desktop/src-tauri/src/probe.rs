@@ -103,12 +103,31 @@ pub async fn probe_via_upstream(
         return Err(ProbeError::Status(status.as_u16()));
     }
 
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| ProbeError::Request(describe(&e)))?;
+    let body = read_bounded(resp).await.map_err(|e| ProbeError::Request(e))?;
 
-    parse_ip(&body).ok_or(ProbeError::Unparsable)
+    parse_ip(&String::from_utf8_lossy(&body)).ok_or(ProbeError::Unparsable)
+}
+
+pub(crate) async fn probe_via_upstream_timed(upstream: &UpstreamProxy, probe_url: &str) -> Result<(String, u64, u64), ProbeError> {
+    let parsed = url::Url::parse(probe_url).map_err(|e| ProbeError::BadUrl(e.to_string()))?;
+    let host = parsed.host_str().ok_or_else(|| ProbeError::BadUrl("缺少主机名".into()))?.to_string();
+    let port = parsed.port_or_known_default().ok_or_else(|| ProbeError::BadUrl("无法确定端口".into()))?;
+    upstream.open_tunnel(&host, port).await?;
+    let proxy = reqwest::Proxy::all(upstream.proxy_url_without_credentials()).map_err(|e| ProbeError::Request(describe(&e)))?.basic_auth(upstream.username(), upstream.expose_password());
+    let client = reqwest::Client::builder().proxy(proxy).timeout(Duration::from_secs(8)).build().map_err(|e| ProbeError::Request(describe(&e)))?;
+    let resp = client.get(probe_url).send().await.map_err(|e| ProbeError::Request(describe(&e)))?;
+    let status = resp.status(); if status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED { return Err(ProbeError::Tunnel(TunnelError::AuthFailed)); } if !status.is_success() { return Err(ProbeError::Status(status.as_u16())); }
+    let started = std::time::Instant::now(); let body = read_bounded(resp).await.map_err(ProbeError::Request)?; let elapsed = started.elapsed().as_millis() as u64;
+    let body_len = body.len() as u64; let text = String::from_utf8_lossy(&body).to_string(); let ip = parse_ip(&text).ok_or(ProbeError::Unparsable)?; Ok((ip, body_len, elapsed))
+}
+
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| describe(&e))? {
+        let remaining = 1024 * 1024usize - body.len(); body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if body.len() >= 1024 * 1024 { break; }
+    }
+    Ok(body)
 }
 
 /// 直接通过本机网络探测真实出口 IP（直连模式）。

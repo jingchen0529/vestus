@@ -1014,9 +1014,10 @@ impl DesktopAuthState {
         &self,
         owner_user_id: i64,
         owner_profile_key: &str,
+        owner_generation: u64,
         payload: &T,
     ) -> AuthResult<NetworkDiagnosticsReceipt> {
-        let token = self.activity_token(owner_user_id, owner_profile_key)?;
+        let token = self.network_diagnostics_token(owner_user_id, owner_profile_key, owner_generation)?;
         let response = self
             .client()?
             .post(self.endpoint(NETWORK_DIAGNOSTICS_PATH)?)
@@ -1031,6 +1032,16 @@ impl DesktopAuthState {
             return Err(DesktopAuthError::invalid_response("网络诊断协议版本错误"));
         }
         Ok(receipt)
+    }
+
+    fn network_diagnostics_token(&self, owner_user_id: i64, owner_profile_key: &str, generation: u64) -> AuthResult<String> {
+        let state = self.session_guard()?;
+        let matches = state.generation == generation
+            && state.user.as_ref().is_some_and(|user| user.id == owner_user_id)
+            && state.profile_key.as_deref() == Some(owner_profile_key)
+            && session_is_current(&state, self.now());
+        if !matches { return Err(DesktopAuthError::new("session_changed", "网络诊断所属账号当前未登录")); }
+        state.token.clone().filter(|token| !token.is_empty()).ok_or_else(|| DesktopAuthError::new("unauthenticated", "桌面登录已失效，请重新登录"))
     }
 
     fn activity_token(&self, owner_user_id: i64, owner_profile_key: &str) -> AuthResult<String> {
@@ -1731,6 +1742,18 @@ pub(crate) mod tests {
             .unwrap();
         state.set_profile_key(7, "profile-a".into()).unwrap();
         assert_eq!(state.activity_token(7, "profile-a").unwrap(), new_token);
+    }
+
+    #[test]
+    fn network_diagnostics_rejects_stale_generation_for_same_profile() {
+        let state = DesktopAuthState::with_credentials(DEFAULT_API_BASE_URL, Arc::new(MemoryCredentialStore::default()));
+        state.persist_session(valid_test_token(), client_user()).unwrap();
+        state.set_profile_key(7, "profile-a".into()).unwrap();
+        assert!(state.network_diagnostics_token(7, "profile-a", 1).is_ok());
+        state.clear_memory().unwrap();
+        state.persist_session(valid_test_token(), client_user()).unwrap();
+        state.set_profile_key(7, "profile-a".into()).unwrap();
+        assert_eq!(state.network_diagnostics_token(7, "profile-a", 1).unwrap_err().code, "session_changed");
     }
 
     #[tokio::test]

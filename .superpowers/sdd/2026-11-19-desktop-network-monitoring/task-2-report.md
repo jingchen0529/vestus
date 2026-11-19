@@ -20,3 +20,16 @@
 
 - 当前 Rust crate 对新增公开但未接入生命周期的探针函数产生 dead-code warning。Task 1/后续生命周期任务接入后可消除。
 - 代理探针沿用现有出口 IP 探针接口，因此成功代理样本的响应字节按返回 IP 文本估算。
+
+## 评审修复轮次 1
+
+- 所有 reqwest 响应改为逐 chunk 读取，限制 1 MiB，代理探针同时返回实际读取字节和 body 读取耗时。
+- 管理端、代理和 CDP 的 body/握手/读回执路径统一受 8000ms 上限控制。超时样本固定 `totalMs=8000`，未完成阶段保持 null。
+- 成功样本不再伪造 `connectMs` 和 `ttfbMs`，吞吐率使用固定上限后的字节数。
+- CDP 超时映射 `timeout`，连接关闭映射 `browser_closed`。
+- 网络诊断上报新增 generation 校验，拒绝同用户同 profile 的旧会话任务。
+
+修复验证命令及结果：
+
+- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics -- --test-threads=1`：4 tests passed。
+- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib network_diagnostics_rejects_stale_generation -- --test-threads=1`：1 test passed。
