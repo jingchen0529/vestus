@@ -34,3 +34,9 @@
 - 增加 p50、p95、p50Ms、p95Ms、failureRate 全为空时三个统计指标均显示空值的 SSR 断言。
 
 验证：`npm --prefix web test -- network-diagnostics.test.mjs`，133 项通过。
+
+## Task 5 fix round 3
+- 抽取并接入生产模块 `web/src/lib/network-diagnostics-state.ts`。App 实际调用 `networkDiagnosticsFilterState` 处理筛选变更并回到第 1 页，调用 `networkDiagnosticsFailureState` 清空旧 items、total、pages、summary 后保存错误。
+- 测试通过 Vite SSR 实际导入生产 helper，断言筛选状态与失败状态转换，不再仅在测试中镜像实现。
+
+验证：`npm --prefix web test -- network-diagnostics.test.mjs` 通过，`npm --prefix web run build` 通过。

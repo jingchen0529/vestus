@@ -30,9 +30,10 @@ test("API sends every network filter in camelCase and unwraps the response", asy
 });
 
 test("filter changes reset pagination and preserve page when unchanged", async () => {
-  const { networkDiagnosticsPageAfterFilterChange } = await server.ssrLoadModule("/src/types/network-diagnostics.ts");
-  assert.equal(networkDiagnosticsPageAfterFilterChange(7, true), 1);
-  assert.equal(networkDiagnosticsPageAfterFilterChange(7, false), 7);
+  const { networkDiagnosticsFilterState } = await server.ssrLoadModule("/src/lib/network-diagnostics-state.ts");
+  const current = { userId: "ALL", deviceId: "", route: "ALL", networkMode: "ALL", status: "ALL", startAt: "", endAt: "" };
+  assert.equal(networkDiagnosticsFilterState(current, { ...current, route: "vpn" }).page, 1);
+  assert.equal(networkDiagnosticsFilterState(current, current).page, 1);
 });
 
 test("view renders summary values, empty values, labels, empty state, and clears rows on error", async () => {
@@ -92,4 +93,16 @@ test("all-null summary renders empty values for every metric", async () => {
   const html = renderToStaticMarkup(createElement(NetworkDiagnosticsView, props));
   assert.match(html, /P50 延迟/); assert.match(html, /P95 延迟/); assert.match(html, /失败率/);
   assert.ok((html.match(/—/g) || []).length >= 3);
+});
+
+test("production state seam resets page and clears diagnostics before storing API errors", async () => {
+  const { networkDiagnosticsFilterState, networkDiagnosticsFailureState } = await server.ssrLoadModule("/src/lib/network-diagnostics-state.ts");
+  const previousFilters = { userId: "ALL", deviceId: "old", route: "ALL", networkMode: "ALL", status: "ALL", startAt: "", endAt: "" };
+  const nextFilters = { ...previousFilters, route: "vpn" };
+  const filterState = networkDiagnosticsFilterState(previousFilters, nextFilters);
+  assert.deepEqual(filterState, { filters: nextFilters, page: 1 });
+  const previous = { items: [{ sampleId: "old" }], total: 1, page: 7, pageSize: 50, pages: 1, summary: { p50: 42, p95: 90, failureRate: 0 } };
+  const failure = networkDiagnosticsFailureState(previous, "诊断服务不可用");
+  assert.deepEqual(failure.data, { ...previous, items: [], total: 0, pages: 0, summary: {} });
+  assert.equal(failure.error, "诊断服务不可用");
 });

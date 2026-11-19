@@ -18,6 +18,7 @@ import { SettingsView } from "@/components/settings/settings-view";
 import { Toaster } from "@/components/ui/sonner";
 import { api } from "@/lib/api-client";
 import { defaultCookieDomain } from "@/lib/cookie-parser";
+import { emptyNetworkDiagnosticsResponse, networkDiagnosticsFailureState, networkDiagnosticsFilterState } from "@/lib/network-diagnostics-state";
 import { DesktopUser, UserStats, CreateUserPayload, UpdateUserPayload } from "@/types/user";
 import { ProxyItem, CreateProxyPayload, UpdateProxyPayload } from "@/types/proxy";
 import { PlatformItem, CreatePlatformPayload, UpdatePlatformPayload } from "@/types/platform";
@@ -38,7 +39,7 @@ import {
   EMPTY_BROWSER_SESSION_FILTERS,
   toBrowserSessionQuery,
 } from "@/types/browser-activity";
-import { EMPTY_NETWORK_DIAGNOSTICS_FILTERS, NetworkDiagnosticsFilters, NetworkDiagnosticsResponse, toNetworkDiagnosticsQuery, networkDiagnosticsPageAfterFilterChange } from "@/types/network-diagnostics";
+import { EMPTY_NETWORK_DIAGNOSTICS_FILTERS, NetworkDiagnosticsFilters, NetworkDiagnosticsResponse, toNetworkDiagnosticsQuery } from "@/types/network-diagnostics";
 import { Loader2, Layers } from "lucide-react";
 import { toast } from "sonner";
 
@@ -235,14 +236,14 @@ export function App() {
     EMPTY_BROWSER_SESSION_FILTERS,
   );
 
-  const [networkDiagnostics, setNetworkDiagnostics] = useState<NetworkDiagnosticsResponse>({ items: [], total: 0, page: 1, pageSize: 50, pages: 0, summary: {} });
+  const [networkDiagnostics, setNetworkDiagnostics] = useState<NetworkDiagnosticsResponse>(emptyNetworkDiagnosticsResponse);
   const [networkFilters, setNetworkFilters] = useState<NetworkDiagnosticsFilters>(EMPTY_NETWORK_DIAGNOSTICS_FILTERS);
   const [networkPage, setNetworkPage] = useState(1);
   const [networkPageSize, setNetworkPageSize] = useState(50);
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
-  const handleNetworkFiltersChange = useCallback((next: NetworkDiagnosticsFilters) => { setNetworkFilters(next); setNetworkPage(networkDiagnosticsPageAfterFilterChange(networkPage, true)); }, [networkPage]);
-  const loadNetworkDiagnostics = useCallback(async () => { setNetworkLoading(true); setNetworkError(null); try { const res = await api.listNetworkDiagnostics({ page: networkPage, pageSize: networkPageSize, ...toNetworkDiagnosticsQuery(networkFilters) }); setNetworkDiagnostics(res); } catch (err: any) { setNetworkDiagnostics(prev => ({ ...prev, items: [], total: 0, pages: 0, summary: {} })); setNetworkError(err?.message || "加载网络诊断失败"); } finally { setNetworkLoading(false); } }, [networkPage, networkPageSize, networkFilters]);
+  const handleNetworkFiltersChange = useCallback((next: NetworkDiagnosticsFilters) => { const state = networkDiagnosticsFilterState(networkFilters, next); setNetworkFilters(state.filters); setNetworkPage(state.page); }, [networkFilters]);
+  const loadNetworkDiagnostics = useCallback(async () => { setNetworkLoading(true); setNetworkError(null); try { const res = await api.listNetworkDiagnostics({ page: networkPage, pageSize: networkPageSize, ...toNetworkDiagnosticsQuery(networkFilters) }); setNetworkDiagnostics(res); } catch (err: any) { setNetworkDiagnostics(prev => networkDiagnosticsFailureState(prev, err?.message || "加载网络诊断失败").data); setNetworkError(err?.message || "加载网络诊断失败"); } finally { setNetworkLoading(false); } }, [networkPage, networkPageSize, networkFilters]);
 
   // 改筛选条件就回到第一页：留在第 7 页上换条件，多半只会看到空列表。
   const handleSessionFiltersChange = useCallback((next: BrowserSessionFilters) => {

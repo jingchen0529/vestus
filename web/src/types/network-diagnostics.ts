@@ -81,6 +81,3 @@ export function toNetworkDiagnosticsQuery(filters: NetworkDiagnosticsFilters): O
   };
 }
 
-export function networkDiagnosticsPageAfterFilterChange(currentPage: number, changed: boolean): number {
-  return changed ? 1 : currentPage;
-}
