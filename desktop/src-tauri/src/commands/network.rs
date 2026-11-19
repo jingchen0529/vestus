@@ -774,20 +774,27 @@ mod tests {
     async fn worker_emits_browser_closed_on_the_round_after_cdp_closes() {
         let management_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let management_address = management_listener.local_addr().unwrap();
-        let management_server = tokio::spawn(async move {
-            let mut served = 0;
-            while served < 2 {
-                let (mut stream, _) = management_listener.accept().await.unwrap();
-                if crate::httpio::read_head(&mut stream).await.is_err() {
-                    continue;
+        let second_management_response = Arc::new(Notify::new());
+        let management_server = tokio::spawn({
+            let second_management_response = Arc::clone(&second_management_response);
+            async move {
+                let mut served = 0;
+                while served < 2 {
+                    let (mut stream, _) = management_listener.accept().await.unwrap();
+                    if crate::httpio::read_head(&mut stream).await.is_err() {
+                        continue;
+                    }
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await
+                        .unwrap();
+                    served += 1;
+                    if served == 2 {
+                        second_management_response.notify_one();
+                    }
                 }
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-                    )
-                    .await
-                    .unwrap();
-                served += 1;
             }
         });
 
@@ -796,18 +803,23 @@ mod tests {
             port: cdp_listener.local_addr().unwrap().port(),
             browser_path: "/devtools/browser/network-test".into(),
         };
-        let cdp_server = tokio::spawn(async move {
-            let (stream, _) = cdp_listener.accept().await.unwrap();
-            let mut socket = accept_async(stream).await.unwrap();
-            let _ = socket.next().await;
-            socket
-                .send(Message::Text(r#"{"id":1,"result":{}}"#.into()))
-                .await
-                .unwrap();
-            let (stream, _) = cdp_listener.accept().await.unwrap();
-            let mut socket = accept_async(stream).await.unwrap();
-            let _ = socket.next().await;
-            socket.send(Message::Close(None)).await.unwrap();
+        let close_second_probe = Arc::new(Notify::new());
+        let cdp_server = tokio::spawn({
+            let close_second_probe = Arc::clone(&close_second_probe);
+            async move {
+                let (stream, _) = cdp_listener.accept().await.unwrap();
+                let mut socket = accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                socket
+                    .send(Message::Text(r#"{"id":1,"result":{}}"#.into()))
+                    .await
+                    .unwrap();
+                close_second_probe.notified().await;
+                let (stream, _) = cdp_listener.accept().await.unwrap();
+                let mut socket = accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                socket.send(Message::Close(None)).await.unwrap();
+            }
         });
 
         let browsers = BrowserSessionManager::default();
@@ -848,6 +860,13 @@ mod tests {
         })
         .await;
         monitor.wake();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            second_management_response.notified(),
+        )
+        .await
+        .expect("second management probe was not served");
+        close_second_probe.notify_one();
         wait_for_sample(&emitted, |sample| {
             sample.route == "browser" && sample.error_code.as_deref() == Some("browser_closed")
         })
