@@ -75,17 +75,20 @@ impl Collector {
     }
     fn install(&mut self, session_id: &str) -> Vec<String> {
         let managed = self.managed.as_ref().map(|state| state.login_guard_script.clone());
-        let mut commands = vec![self.command(Some(session_id), "Page.enable", json!({}))];
-        if managed.is_some() {
-            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
-        }
-        commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
+        let mut commands = Vec::new();
         if let Some(source) = managed {
-            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
-            commands.push(self.command(Some(session_id), "Page.setLifecycleEventsEnabled", json!({"enabled": true})));
             self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
             commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
                 json!({"source": source, "runImmediately": true})));
+        }
+        commands.push(self.command(Some(session_id), "Page.enable", json!({})));
+        if self.managed.is_some() {
+            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        }
+        commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
+        if self.managed.is_some() {
+            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+            commands.push(self.command(Some(session_id), "Page.setLifecycleEventsEnabled", json!({"enabled": true})));
             self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
         } else {
             commands.push(self.resume_page(session_id));
@@ -319,7 +322,7 @@ for (const [name, from, to, expected] of [
   ["dynamic install source", 'state.login_guard_script.clone()', 'frontend.script.clone()', /只能来自 policy|policy 生成的固定字段/],
   ["missing guard install", '"source": source', '"source": arbitrary_script', /policy 生成的固定字段/],
   ["an extra document script", 'commands.push(self.command(Some(session_id), "Page.getFrameTree"', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Page.getFrameTree"', /只允许安装托管固定 guard/],
-  ["install before Page.enable", '"Page.enable"', '"Page.enableLater"', /Page\.enable 之后/],
+  ["guard after Page.enable", '"Page.enable"', '"Page.enableLater"', /Page\.enable 之前/],
   ["no debugger wait", '"waitForDebuggerOnStart": true', '"waitForDebuggerOnStart": false', /必须暂停新 target/],
   ["self-contained guard script", "struct ManagedWatch { login_guard_script: String }", 'struct ManagedWatch { login_guard_script: String }\nconst RAW: &str = include_str!("managed_cdp/login_guard.js");', /只能在 managed_cdp 的 policy 里生成/],
   ["collapsed failure signals", "pub enum ManagedSignal { Expired, ConnectionLost }", "pub enum ManagedSignal { Expired }", /必须区分凭据过期与防护连接断开/],

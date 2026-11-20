@@ -277,8 +277,8 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
   const lifecycleAt = installBody.indexOf('"Page.setLifecycleEventsEnabled"');
   const guardAt = installBody.indexOf('"Page.addScriptToEvaluateOnNewDocument"');
   assert(
-    enableAt >= 0 && treeAt > enableAt && lifecycleAt > treeAt && guardAt > lifecycleAt,
-    "固定 guard 必须在 Page.enable 之后、frame tree 与 lifecycle 订阅之后安装",
+    guardAt >= 0 && enableAt > guardAt && treeAt > enableAt && lifecycleAt > treeAt,
+    "固定 guard 必须在 Page.enable 之前安装，frame tree 与 lifecycle 订阅随后执行",
   );
   assert(
     /"Page\.setLifecycleEventsEnabled",json!\(\{"enabled":true\}\)/.test(installCompact) &&
@@ -287,7 +287,7 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
   );
   assert(
     (installCompact.match(/GuardRequest::Install\(session_id\.to_string\(\)\)/g) || []).length === 4 &&
-      /ifmanaged\.is_some\(\)\{self\.guard_requests\.insert\(self\.next_id,GuardRequest::Install\(session_id\.to_string\(\)\)\);\}/.test(installCompact) &&
+      /if(?:self\.)?managed\.is_some\(\)\{self\.guard_requests\.insert\(self\.next_id,GuardRequest::Install\(session_id\.to_string\(\)\)\);\}/.test(installCompact) &&
       !installBody.includes('"Runtime.runIfWaitingForDebugger"') &&
       /\}else\{commands\.push\(self\.resume_page\(session_id\)\);\}/.test(installCompact) &&
       (installBody.match(/\.resume_page\(/g) || []).length === 1,

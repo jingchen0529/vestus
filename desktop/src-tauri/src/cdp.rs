@@ -634,28 +634,35 @@ impl Collector {
             .managed
             .as_ref()
             .map(|state| state.login_guard_script.clone());
-        let mut commands = vec![self.command(Some(session_id), "Page.enable", json!({}))];
-        if managed.is_some() {
+        let mut commands = Vec::new();
+        if let Some(source) = managed {
+            // Install the route-scoped guard before enabling Page. A popup opened
+            // with window.open("") can receive a location assignment while it is
+            // paused. Registering the guard first keeps that bootstrap document
+            // protected when the target is resumed.
+            commands.push(self.command(
+                Some(session_id),
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": source, "runImmediately": true}),
+            ));
+            self.guard_requests
+                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        }
+        commands.push(self.command(Some(session_id), "Page.enable", json!({})));
+        if self.managed.is_some() {
             self.guard_requests
                 .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
         }
         commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
         self.frame_tree_requests
             .insert(self.next_id, session_id.to_string());
-        if let Some(source) = managed {
+        if self.managed.is_some() {
             self.guard_requests
                 .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
             commands.push(self.command(
                 Some(session_id),
                 "Page.setLifecycleEventsEnabled",
                 json!({"enabled": true}),
-            ));
-            self.guard_requests
-                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
-            commands.push(self.command(
-                Some(session_id),
-                "Page.addScriptToEvaluateOnNewDocument",
-                json!({"source": source, "runImmediately": true}),
             ));
             self.guard_requests
                 .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
@@ -1208,6 +1215,16 @@ mod tests {
             "page",
             "https://agent.oceanengine.com/workbench",
         ));
+        let methods: Vec<String> = handled
+            .commands
+            .iter()
+            .map(|command| method_of(command))
+            .collect();
+        assert_eq!(
+            &methods[..2],
+            ["Page.addScriptToEvaluateOnNewDocument", "Page.enable",],
+            "托管页面先安装只作用于登录路由的 guard，再启用 Page",
+        );
         let scripts: Vec<String> = handled
             .commands
             .iter()

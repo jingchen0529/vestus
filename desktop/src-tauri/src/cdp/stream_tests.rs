@@ -740,20 +740,20 @@ async fn guard_ready_requires_every_install_and_resume_ack_for_the_exact_page() 
             .map(|c| c["method"].as_str().unwrap())
             .collect::<Vec<_>>(),
         [
+            "Page.addScriptToEvaluateOnNewDocument",
             "Page.enable",
             "Page.getFrameTree",
-            "Page.setLifecycleEventsEnabled",
-            "Page.addScriptToEvaluateOnNewDocument"
+            "Page.setLifecycleEventsEnabled"
         ]
     );
-    assert_eq!(commands[2]["params"]["enabled"], true);
-    assert_eq!(commands[3]["params"]["runImmediately"], true);
+    assert_eq!(commands[3]["params"]["enabled"], true);
+    assert_eq!(commands[0]["params"]["runImmediately"], true);
     assert!(
         !ready.wait_ready(Duration::from_millis(40)).await,
         "sending install commands is not readiness"
     );
 
-    let tree = &commands[1];
+    let tree = &commands[2];
     for command in commands
         .iter()
         .filter(|c| c["method"] != "Page.getFrameTree")

@@ -689,6 +689,8 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
         no_reports(&mut reports, Duration::from_millis(400), "iframe SPA and full navigation").await;
         test_evaluate(&endpoint, &target, "window.open('/popup?advid=45','fixture-popup','width=400,height=300'); true").await;
         expected_report(&mut reports, &format!("{base}popup"), Some("advid=45")).await;
+        test_evaluate(&endpoint, &target, "const popup=window.open('', 'empty-url-popup'); popup.location='/popup?advid=47'; true").await;
+        expected_report(&mut reports, &format!("{base}popup"), Some("advid=47")).await;
         control_command(&endpoint, "Target.createTarget", json!({"url":format!("{base}new-tab?advid=46")})).await.unwrap();
         expected_report(&mut reports, &format!("{base}new-tab"), Some("advid=46")).await;
         test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}login")})).await;
@@ -724,6 +726,8 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
             json!({"guard":true,"inert":false,"binding":"undefined"}));
         test_evaluate(&endpoint, &target, "window.open('/popup?advid=52','managed-popup','width=400,height=300'); true").await;
         expected_report(&mut reports, &format!("{base}popup"), Some("advid=52")).await;
+        test_evaluate(&endpoint, &target, "const popup=window.open('', 'managed-empty-popup'); popup.location='/popup?advid=53'; true").await;
+        expected_report(&mut reports, &format!("{base}popup"), Some("advid=53")).await;
         // Keep login, blocked interactions and self-healing in one renderer task.
         // Separate CDP connections must not consume the four-second login budget.
         let mut healed = test_evaluate(&endpoint, &target, "(() => {
