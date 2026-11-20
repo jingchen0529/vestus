@@ -25,13 +25,13 @@
 
 ## 验证结果
 - `npm ci`：通过。
-- `npm test`：185 项通过，0 项失败。
+- `npm test`：189 项通过，0 项失败。
 - `npm run build`：通过。
 - `npm run check:surfaces`：通过。
-- `node --test desktop/scripts/check-surface-boundaries.test.mjs`：45 项通过，0 项失败。
+- `node --test desktop/scripts/check-surface-boundaries.test.mjs`：49 项通过，0 项失败。
 - `node --test desktop/scripts/managed-session-events.test.mjs`：10 项通过，0 项失败。
 - `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check`：通过。
-- `cargo test --manifest-path desktop/src-tauri/Cargo.toml --all-targets`：332 项通过，0 项失败，6 项忽略。
+- `cargo test --manifest-path desktop/src-tauri/Cargo.toml --all-targets`：333 项通过，0 项失败，6 项忽略。
 - Windows x86_64 EXE 构建、安装和目标设备上的托管登录失效复现：未验证，等待手动 Windows runner 构建与现场测试。
 
 ## 已知限制

@@ -283,7 +283,7 @@ for (const [name, extra, expected] of [
   });
 }
 
-for (const method of ["Runtime.evaluate", "Runtime.callFunctionOn", "Input.dispatchKeyEvent", "Network.getCookies", "Storage.getCookies", "Fetch.enable", "Page.navigate"]) {
+for (const method of ["Runtime.evaluate", "Runtime.callFunctionOn", "Input.dispatchKeyEvent", "Network.getCookies", "Network.setCookies", "Network.getAllCookies", "Network.getResponseBody", "Network.getRequestPostData", "Storage.getCookies", "Fetch.enable", "Page.navigate"]) {
   test(`collector cannot acquire ${method}`, () => {
     fails(runChecker({
       [cdpPath]: managedSources[cdpPath].replace(

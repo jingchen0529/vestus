@@ -173,6 +173,10 @@ for (const method of [
   '"Fetch.',
   '"Network.getCookies',
   '"Network.setCookie',
+  '"Network.setCookies',
+  '"Network.getAllCookies',
+  '"Network.getResponseBody',
+  '"Network.getRequestPostData',
 ]) {
   assert(!collectSurface.includes(method), `采集通道拿到了只读采集用不着的能力：${method}`);
 }

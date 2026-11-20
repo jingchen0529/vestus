@@ -599,6 +599,12 @@ struct Collector {
     /// Only production launches opt into the extra page-load diagnostics. Keeping this
     /// opt-in preserves the lightweight URL-only collector used by existing callers/tests.
     telemetry_enabled: bool,
+    /// Install command ids that must be acknowledged before a managed launch may navigate.
+    install_requests: HashMap<i64, String>,
+    install_pending: HashMap<String, usize>,
+    /// The first installed page is the launch target. A popup or later page
+    /// must not release the launch barrier before this target is ready.
+    ready_session: Option<String>,
 }
 
 #[derive(Default)]
@@ -639,6 +645,9 @@ impl Default for Collector {
             sessions: HashMap::new(),
             frame_tree_requests: HashMap::new(),
             telemetry_enabled: false,
+            install_requests: HashMap::new(),
+            install_pending: HashMap::new(),
+            ready_session: None,
         }
     }
 }
@@ -676,14 +685,20 @@ impl Collector {
     }
 
     /// 给一个刚附上的 page session 装采集与固定防护，并放行它。
-    fn install(&mut self, session_id: &str) -> Vec<String> {
-        let mut commands = vec![self.command(Some(session_id), "Page.enable", json!({}))];
+    fn install(&mut self, session_id: &str) -> (Vec<String>, Vec<i64>) {
+        let mut commands = Vec::new();
+        let mut ready_ids = Vec::new();
+        commands.push(self.command(Some(session_id), "Page.enable", json!({})));
+        if self.telemetry_enabled {
+            ready_ids.push(self.next_id);
+        }
         if self.telemetry_enabled {
             commands.push(self.command(
                 Some(session_id),
                 "Page.setLifecycleEventsEnabled",
                 json!({"enabled": true}),
             ));
+            ready_ids.push(self.next_id);
             commands.push(self.command(
                 Some(session_id),
                 "Network.enable",
@@ -692,6 +707,7 @@ impl Collector {
                     "maxResourceBufferSize": 512 * 1024,
                 }),
             ));
+            ready_ids.push(self.next_id);
         }
         commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
         self.frame_tree_requests
@@ -707,6 +723,9 @@ impl Collector {
                     "runImmediately": false,
                 }),
             ));
+            if self.telemetry_enabled {
+                ready_ids.push(self.next_id);
+            }
         }
         // 必须最后发：放行之前所有订阅都得就位，否则首个文档会漏采。
         commands.push(self.command(
@@ -714,7 +733,10 @@ impl Collector {
             "Runtime.runIfWaitingForDebugger",
             json!({}),
         ));
-        commands
+        if self.telemetry_enabled {
+            ready_ids.push(self.next_id);
+        }
+        (commands, ready_ids)
     }
 
     /// 放行一个我们不采集的 target，然后断开它。
@@ -766,6 +788,21 @@ impl Collector {
                             }
                         }
                     }
+                } else if let Some(session) = self.install_requests.get(&id).cloned() {
+                    if message.get("sessionId").and_then(Value::as_str) == Some(session.as_str())
+                        && message.get("error").is_none()
+                    {
+                        self.install_requests.remove(&id);
+                        if let Some(pending) = self.install_pending.get_mut(&session) {
+                            *pending = pending.saturating_sub(1);
+                            if *pending == 0 {
+                                self.install_pending.remove(&session);
+                                if self.ready_session.as_deref() == Some(session.as_str()) {
+                                    out.page_ready = true;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             return out;
@@ -782,6 +819,11 @@ impl Collector {
                     self.sessions.remove(gone);
                     self.frame_tree_requests
                         .retain(|_, session| session != gone);
+                    self.install_requests.retain(|_, session| session != gone);
+                    self.install_pending.remove(gone);
+                    if self.ready_session.as_deref() == Some(gone) {
+                        self.ready_session = None;
+                    }
                 }
             }
             // 整文档跳转。只认主框架：iframe 的导航不是「用户访问了一个页面」。
@@ -1086,9 +1128,19 @@ impl Collector {
                 ..PageSession::default()
             },
         );
+        if self.ready_session.is_none() {
+            self.ready_session = Some(session_id.clone());
+        }
         // targetInfo.url is not a navigation; the initial frame tree seeds it once.
-        out.commands.extend(self.install(&session_id));
-        out.page_ready = true;
+        let (commands, ready_ids) = self.install(&session_id);
+        out.commands.extend(commands);
+        if !ready_ids.is_empty() {
+            self.install_pending
+                .insert(session_id.clone(), ready_ids.len());
+            for id in ready_ids {
+                self.install_requests.insert(id, session_id.clone());
+            }
+        }
     }
 
     /// 这条事件是否来自我们自己装过采集的 page session。
@@ -1571,6 +1623,76 @@ mod tests {
                 "Runtime.runIfWaitingForDebugger",
             ]
         );
+
+        let mut ready_seen = false;
+        for command in &install.commands {
+            let value: Value = serde_json::from_str(command).unwrap();
+            if matches!(
+                value["method"].as_str(),
+                Some(
+                    "Page.enable"
+                        | "Page.setLifecycleEventsEnabled"
+                        | "Network.enable"
+                        | "Runtime.runIfWaitingForDebugger"
+                )
+            ) {
+                let handled = collector.handle(
+                    &json!({
+                        "id": value["id"],
+                        "sessionId": "S1",
+                        "result": {}
+                    })
+                    .to_string(),
+                );
+                ready_seen |= handled.page_ready;
+            }
+        }
+        assert!(
+            ready_seen,
+            "collector readiness waits for install acknowledgements"
+        );
+    }
+
+    #[test]
+    fn telemetry_readiness_belongs_to_the_first_page_session() {
+        let mut collector = Collector {
+            telemetry_enabled: true,
+            ..Collector::default()
+        };
+        collector.opening_commands();
+        let first = collector.handle(&attached("S1", "page", "about:blank"));
+        let second = collector.handle(&attached("S2", "page", "about:blank-2"));
+
+        let mut acknowledge = |install: &Handled, session: &str| {
+            let mut ready = false;
+            for command in &install.commands {
+                let value: Value = serde_json::from_str(command).unwrap();
+                if matches!(
+                    value["method"].as_str(),
+                    Some(
+                        "Page.enable"
+                            | "Page.setLifecycleEventsEnabled"
+                            | "Network.enable"
+                            | "Runtime.runIfWaitingForDebugger"
+                    )
+                ) {
+                    ready |= collector
+                        .handle(
+                            &json!({
+                                "id": value["id"],
+                                "sessionId": session,
+                                "result": {}
+                            })
+                            .to_string(),
+                        )
+                        .page_ready;
+                }
+            }
+            ready
+        };
+
+        assert!(!acknowledge(&second, "S2"));
+        assert!(acknowledge(&first, "S1"));
     }
 
     #[test]
