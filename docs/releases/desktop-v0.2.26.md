@@ -12,7 +12,7 @@
 - 本次构建保留现有代理适配器、代理出口 IP 探测、网络诊断和浏览器 CDP 活动采集实现，供本地实测页面加载与实际请求出口。
 
 ## 安装与升级
-- 本次只构建 macOS Apple Silicon 本地测试包，预计生成 DMG 和应用包。
+- 本次只构建 macOS Apple Silicon 本地测试包，目标是生成 DMG 和应用包，Tauri 打包尚未开始。
 - 安装前退出旧 Vestus 及其托管浏览器。现有浏览器 profile 和登录状态按当前兼容策略保留。
 - macOS 签名、公证、Windows x86_64、macOS Intel、Linux x86_64 安装包：未验证。
 
@@ -22,7 +22,14 @@
 - 本次只准备本地桌面测试包，不部署后端，不执行服务器数据库迁移。
 
 ## 验证结果
-- 发布说明校验、桌面端依赖安装、TypeScript/Vite 构建、Rust 编译、Tauri 打包和本地安装启动：未验证。
+- 发布说明测试 39 项通过，`desktop-v0.2.26` 发布说明校验通过。
+- 桌面端依赖安装完成，锁定版 macOS Apple Silicon Chromium 准备完成。
+- 桌面端 `npm test`：184 项通过。
+- `npm run build`：通过。
+- `npm run check:surfaces`：通过。
+- `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check`：通过。
+- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- --test-threads=1`：330 项通过、6 项忽略。
+- Tauri 打包、本地安装和启动：未验证。
 - 代理出口 IP 与实际页面请求出口的一致性：未验证。
 - 浏览器页面加载时间、加载状态和 Tauri 事件需求：未验证。
 - 真实 dev API、真实代理节点、托管账号和已登录平台页面：未验证。
