@@ -1,7 +1,7 @@
 //! 浏览器生命周期命令:打开平台、重置持久 profile。
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Runtime};
 use url::Url;
@@ -303,6 +303,8 @@ pub async fn open_browser<R: Runtime>(
     } else {
         (None, None)
     };
+    let app_for_page_load_source = app.clone();
+    let managed_session_for_watch = managed_session_for_ready.clone();
     if let Err(error) = browsers.launch(
         &app,
         browser_id,
@@ -311,8 +313,41 @@ pub async fn open_browser<R: Runtime>(
         initial_url,
         disable_sandbox,
         move |endpoint| {
+            let browser_touch = {
+                let browsers = browsers_for_activity.clone();
+                Arc::new(move || {
+                    browsers.note_browser_activity(browser_id, platform_id, direct_mode)
+                })
+            };
+            let page_load_hook: Option<cdp::PageLoadTelemetryHook> = if managed_launch {
+                let app_for_page_load = app_for_page_load_source.clone();
+                Some(Arc::new(move |event: cdp::PageLoadTelemetry| {
+                    let timestamp_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as u64)
+                        .unwrap_or(0);
+                    let payload = serde_json::json!({
+                        "timestampMs": timestamp_ms,
+                        "browserId": browser_id,
+                        "platformId": platform_id,
+                        "managedAccountId": managed_account_id,
+                        "targetId": event.target_id,
+                        "url": event.url,
+                        "loaderId": event.loader_id,
+                        "phase": event.phase,
+                        "elapsedMs": event.elapsed_ms,
+                        "status": event.status,
+                        "errorText": event.error_text,
+                        "responseBytes": event.response_bytes,
+                    });
+                    let _ = app_for_page_load.emit("browser-page-load", payload);
+                }) as cdp::PageLoadTelemetryHook)
+            } else {
+                None
+            };
+
             let mut managed_watch = None;
-            let injection = if let Some(session) = managed_session_for_ready {
+            let managed_prepare = if let Some(session) = managed_session_for_watch {
                 rt::runtime().block_on(async {
                     // 托管会话的登出/登录页检测与登录页交互锁都由采集连接驱动
                     // （单 CDP 客户端，v0.2.10 验证过的模型）；第二条防护连接
@@ -340,6 +375,52 @@ pub async fn open_browser<R: Runtime>(
                         rt::runtime().spawn(run_managed_watch(context, signal_rx, exited));
                         managed_watch = Some(watch);
                     }
+                    Ok::<(), CommandError>(())
+                })
+            } else {
+                Ok(())
+            };
+
+            let collector_ready = if managed_launch && managed_prepare.is_ok() {
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+                activity_collector.start_with_telemetry(
+                    activity_key,
+                    endpoint.clone(),
+                    activity_owner,
+                    managed_watch,
+                    Some(browser_touch),
+                    page_load_hook.clone(),
+                    Some(ready_tx),
+                );
+                rt::runtime().block_on(async {
+                    tokio::time::timeout(Duration::from_secs(10), ready_rx)
+                        .await
+                        .is_ok()
+                })
+            } else {
+                if managed_prepare.is_ok() {
+                    activity_collector.start_with_telemetry(
+                        activity_key,
+                        endpoint.clone(),
+                        activity_owner,
+                        managed_watch,
+                        Some(browser_touch),
+                        page_load_hook,
+                        None,
+                    );
+                }
+                true
+            };
+
+            let injection = if managed_prepare.is_err() {
+                managed_prepare
+            } else if managed_launch && !collector_ready {
+                Err(CommandError::new(
+                    "托管安全监控无法启用，请重新打开平台",
+                    "managed_guard_unavailable",
+                ))
+            } else if let Some(session) = managed_session_for_ready {
+                rt::runtime().block_on(async {
                     managed_cdp::inject_session(&endpoint, &session)
                         .await
                         .map_err(|_| {
@@ -358,19 +439,6 @@ pub async fn open_browser<R: Runtime>(
             if injection.is_err() {
                 return;
             }
-            let browser_touch = {
-                let browsers = browsers_for_activity.clone();
-                Arc::new(move || {
-                    browsers.note_browser_activity(browser_id, platform_id, direct_mode)
-                })
-            };
-            activity_collector.start(
-                activity_key,
-                endpoint,
-                activity_owner,
-                managed_watch,
-                Some(browser_touch),
-            );
         },
         move || {
             if let Some(tx) = watch_exit_tx {

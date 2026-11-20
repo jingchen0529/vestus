@@ -85,6 +85,29 @@ export interface ManagedSessionGuardFailedEvent {
   browserClosed: boolean;
 }
 
+export interface BrowserPageLoadEvent {
+  timestampMs: number;
+  browserId: number;
+  platformId: number;
+  managedAccountId?: number | null;
+  targetId: string;
+  url: string;
+  loaderId?: string | null;
+  phase:
+    | "navigation_started"
+    | "response_received"
+    | "dom_content_loaded"
+    | "load"
+    | "network_idle"
+    | "request_finished"
+    | "request_failed"
+    | string;
+  elapsedMs?: number | null;
+  status?: number | null;
+  errorText?: string | null;
+  responseBytes?: number | null;
+}
+
 export interface BrowserProfileResetView {
   /** 删掉的平台环境个数（代理与直连分开计）。 */
   removed: number;
@@ -278,6 +301,18 @@ export const tauriBridge = {
         callback(event.payload);
       }
     );
+  },
+
+  async onBrowserPageLoad(
+    callback: (payload: BrowserPageLoadEvent) => void
+  ): Promise<() => void> {
+    if (!isTauri()) {
+      throw new Error("该功能仅可在 Vestus 桌面客户端中使用");
+    }
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<BrowserPageLoadEvent>("browser-page-load", (event) => {
+      callback(event.payload);
+    });
   },
 
   async checkGithubRelease(repo?: string): Promise<{

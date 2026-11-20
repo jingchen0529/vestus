@@ -15,8 +15,10 @@ import {
   DesktopPlatform,
   StatusView,
   NetworkDiagnosticsSnapshot,
+  BrowserPageLoadEvent,
 } from "@/services/tauriBridge";
 import { NetworkDiagnosticsCard } from "@/components/network/NetworkDiagnosticsCard";
+import { BrowserPageLoadCard } from "@/components/browser/BrowserPageLoadCard";
 import { cn } from "@/lib/utils";
 
 // 自动登录恢复中的账号不再要求用户联系管理员：系统会自行恢复并重开浏览器。
@@ -36,6 +38,7 @@ interface PlatformLauncherProps {
   onOpenBrowser: (platformId: number, managedAccountId?: number) => Promise<void> | void;
   networkDiagnostics: NetworkDiagnosticsSnapshot | null;
   networkDiagnosticsLoading?: boolean;
+  browserPageLoad: BrowserPageLoadEvent | null;
 }
 
 /** 统一提示条：三种语气共用一套骨架，避免每条自己配色。 */
@@ -113,6 +116,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
   onOpenBrowser,
   networkDiagnostics,
   networkDiagnosticsLoading = false,
+  browserPageLoad,
 }) => {
   const [launchingPlatformKey, setLaunchingPlatformKey] = useState<string | null>(null);
   const platforms = desktopConfig?.platforms || [];
@@ -165,6 +169,7 @@ export const PlatformLauncher: React.FC<PlatformLauncherProps> = ({
         loading={networkDiagnosticsLoading}
         compact
       />
+      <BrowserPageLoadCard event={browserPageLoad} />
 
       {/* 页头 */}
       <header className="flex items-end justify-between gap-3">

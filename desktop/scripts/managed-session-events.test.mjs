@@ -123,9 +123,9 @@ test("collector drives the managed watch with a single CDP client", () => {
   const browser = readFileSync(new URL("../src-tauri/src/commands/browser.rs", import.meta.url), "utf8");
   const injectAt = browser.indexOf("managed_cdp::inject_session");
   const spawnAt = browser.indexOf("run_managed_watch(");
-  const startAt = browser.indexOf("activity_collector.start(");
+  const startAt = browser.indexOf("activity_collector.start_with_telemetry(");
   assert.ok(spawnAt >= 0 && spawnAt < injectAt, "监控消费端必须在注入前启动");
-  assert.ok(injectAt < startAt, "活动采集（含防护信号）必须在注入成功后启动");
+  assert.ok(startAt < injectAt, "活动采集（含防护信号）必须在托管会话注入前启动");
   assert.doesNotMatch(browser, /prepare_logout_watch/);
 
   const cdpSource = readFileSync(new URL("../src-tauri/src/cdp.rs", import.meta.url), "utf8");
@@ -136,6 +136,23 @@ test("collector drives the managed watch with a single CDP client", () => {
   const managedCdp = readFileSync(new URL("../src-tauri/src/managed_cdp.rs", import.meta.url), "utf8");
   assert.doesNotMatch(managedCdp, /setAutoAttach/);
   assert.match(managedCdp, /ManagedSessionMonitor/);
+});
+
+test("browser page-load telemetry is exposed through a read-only Tauri event", () => {
+  const bridge = readFileSync(new URL("../src/services/tauriBridge.ts", import.meta.url), "utf8");
+  assert.match(bridge, /export interface BrowserPageLoadEvent/);
+  assert.match(bridge, /phase:[\s\S]*navigation_started/);
+  assert.match(bridge, /async onBrowserPageLoad\(/);
+  assert.match(bridge, /listen<BrowserPageLoadEvent>\("browser-page-load"/);
+
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /onBrowserPageLoad\(\(payload\) =>/);
+  assert.match(app, /setBrowserPageLoad\(payload\)/);
+  assert.match(app, /unlistenPageLoadFn/);
+
+  const launcher = readFileSync(new URL("../src/components/browser/PlatformLauncher.tsx", import.meta.url), "utf8");
+  assert.match(launcher, /BrowserPageLoadCard/);
+  assert.match(launcher, /browserPageLoad/);
 });
 
 test("guard failure listeners ignore inactive effects and clean up late subscriptions", () => {

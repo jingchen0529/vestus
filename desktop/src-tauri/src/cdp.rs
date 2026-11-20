@@ -1,12 +1,14 @@
-//! URL-only Chrome DevTools Protocol collector.
+//! URL and opt-in page-load diagnostics over Chrome DevTools Protocol.
 //!
 //! Browser-level `Target.setAutoAttach` covers initial tabs, new tabs and popups.
 //! Each page enables `Page` and gets one initial `Page.getFrameTree` seed; main-frame
 //! `Page.frameNavigated` and `Page.navigatedWithinDocument` report subsequent visits.
 //! A navigation observed while the initial tree is in flight wins over that reply.
-//! New reports contain only normalized URL, existing sanitized query parameters and
-//! one visit. No activity script, Runtime subscription, bindings, interactions,
-//! dwell time or form values are collected. Legacy fields remain for queued data.
+//! Normal URL reports contain only normalized URL, existing sanitized query parameters and
+//! one visit. Production launches may additionally opt into main-document lifecycle and
+//! response diagnostics. That mode still does not collect request headers, request bodies,
+//! cookies, activity scripts, Runtime subscriptions, bindings, interactions, dwell time or
+//! form values. Legacy fields remain for queued data.
 //!
 //! Managed sessions alone install the fixed login guard before resuming targets.
 //! The guard's input/change handlers are safety controls, not telemetry. Every
@@ -20,9 +22,11 @@
 //! 也碰不到任何页面。它走一条用完就断的短连接，不碰采集那一条。
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
@@ -144,6 +148,23 @@ pub(crate) enum ManagedSignal {
     ConnectionLost,
 }
 
+/// 浏览器页面加载诊断事件。只保留规范化后的页面地址和主文档结果，避免把
+/// Cookie、请求头、请求体和完整查询参数带出 CDP 采集通道。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageLoadTelemetry {
+    pub target_id: String,
+    pub url: String,
+    pub loader_id: Option<String>,
+    pub phase: String,
+    pub elapsed_ms: Option<u64>,
+    pub status: Option<u16>,
+    pub error_text: Option<String>,
+    pub response_bytes: Option<u64>,
+}
+
+pub type PageLoadTelemetryHook = Arc<dyn Fn(PageLoadTelemetry) + Send + Sync + 'static>;
+
 /// 托管会话在采集连接上的防护注入物：登录页交互锁脚本 + 事件监控器 + 信号出口。
 ///
 /// 采集连接是托管浏览器唯一的 CDP 客户端（v0.2.10 起验证的单连接模型）：暂停新
@@ -172,8 +193,30 @@ pub async fn collect(
     sink: UnboundedSender<PageReport>,
     managed: Option<ManagedWatch>,
 ) -> Result<(), CdpError> {
+    collect_with_telemetry(endpoint, sink, managed, None).await
+}
+
+/// 与 [`collect`] 相同，但为本次浏览器会话开启页面加载诊断事件。
+pub async fn collect_with_telemetry(
+    endpoint: DevToolsEndpoint,
+    sink: UnboundedSender<PageReport>,
+    managed: Option<ManagedWatch>,
+    telemetry_hook: Option<PageLoadTelemetryHook>,
+) -> Result<(), CdpError> {
+    collect_with_telemetry_ready(endpoint, sink, managed, telemetry_hook, None).await
+}
+
+/// 与 [`collect_with_telemetry`] 相同，并在首个 page session 的只读监听命令
+/// 已发送后通知调用方。托管首个导航必须等这个屏障完成后才能注入并导航。
+pub async fn collect_with_telemetry_ready(
+    endpoint: DevToolsEndpoint,
+    sink: UnboundedSender<PageReport>,
+    managed: Option<ManagedWatch>,
+    telemetry_hook: Option<PageLoadTelemetryHook>,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<(), CdpError> {
     let signals = managed.as_ref().map(|watch| watch.signals.clone());
-    let result = collect_events(endpoint, sink, managed).await;
+    let result = collect_events(endpoint, sink, managed, telemetry_hook, ready).await;
     // Expired is queued first; every exit, including connect/send/read failures,
     // delivers exactly one ConnectionLost on the managed seam.
     if let Some(signals) = signals {
@@ -186,7 +229,10 @@ async fn collect_events(
     endpoint: DevToolsEndpoint,
     sink: UnboundedSender<PageReport>,
     managed: Option<ManagedWatch>,
+    telemetry_hook: Option<PageLoadTelemetryHook>,
+    mut ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<(), CdpError> {
+    let telemetry_enabled = telemetry_hook.is_some();
     let socket = connect(&endpoint).await?;
     let managed_state = managed.map(|watch| ManagedCollectorState {
         login_guard_script: watch.login_guard_script,
@@ -197,6 +243,7 @@ async fn collect_events(
     let (mut writer, mut reader) = socket.split();
     let mut collector = Collector {
         managed: managed_state,
+        telemetry_enabled,
         ..Collector::default()
     };
     for command in collector.opening_commands() {
@@ -240,10 +287,18 @@ async fn collect_events(
             _ => continue,
         };
         let handled = collector.handle(&text);
+        let page_ready = handled.page_ready;
         for report in handled.reports {
             // 接收端没了说明这次会话已经收尾，继续采集没有意义。
             if sink.send(report).is_err() {
                 return Ok(());
+            }
+        }
+        // Diagnostics are best effort. A slow or closed Tauri event consumer must not
+        // block page activity collection or browser shutdown.
+        if let Some(hook) = telemetry_hook.as_ref() {
+            for telemetry in handled.telemetry {
+                hook(telemetry);
             }
         }
         for command in handled.commands {
@@ -251,6 +306,11 @@ async fn collect_events(
                 .send(Message::Text(command.into()))
                 .await
                 .map_err(|error| CdpError::Transport(error.to_string()))?;
+        }
+        if page_ready {
+            if let Some(ready) = ready.take() {
+                let _ = ready.send(());
+            }
         }
     }
     Ok(())
@@ -514,6 +574,8 @@ fn is_sensitive_key(key: &str) -> bool {
 struct Handled {
     commands: Vec<String>,
     reports: Vec<PageReport>,
+    telemetry: Vec<PageLoadTelemetry>,
+    page_ready: bool,
 }
 
 /// 协议状态机。刻意不碰 IO，于是整套分支都能在没有浏览器的情况下测。
@@ -534,6 +596,9 @@ struct Collector {
     sessions: HashMap<String, PageSession>,
     /// Exactly one initial frame-tree request per installed target.
     frame_tree_requests: HashMap<i64, String>,
+    /// Only production launches opt into the extra page-load diagnostics. Keeping this
+    /// opt-in preserves the lightweight URL-only collector used by existing callers/tests.
+    telemetry_enabled: bool,
 }
 
 #[derive(Default)]
@@ -547,6 +612,22 @@ struct PageSession {
     /// Keep at most 64 ordered events. Overflow drops oldest and warns once.
     pending_spa: VecDeque<(String, Option<PageReport>, bool)>,
     pending_spa_overflow: bool,
+    navigation: Option<NavigationState>,
+    /// Network events can arrive before Page.frameNavigated identifies the main
+    /// frame. Keep only the latest document state per frame until that happens.
+    pending_navigations: HashMap<String, NavigationState>,
+}
+
+#[derive(Default)]
+struct NavigationState {
+    frame_id: Option<String>,
+    loader_id: Option<String>,
+    request_id: Option<String>,
+    url: String,
+    started_at: Option<f64>,
+    status: Option<u16>,
+    response_bytes: Option<u64>,
+    error_text: Option<String>,
 }
 
 impl Default for Collector {
@@ -557,6 +638,7 @@ impl Default for Collector {
             get_targets_id: 0,
             sessions: HashMap::new(),
             frame_tree_requests: HashMap::new(),
+            telemetry_enabled: false,
         }
     }
 }
@@ -596,6 +678,21 @@ impl Collector {
     /// 给一个刚附上的 page session 装采集与固定防护，并放行它。
     fn install(&mut self, session_id: &str) -> Vec<String> {
         let mut commands = vec![self.command(Some(session_id), "Page.enable", json!({}))];
+        if self.telemetry_enabled {
+            commands.push(self.command(
+                Some(session_id),
+                "Page.setLifecycleEventsEnabled",
+                json!({"enabled": true}),
+            ));
+            commands.push(self.command(
+                Some(session_id),
+                "Network.enable",
+                json!({
+                    "maxTotalBufferSize": 2 * 1024 * 1024,
+                    "maxResourceBufferSize": 512 * 1024,
+                }),
+            ));
+        }
         commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
         self.frame_tree_requests
             .insert(self.next_id, session_id.to_string());
@@ -746,6 +843,31 @@ impl Collector {
                     }
                 }
             }
+            "Network.requestWillBeSent"
+                if self.telemetry_enabled && self.is_installed_session(session_id) =>
+            {
+                self.on_document_request(session_id.unwrap(), params, &mut out);
+            }
+            "Network.responseReceived"
+                if self.telemetry_enabled && self.is_installed_session(session_id) =>
+            {
+                self.on_document_response(session_id.unwrap(), params, &mut out);
+            }
+            "Network.loadingFinished"
+                if self.telemetry_enabled && self.is_installed_session(session_id) =>
+            {
+                self.on_document_finished(session_id.unwrap(), params, &mut out);
+            }
+            "Network.loadingFailed"
+                if self.telemetry_enabled && self.is_installed_session(session_id) =>
+            {
+                self.on_document_failed(session_id.unwrap(), params, &mut out);
+            }
+            "Page.lifecycleEvent"
+                if self.telemetry_enabled && self.is_installed_session(session_id) =>
+            {
+                self.on_lifecycle_event(session_id.unwrap(), params, &mut out);
+            }
             _ => {}
         }
         let monitor_event = match method {
@@ -840,6 +962,9 @@ impl Collector {
         else {
             return;
         };
+        if self.telemetry_enabled {
+            self.on_frame_navigation(session_id, frame, out);
+        }
         let session = self.sessions.get_mut(session_id).unwrap();
         session.main_frame_id = Some(id.to_string());
         session.navigation_seen = true;
@@ -867,6 +992,67 @@ impl Collector {
                 return;
             }
             out.reports.push(PageReport::visit_parts(url, params));
+        }
+    }
+
+    fn on_frame_navigation(&mut self, session_id: &str, frame: &Value, out: &mut Handled) {
+        let Some(frame_id) = frame
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        let Some(url) = frame
+            .get("url")
+            .and_then(Value::as_str)
+            .and_then(normalize_url)
+        else {
+            return;
+        };
+        let loader_id = frame
+            .get("loaderId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let target_id = self
+            .sessions
+            .get(session_id)
+            .map(|session| session.target_id.clone())
+            .unwrap_or_default();
+        let session = self.sessions.get_mut(session_id).unwrap();
+        let pending = session
+            .pending_navigations
+            .remove(frame_id)
+            .filter(|navigation| {
+                loader_id
+                    .as_deref()
+                    .is_none_or(|loader| navigation.loader_id.as_deref() == Some(loader))
+            });
+        let same_loader = session.navigation.as_ref().is_some_and(|navigation| {
+            navigation.frame_id.as_deref() == Some(frame_id)
+                && loader_id
+                    .as_deref()
+                    .is_none_or(|loader| navigation.loader_id.as_deref() == Some(loader))
+        });
+        if !same_loader {
+            let mut navigation = pending.unwrap_or_default();
+            navigation.frame_id = Some(frame_id.to_string());
+            navigation.loader_id = loader_id.clone().or(navigation.loader_id);
+            navigation.url = url.clone();
+            session.navigation = Some(navigation);
+            out.telemetry.push(PageLoadTelemetry {
+                target_id,
+                url,
+                loader_id,
+                phase: "navigation_started".into(),
+                elapsed_ms: None,
+                status: None,
+                error_text: None,
+                response_bytes: None,
+            });
+        } else if let Some(navigation) = session.navigation.as_mut() {
+            navigation.url = url;
         }
     }
 
@@ -902,6 +1088,7 @@ impl Collector {
         );
         // targetInfo.url is not a navigation; the initial frame tree seeds it once.
         out.commands.extend(self.install(&session_id));
+        out.page_ready = true;
     }
 
     /// 这条事件是否来自我们自己装过采集的 page session。
@@ -919,6 +1106,296 @@ impl Collector {
                 .sessions
                 .values()
                 .any(|known| known.target_id == target_id)
+    }
+
+    fn on_document_request(&mut self, session_id: &str, params: &Value, out: &mut Handled) {
+        if params.get("type").and_then(Value::as_str) != Some("Document") {
+            return;
+        }
+        let Some(frame_id) = params.get("frameId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(loader_id) = params.get("loaderId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(request_id) = params.get("requestId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(url) = params
+            .pointer("/request/url")
+            .and_then(Value::as_str)
+            .and_then(normalize_url)
+        else {
+            return;
+        };
+        let timestamp = params.get("timestamp").and_then(Value::as_f64);
+        let Some(session) = self.sessions.get_mut(session_id) else {
+            return;
+        };
+        // Network events also describe iframe documents. Once the main frame is
+        // known, discard those events. Before that point, retain each frame's
+        // document state until Page.frameNavigated identifies the main frame.
+        if session
+            .main_frame_id
+            .as_deref()
+            .is_some_and(|main_frame| main_frame != frame_id)
+        {
+            return;
+        }
+        let target_id = session.target_id.clone();
+        let is_main = session.main_frame_id.as_deref() == Some(frame_id);
+        if is_main {
+            let replace = session
+                .navigation
+                .as_ref()
+                .is_none_or(|navigation| navigation.loader_id.as_deref() != Some(loader_id));
+            if replace {
+                session.navigation = Some(NavigationState {
+                    frame_id: Some(frame_id.to_string()),
+                    loader_id: Some(loader_id.to_string()),
+                    request_id: Some(request_id.to_string()),
+                    url: url.clone(),
+                    started_at: timestamp,
+                    ..NavigationState::default()
+                });
+            } else if let Some(navigation) = session.navigation.as_mut() {
+                navigation.request_id = Some(request_id.to_string());
+                navigation.url = url.clone();
+                navigation.started_at = navigation.started_at.or(timestamp);
+            }
+            if !replace {
+                return;
+            }
+            out.telemetry.push(PageLoadTelemetry {
+                target_id,
+                url,
+                loader_id: Some(loader_id.to_string()),
+                phase: "navigation_started".into(),
+                elapsed_ms: None,
+                status: None,
+                error_text: None,
+                response_bytes: None,
+            });
+            return;
+        }
+
+        if session.pending_navigations.len() >= 32
+            && !session.pending_navigations.contains_key(frame_id)
+        {
+            if let Some(oldest) = session.pending_navigations.keys().next().cloned() {
+                session.pending_navigations.remove(&oldest);
+            }
+        }
+        let pending = session
+            .pending_navigations
+            .entry(frame_id.to_string())
+            .or_default();
+        let replace = pending.loader_id.as_deref() != Some(loader_id);
+        if replace {
+            *pending = NavigationState {
+                frame_id: Some(frame_id.to_string()),
+                loader_id: Some(loader_id.to_string()),
+                request_id: Some(request_id.to_string()),
+                url,
+                started_at: timestamp,
+                ..NavigationState::default()
+            };
+        } else {
+            pending.request_id = Some(request_id.to_string());
+            pending.url = url;
+            pending.started_at = pending.started_at.or(timestamp);
+        }
+    }
+
+    fn on_document_response(&mut self, session_id: &str, params: &Value, out: &mut Handled) {
+        if params.pointer("/response/type").and_then(Value::as_str) != Some("Document") {
+            return;
+        }
+        let Some(loader_id) = params.pointer("/response/loaderId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(request_id) = params.get("requestId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(frame_id) = params.get("frameId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(session_id) else {
+            return;
+        };
+        if session
+            .main_frame_id
+            .as_deref()
+            .is_some_and(|main_frame| main_frame != frame_id)
+        {
+            return;
+        }
+        let is_main = session.main_frame_id.as_deref() == Some(frame_id);
+        let active_main = is_main
+            && session.navigation.as_ref().is_some_and(|navigation| {
+                navigation.loader_id.as_deref() == Some(loader_id)
+                    && navigation.request_id.as_deref() == Some(request_id)
+            });
+        let Some(navigation) = (if active_main {
+            session.navigation.as_mut()
+        } else {
+            session.pending_navigations.get_mut(frame_id)
+        }) else {
+            return;
+        };
+        if navigation.loader_id.as_deref() != Some(loader_id)
+            || navigation.request_id.as_deref() != Some(request_id)
+        {
+            return;
+        }
+        navigation.status = params
+            .pointer("/response/status")
+            .and_then(Value::as_f64)
+            .and_then(|status| u16::try_from(status as u64).ok());
+        if active_main {
+            let target_id = session.target_id.clone();
+            out.telemetry.push(Self::telemetry_update(
+                &target_id,
+                navigation,
+                "response_received",
+                None,
+            ));
+        }
+    }
+
+    fn on_document_finished(&mut self, session_id: &str, params: &Value, out: &mut Handled) {
+        let Some(request_id) = params.get("requestId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(session_id) else {
+            return;
+        };
+        let (navigation, is_main) = if session
+            .navigation
+            .as_ref()
+            .is_some_and(|navigation| navigation.request_id.as_deref() == Some(request_id))
+        {
+            (session.navigation.as_mut(), true)
+        } else {
+            (
+                session
+                    .pending_navigations
+                    .values_mut()
+                    .find(|navigation| navigation.request_id.as_deref() == Some(request_id)),
+                false,
+            )
+        };
+        let Some(navigation) = navigation else {
+            return;
+        };
+        navigation.response_bytes = params.get("encodedDataLength").and_then(Value::as_u64);
+        if is_main {
+            let target_id = session.target_id.clone();
+            out.telemetry.push(Self::telemetry_update(
+                &target_id,
+                navigation,
+                "request_finished",
+                None,
+            ));
+        }
+    }
+
+    fn on_document_failed(&mut self, session_id: &str, params: &Value, out: &mut Handled) {
+        let Some(request_id) = params.get("requestId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(session_id) else {
+            return;
+        };
+        let (navigation, is_main) = if session
+            .navigation
+            .as_ref()
+            .is_some_and(|navigation| navigation.request_id.as_deref() == Some(request_id))
+        {
+            (session.navigation.as_mut(), true)
+        } else {
+            (
+                session
+                    .pending_navigations
+                    .values_mut()
+                    .find(|navigation| navigation.request_id.as_deref() == Some(request_id)),
+                false,
+            )
+        };
+        let Some(navigation) = navigation else {
+            return;
+        };
+        let error_text = params
+            .get("errorText")
+            .and_then(Value::as_str)
+            .map(|value| value.chars().take(120).collect::<String>());
+        navigation.error_text = error_text;
+        if is_main {
+            let target_id = session.target_id.clone();
+            out.telemetry.push(Self::telemetry_update(
+                &target_id,
+                navigation,
+                "request_failed",
+                None,
+            ));
+        }
+    }
+
+    fn on_lifecycle_event(&mut self, session_id: &str, params: &Value, out: &mut Handled) {
+        let Some(name) = params.get("name").and_then(Value::as_str) else {
+            return;
+        };
+        let phase = match name {
+            "DOMContentLoaded" => "dom_content_loaded",
+            "load" => "load",
+            "networkIdle" => "network_idle",
+            _ => return,
+        };
+        let Some(frame_id) = params.get("frameId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(loader_id) = params.get("loaderId").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(session_id) else {
+            return;
+        };
+        if session.main_frame_id.as_deref() != Some(frame_id) {
+            return;
+        }
+        let Some(navigation) = session.navigation.as_mut() else {
+            return;
+        };
+        if navigation.loader_id.as_deref() != Some(loader_id) {
+            return;
+        }
+        let timestamp = params.get("timestamp").and_then(Value::as_f64);
+        let target_id = session.target_id.clone();
+        out.telemetry.push(Self::telemetry_update(
+            &target_id, navigation, phase, timestamp,
+        ));
+    }
+
+    fn telemetry_update(
+        target_id: &str,
+        navigation: &NavigationState,
+        phase: &str,
+        timestamp: Option<f64>,
+    ) -> PageLoadTelemetry {
+        PageLoadTelemetry {
+            target_id: target_id.to_string(),
+            url: navigation.url.clone(),
+            loader_id: navigation.loader_id.clone(),
+            phase: phase.to_string(),
+            elapsed_ms: timestamp
+                .zip(navigation.started_at)
+                .and_then(|(end, start)| {
+                    (end >= start).then_some(((end - start) * 1000.0).round() as u64)
+                }),
+            status: navigation.status,
+            error_text: navigation.error_text.clone(),
+            response_bytes: navigation.response_bytes,
+        }
     }
 
     /// 连接建立之前就存在的 page target，逐个显式附上。
@@ -1028,6 +1505,15 @@ mod tests {
         .to_string()
     }
 
+    fn navigation_with_loader(session: &str, url: &str, loader_id: &str) -> String {
+        json!({
+            "method": "Page.frameNavigated",
+            "sessionId": session,
+            "params": {"frame": {"id": "main", "url": url, "loaderId": loader_id}}
+        })
+        .to_string()
+    }
+
     /// 已经装好一条 page session（`S1` / `T1`）的采集器。
     ///
     /// 导航事件只认自己装过的 session，所以凡是直接喂导航事件的用例都得先走一遍附着。
@@ -1057,6 +1543,144 @@ mod tests {
         // browser 级命令不能带 sessionId
         assert!(first.get("sessionId").is_none());
         assert_eq!(method_of(&commands[1]), "Target.getTargets");
+    }
+
+    #[test]
+    fn telemetry_collector_enables_page_lifecycle_and_network_events() {
+        let mut collector = Collector {
+            telemetry_enabled: true,
+            ..Collector::default()
+        };
+        let commands = collector.opening_commands();
+        assert_eq!(method_of(&commands[0]), "Target.setAutoAttach");
+        assert_eq!(method_of(&commands[1]), "Target.getTargets");
+
+        let install = collector.handle(&attached("S1", "page", "about:blank"));
+        let methods: Vec<String> = install
+            .commands
+            .iter()
+            .map(|command| method_of(command))
+            .collect();
+        assert_eq!(
+            methods,
+            vec![
+                "Page.enable",
+                "Page.setLifecycleEventsEnabled",
+                "Network.enable",
+                "Page.getFrameTree",
+                "Runtime.runIfWaitingForDebugger",
+            ]
+        );
+    }
+
+    #[test]
+    fn telemetry_tracks_main_document_load_milestones_and_failed_request() {
+        let mut collector = Collector {
+            telemetry_enabled: true,
+            ..Collector::default()
+        };
+        collector.opening_commands();
+        collector.handle(&attached("S1", "page", "about:blank"));
+
+        let started = collector.handle(
+            &json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S1",
+                "params": {
+                    "requestId": "D1",
+                    "loaderId": "L1",
+                    "frameId": "main",
+                    "type": "Document",
+                    "timestamp": 100.0,
+                    "request": {"url": "https://agent.oceanengine.com/login?token=secret"}
+                }
+            })
+            .to_string(),
+        );
+        assert!(started.telemetry.is_empty());
+
+        let response = collector.handle(
+            &json!({
+                "method": "Network.responseReceived",
+                "sessionId": "S1",
+                "params": {
+                    "requestId": "D1",
+                    "frameId": "main",
+                    "response": {
+                        "loaderId": "L1",
+                        "type": "Document",
+                        "status": 200
+                    }
+                }
+            })
+            .to_string(),
+        );
+        assert!(response.telemetry.is_empty());
+
+        let navigated = collector.handle(&navigation_with_loader(
+            "S1",
+            "https://agent.oceanengine.com/login?token=secret",
+            "L1",
+        ));
+        assert_eq!(navigated.telemetry[0].phase, "navigation_started");
+        assert_eq!(
+            navigated.telemetry[0].url,
+            "https://agent.oceanengine.com/login"
+        );
+
+        let iframe = collector.handle(
+            &json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S1",
+                "params": {
+                    "requestId": "I1",
+                    "loaderId": "IFRAME",
+                    "frameId": "iframe",
+                    "type": "Document",
+                    "timestamp": 99.0,
+                    "request": {"url": "https://agent.oceanengine.com/iframe"}
+                }
+            })
+            .to_string(),
+        );
+        assert!(iframe.telemetry.is_empty());
+
+        let dom = collector.handle(
+            &json!({
+                "method": "Page.lifecycleEvent",
+                "sessionId": "S1",
+                "params": {"frameId": "main", "loaderId": "L1", "name": "DOMContentLoaded", "timestamp": 100.25}
+            })
+            .to_string(),
+        );
+        assert_eq!(dom.telemetry[0].phase, "dom_content_loaded");
+        assert_eq!(dom.telemetry[0].elapsed_ms, Some(250));
+        assert_eq!(dom.telemetry[0].status, Some(200));
+
+        let load = collector.handle(
+            &json!({
+                "method": "Page.lifecycleEvent",
+                "sessionId": "S1",
+                "params": {"frameId": "main", "loaderId": "L1", "name": "load", "timestamp": 100.8}
+            })
+            .to_string(),
+        );
+        assert_eq!(load.telemetry[0].phase, "load");
+        assert_eq!(load.telemetry[0].elapsed_ms, Some(800));
+
+        let failed = collector.handle(
+            &json!({
+                "method": "Network.loadingFailed",
+                "sessionId": "S1",
+                "params": {"requestId": "D1", "errorText": "net::ERR_TIMED_OUT"}
+            })
+            .to_string(),
+        );
+        assert_eq!(failed.telemetry[0].phase, "request_failed");
+        assert_eq!(
+            failed.telemetry[0].error_text.as_deref(),
+            Some("net::ERR_TIMED_OUT")
+        );
     }
 
     #[test]

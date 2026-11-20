@@ -16,6 +16,7 @@ import {
   tauriBridge,
   StatusView,
   NetworkDiagnosticsSnapshot,
+  BrowserPageLoadEvent,
 } from "@/services/tauriBridge";
 
 function MainLayout() {
@@ -34,6 +35,7 @@ function MainLayout() {
   const [desktopConfigError, setDesktopConfigError] = useState<string | null>(null);
   const [networkDiagnostics, setNetworkDiagnostics] = useState<NetworkDiagnosticsSnapshot | null>(null);
   const [networkDiagnosticsLoading, setNetworkDiagnosticsLoading] = useState(false);
+  const [browserPageLoad, setBrowserPageLoad] = useState<BrowserPageLoadEvent | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem("vestus-desktop-proxy-enabled");
@@ -79,6 +81,7 @@ function MainLayout() {
     invalidateConfigSync();
     setDesktopConfig(null);
     setDesktopConfigError(null);
+    setBrowserPageLoad(null);
     setCurrentUser(user);
   };
 
@@ -87,6 +90,7 @@ function MainLayout() {
     setAuthNotice(message);
     setDesktopConfig(null);
     setDesktopConfigError(null);
+    setBrowserPageLoad(null);
     try {
       await tauriBridge.stopNetworkDiagnostics().catch(() => undefined);
       await authService.logout();
@@ -189,6 +193,7 @@ function MainLayout() {
     let unlistenExpiredFn: (() => void) | undefined;
     let unlistenRecoveredFn: (() => void) | undefined;
     let unlistenGuardFailedFn: (() => void) | undefined;
+    let unlistenPageLoadFn: (() => void) | undefined;
 
     void tauriBridge
       .getStatus()
@@ -310,12 +315,26 @@ function MainLayout() {
         // A failed event subscription must not create an unhandled rejection.
       });
 
+    tauriBridge
+      .onBrowserPageLoad((payload) => {
+        if (!isActive()) return;
+        setBrowserPageLoad(payload);
+      })
+      .then((unlisten) => {
+        if (isActive()) unlistenPageLoadFn = unlisten;
+        else unlisten();
+      })
+      .catch(() => {
+        // A failed event subscription must not create an unhandled rejection.
+      });
+
     return () => {
       active = false;
       if (unlistenFn) unlistenFn();
       if (unlistenExpiredFn) unlistenExpiredFn();
       if (unlistenRecoveredFn) unlistenRecoveredFn();
       if (unlistenGuardFailedFn) unlistenGuardFailedFn();
+      if (unlistenPageLoadFn) unlistenPageLoadFn();
     };
   }, [desktopRuntime, authReady, currentUser]);
 
@@ -426,6 +445,7 @@ function MainLayout() {
     setCurrentUser(null);
     setDesktopConfig(null);
     setDesktopConfigError(null);
+    setBrowserPageLoad(null);
     setAuthNotice(failure);
     if (failure) error("退出未完全成功", failure);
     else info("已安全退出", "请重新登录以继续使用系统");
@@ -561,6 +581,7 @@ function MainLayout() {
             onOpenBrowser={handleOpenBrowser}
             networkDiagnostics={networkDiagnostics}
             networkDiagnosticsLoading={networkDiagnosticsLoading}
+            browserPageLoad={browserPageLoad}
           />
         ) : activeTab === "faq" ? (
           <FaqView />

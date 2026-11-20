@@ -143,6 +143,8 @@ assert(
 );
 
 // 地址采集不注入页面脚本，也不订阅 Runtime 事件；托管固定 guard 是唯一例外。
+// 页面加载诊断可以在明确的 telemetry opt-in 下打开 Network.enable。它只订阅
+// 主文档事件，不能因此获得读取 Cookie、请求体或修改网络行为的能力。
 const rustCdp = rustProduction(read("src-tauri/src/cdp.rs"));
 // 检查采集入口、实际 IO helper 和状态机；一次性生命周期控制连接不在其中。
 const collectSurface =
@@ -169,11 +171,22 @@ for (const method of [
   '"Storage.',
   '"Emulation.',
   '"Fetch.',
-  '"Network.enable',
   '"Network.getCookies',
   '"Network.setCookie',
 ]) {
   assert(!collectSurface.includes(method), `采集通道拿到了只读采集用不着的能力：${method}`);
+}
+
+const installBody = rustBody(rustCdp, /\bfn\s+install\s*\(/);
+if (collectSurface.includes('"Network.enable"')) {
+  assert(
+    /if\s+self\.telemetry_enabled\s*\{[\s\S]*?"Network\.enable"/.test(installBody),
+    "Network.enable 只能在显式 telemetry opt-in 下启用",
+  );
+  assert(
+    (collectSurface.match(/"Network\.enable"/g) || []).length === 1,
+    "采集通道只能启用一次 Network telemetry",
+  );
 }
 
 // The fixed login guard is an intentionally narrow exception to page writes.
@@ -246,7 +259,6 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
     "采集连接必须暂停新 target（waitForDebuggerOnStart: true）才能安装固定防护",
   );
 
-  const installBody = rustBody(rustCdp, /\bfn\s+install\s*\(/);
   const documentScripts = (installBody.match(/"Page\.addScriptToEvaluateOnNewDocument"/g) || []).length;
   assert(
     documentScripts === 1,
