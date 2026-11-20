@@ -226,7 +226,7 @@ exit
 ```bash
 sudo systemctl stop vestus
 cd /opt/vestus/current
-sudo -H -u vestus git pull --ff-only origin main
+sudo -H -u vestus git pull --ff-only origin master
 sudo -H -u vestus .venv/bin/python -m pip install -r requirements.txt
 sudo -H -u vestus npm --prefix web ci
 sudo -H -u vestus npm --prefix web run build
