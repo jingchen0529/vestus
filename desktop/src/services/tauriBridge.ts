@@ -44,7 +44,7 @@ export interface StatusView {
 }
 
 export interface BrowserHandleView {
-  /** 仅用于把状态机里的会话和 Chromium 进程对上，前端不需要它做别的事。 */
+  /** 仅用于把状态机里的会话和 Chromium 进程对上，外部复用时为 0。 */
   browser_id: number;
   /** 这个平台的浏览器本来就开着，这次没有启动新的浏览器进程。 */
   reused: boolean;

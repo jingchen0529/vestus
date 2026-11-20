@@ -80,6 +80,8 @@ export const NetworkDiagnosticsCard: React.FC<NetworkDiagnosticsCardProps> = ({
   const view = toNetworkDiagnosticsView(snapshot);
   const timestampLabel = formatDiagnosticsTimestampLabel(view.latestAtMs);
   const hasUploadAttention = view.uploadTone === "destructive" || view.droppedCount > 0;
+  const compactRouteGridClass = view.routes.length === 3 ? "md:grid-cols-3" : "md:grid-cols-2";
+  const defaultRouteGridClass = view.routes.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2";
 
   if (compact) {
     const uploadSummary = formatCompactUploadSummary(view);
@@ -142,7 +144,10 @@ export const NetworkDiagnosticsCard: React.FC<NetworkDiagnosticsCardProps> = ({
           </button>
         </div>
 
-        <div className="mt-2 grid grid-cols-1 divide-y divide-border/60 overflow-hidden rounded-[8px] border border-border/60 bg-muted/30 md:grid-cols-3 md:divide-x md:divide-y-0">
+        <div className={cn(
+          "mt-2 grid grid-cols-1 divide-y divide-border/60 overflow-hidden rounded-[8px] border border-border/60 bg-muted/30 md:divide-x md:divide-y-0",
+          compactRouteGridClass,
+        )}>
           {view.routes.map((route) => {
             const durationText =
               route.sample?.durationMs != null ? `${route.sample.durationMs} ms` : null;
@@ -224,7 +229,7 @@ export const NetworkDiagnosticsCard: React.FC<NetworkDiagnosticsCardProps> = ({
         <CardDescription className="text-xs">{READ_ONLY_HINT}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2.5 pt-0">
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className={cn("grid grid-cols-1 gap-2", defaultRouteGridClass)}>
           {view.routes.map((route) => {
             const durationText =
               route.sample?.durationMs != null ? `${route.sample.durationMs} ms` : null;

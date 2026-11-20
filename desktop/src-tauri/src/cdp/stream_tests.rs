@@ -31,10 +31,12 @@ struct StreamFixture {
     scheduling: std::sync::Arc<SchedulingGate>,
     close: UnboundedSender<()>,
     sent: UnboundedReceiver<()>,
+    managed: bool,
 }
 
 impl StreamFixture {
     async fn new(managed: Option<ManagedWatch>) -> Self {
+        let is_managed = managed.is_some();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = DevToolsEndpoint {
             port: listener.local_addr().unwrap().port(),
@@ -90,8 +92,11 @@ impl StreamFixture {
             scheduling,
             close,
             sent,
+            managed: is_managed,
         };
-        assert_eq!(fixture.command().await["method"], "Target.setAutoAttach");
+        let auto = fixture.command().await;
+        assert_eq!(auto["method"], "Target.setAutoAttach");
+        fixture.send(json!({"id":auto["id"],"result":{}}));
         assert_eq!(fixture.command().await["method"], "Target.getTargets");
         fixture
     }
@@ -107,20 +112,88 @@ impl StreamFixture {
         self.events.send(message).unwrap();
     }
 
-    async fn attach(&mut self, session: &str, target: &str) -> Vec<Value> {
+    async fn begin_attach(&mut self, session: &str, target: &str) -> Vec<Value> {
         self.send(json!({"method":"Target.attachedToTarget","params":{
             "sessionId":session,"targetInfo":{"targetId":target,"type":"page","url":"about:blank"},
             "waitingForDebugger":true
         }}));
+        let count = if self.managed { 4 } else { 3 };
         let mut commands = Vec::new();
-        loop {
-            let command = self.command().await;
-            let resumed = command["method"] == "Runtime.runIfWaitingForDebugger";
-            commands.push(command);
-            if resumed {
-                return commands;
+        for _ in 0..count {
+            commands.push(self.command().await);
+        }
+        commands
+    }
+
+    fn acknowledge(&self, command: &Value) {
+        let result = if command["method"] == "Page.getFrameTree" {
+            json!({"frameTree":{"frame":{"id":"main","loaderId":"L0","url":"about:blank"}}})
+        } else {
+            json!({})
+        };
+        self.send(command_reply(command, result));
+    }
+
+    async fn accept_resume(&mut self, session: &str) -> Value {
+        let resume = self.command().await;
+        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
+        assert_eq!(resume["sessionId"], session);
+        self.acknowledge(&resume);
+        resume
+    }
+
+    /// Managed tree races delay only the valid tree ACK; ordinary trees always
+    /// remain pending until the individual test supplies their contents.
+    async fn attach_before_tree(&mut self, session: &str, target: &str) -> Vec<Value> {
+        let commands = self.begin_attach(session, target).await;
+        for command in &commands {
+            if command["method"] != "Page.getFrameTree" {
+                self.acknowledge(command);
             }
         }
+        commands
+    }
+
+    async fn attach(&mut self, session: &str, target: &str) -> Vec<Value> {
+        let mut commands = self.attach_before_tree(session, target).await;
+        if self.managed {
+            let tree = commands
+                .iter()
+                .find(|c| c["method"] == "Page.getFrameTree")
+                .unwrap();
+            self.acknowledge(tree);
+            commands.push(self.accept_resume(session).await);
+        }
+        commands
+    }
+
+    // A round-trip command is a processing barrier, unlike waiting for the
+    // fixture socket to write bytes (which does not mean collect consumed them).
+    async fn barrier(&mut self) {
+        self.send(json!({"method":"Target.attachedToTarget","params":{
+            "sessionId":"barrier-worker","targetInfo":{"type":"worker","targetId":"barrier"}
+        }}));
+        assert_eq!(
+            self.command().await["method"],
+            "Runtime.runIfWaitingForDebugger"
+        );
+        assert_eq!(self.command().await["method"], "Target.detachFromTarget");
+    }
+
+    async fn failed(self) {
+        let result = timeout(Duration::from_secs(2), self.task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(result, Err(CdpError::Command(_))),
+            "local guard failure: {result:?}"
+        );
+        drop(self.events);
+        timeout(Duration::from_secs(2), self.server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     async fn report(&mut self) -> PageReport {
@@ -137,10 +210,45 @@ impl StreamFixture {
     }
 }
 
+fn platform_watch(signals: tokio::sync::mpsc::UnboundedSender<ManagedSignal>) -> ManagedWatch {
+    let monitor =
+        crate::managed_cdp::ManagedSessionMonitor::for_session("https://agent.oceanengine.com/")
+            .unwrap();
+    let status = monitor.status_view();
+    ManagedWatch {
+        login_guard_script: crate::managed_cdp::logout_guard_script(
+            "https://agent.oceanengine.com/",
+        )
+        .unwrap(),
+        monitor,
+        signals,
+        status,
+        guard_installed: crate::managed_cdp::GuardInstalled::default(),
+    }
+}
+
 fn navigation(session: &str, url: &str) -> Value {
     json!({"method":"Page.frameNavigated","sessionId":session,"params":{
-        "frame":{"id":"main","url":url}
+        "frame":{"id":"main","loaderId":"L1","url":url}
     }})
+}
+
+fn command_reply(command: &Value, result: Value) -> Value {
+    let mut reply = json!({"id":command["id"],"result":result});
+    if let Some(session) = command.get("sessionId") {
+        reply["sessionId"] = session.clone();
+    }
+    reply
+}
+
+fn lifecycle(session: &str, frame: &str, loader: &str, name: &str) -> Value {
+    json!({"method":"Page.lifecycleEvent","sessionId":session,"params":{
+        "frameId":frame,"loaderId":loader,"name":name
+    }})
+}
+
+fn page_loaded(session: &str, frame: &str) -> Value {
+    lifecycle(session, frame, "L1", "load")
 }
 
 #[tokio::test]
@@ -152,6 +260,8 @@ async fn queued_login_cancellation_wins_when_collector_resumes_after_deadline() 
         fixture.attach("S1", "T1").await;
         fixture.send(navigation("S1", "http://127.0.0.1:18765/login"));
         fixture.report().await;
+        fixture.send(page_loaded("S1", "main"));
+        fixture.barrier().await;
         fixture.scheduling.pause();
         while fixture.sent.try_recv().is_ok() {}
         if action == "close" {
@@ -280,19 +390,9 @@ async fn spa_before_initial_tree_uses_new_route_not_stale_tree_or_iframe() {
 #[tokio::test]
 async fn pre_tree_spa_away_from_login_cannot_expire_from_stale_login_tree() {
     let (signals, mut signal_rx) = unbounded_channel();
-    let watch = ManagedWatch {
-        login_guard_script: crate::managed_cdp::logout_guard_script(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        signals,
-    };
+    let watch = platform_watch(signals);
     let mut fixture = StreamFixture::new(Some(watch)).await;
-    let commands = fixture.attach("S1", "T1").await;
+    let commands = fixture.attach_before_tree("S1", "T1").await;
     let tree = commands
         .iter()
         .find(|c| c["method"] == "Page.getFrameTree")
@@ -309,9 +409,11 @@ async fn pre_tree_spa_away_from_login_cannot_expire_from_stale_login_tree() {
     );
     fixture.send(
         json!({"id":tree["id"],"sessionId":"S1","result":{"frameTree":{
-            "frame":{"id":"main","url":"https://agent.oceanengine.com/login"}
+            "frame":{"id":"main","loaderId":"L1","url":"https://agent.oceanengine.com/login"}
         }}}),
     );
+    fixture.accept_resume("S1").await;
+    fixture.send(page_loaded("S1", "main"));
     assert_eq!(
         fixture.report().await.url_params.as_deref(),
         Some("advid=34")
@@ -390,29 +492,22 @@ async fn newer_navigation_wins_over_stale_unsolicited_and_failed_frame_trees() {
 #[tokio::test]
 async fn managed_initial_tree_starts_deadline_and_detach_cancels_it() {
     let (signals, mut signal_rx) = unbounded_channel();
-    let watch = ManagedWatch {
-        login_guard_script: crate::managed_cdp::logout_guard_script(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        signals,
-    };
+    let watch = platform_watch(signals);
     let mut fixture = StreamFixture::new(Some(watch)).await;
-    let commands = fixture.attach("S1", "T1").await;
+    let commands = fixture.attach_before_tree("S1", "T1").await;
     let tree = commands
         .iter()
         .find(|c| c["method"] == "Page.getFrameTree")
         .unwrap();
     fixture.send(
         json!({"id":tree["id"],"sessionId":"S1","result":{"frameTree":{
-            "frame":{"id":"main","url":"https://agent.oceanengine.com/login"}
+            "frame":{"id":"main","loaderId":"L1","url":"https://agent.oceanengine.com/login"}
         }}}),
     );
     fixture.report().await;
+    fixture.accept_resume("S1").await;
+    fixture.send(page_loaded("S1", "main"));
+    fixture.barrier().await;
     fixture.send(json!({"method":"Target.detachedFromTarget","params":{"sessionId":"S1"}}));
     assert!(timeout(
         crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(100),
@@ -420,17 +515,19 @@ async fn managed_initial_tree_starts_deadline_and_detach_cancels_it() {
     )
     .await
     .is_err());
-    let commands = fixture.attach("S2", "T2").await;
+    let commands = fixture.attach_before_tree("S2", "T2").await;
     let tree = commands
         .iter()
         .find(|c| c["method"] == "Page.getFrameTree")
         .unwrap();
     fixture.send(
         json!({"id":tree["id"],"sessionId":"S2","result":{"frameTree":{
-            "frame":{"id":"main","url":"https://agent.oceanengine.com/login"}
+            "frame":{"id":"main","loaderId":"L1","url":"https://agent.oceanengine.com/login"}
         }}}),
     );
     fixture.report().await;
+    fixture.accept_resume("S2").await;
+    fixture.send(page_loaded("S2", "main"));
     assert!(matches!(
         timeout(
             crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(200),
@@ -445,17 +542,7 @@ async fn managed_initial_tree_starts_deadline_and_detach_cancels_it() {
 #[tokio::test]
 async fn rejected_duplicate_session_cannot_expire_managed_session() {
     let (signals, mut signal_rx) = unbounded_channel();
-    let watch = ManagedWatch {
-        login_guard_script: crate::managed_cdp::logout_guard_script(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        signals,
-    };
+    let watch = platform_watch(signals);
     let mut fixture = StreamFixture::new(Some(watch)).await;
     fixture.attach("S1", "T1").await;
     fixture.send(json!({"method":"Target.attachedToTarget","params":{
@@ -492,17 +579,7 @@ async fn managed_connect_failure_signals_connection_lost_once() {
     };
     drop(listener);
     let (signals, mut signal_rx) = unbounded_channel();
-    let watch = ManagedWatch {
-        login_guard_script: crate::managed_cdp::logout_guard_script(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        signals,
-    };
+    let watch = platform_watch(signals);
     let (sink, _reports) = unbounded_channel();
     assert!(matches!(
         collect(endpoint, sink, Some(watch)).await,
@@ -518,17 +595,7 @@ async fn managed_connect_failure_signals_connection_lost_once() {
 #[tokio::test]
 async fn quiet_managed_login_expires_once_without_runtime_events() {
     let (signals, mut signal_rx) = unbounded_channel();
-    let watch = ManagedWatch {
-        login_guard_script: crate::managed_cdp::logout_guard_script(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        monitor: crate::managed_cdp::ManagedSessionMonitor::for_session(
-            "https://agent.oceanengine.com/",
-        )
-        .unwrap(),
-        signals,
-    };
+    let watch = platform_watch(signals);
     let mut fixture = StreamFixture::new(Some(watch)).await;
     let commands = fixture.attach("S1", "T1").await;
     assert!(!commands
@@ -543,6 +610,8 @@ async fn quiet_managed_login_expires_once_without_runtime_events() {
     );
     fixture.send(navigation("S1", "https://agent.oceanengine.com/login"));
     fixture.report().await;
+    // 加载完成门禁：主 frame 的 load 之后才开始观察窗。
+    fixture.send(page_loaded("S1", "main"));
     assert!(
         matches!(
             timeout(
@@ -552,7 +621,7 @@ async fn quiet_managed_login_expires_once_without_runtime_events() {
             .await,
             Ok(Some(ManagedSignal::Expired))
         ),
-        "a quiet login must expire without any new CDP events"
+        "a quiet, fully loaded login must expire without any Runtime events"
     );
     assert!(
         timeout(Duration::from_millis(100), signal_rx.recv())
@@ -566,6 +635,52 @@ async fn quiet_managed_login_expires_once_without_runtime_events() {
         Some(ManagedSignal::ConnectionLost)
     ));
     assert!(signal_rx.recv().await.is_none());
+}
+
+/// 慢加载回归：导航已提交到 /login、但主 frame 一直没发 load（页面仍在加载）
+/// 时，即使远超 LOGIN_SETTLE 也不能判凭据失效；load 到达且继续停留才计时失效。
+#[tokio::test]
+async fn slow_login_without_load_event_never_expires_early() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let watch = platform_watch(signals);
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    fixture.attach("S1", "T1").await;
+    fixture.send(navigation("S1", "https://agent.oceanengine.com/login"));
+    fixture.report().await;
+
+    // 导航提交之后一直不发 loadEventFired——模拟页面仍在加载。
+    // 跨过两个观察窗都没有任何 Expired。
+    for _ in 0..2 {
+        tokio::time::sleep(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(100)).await;
+        assert!(
+            timeout(Duration::from_millis(100), signal_rx.recv())
+                .await
+                .is_err(),
+            "仍在加载的登录页不能误判失效"
+        );
+    }
+
+    // 子 frame 的 load 也不算主文档加载完成。
+    fixture.send(page_loaded("S1", "child"));
+    tokio::time::sleep(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(100)).await;
+    assert!(
+        timeout(Duration::from_millis(100), signal_rx.recv())
+            .await
+            .is_err(),
+        "iframe 的 load 不能开始登录观察窗"
+    );
+
+    // 主 frame 真正加载完成后，稳定停留才在观察窗后失效。
+    fixture.send(page_loaded("S1", "main"));
+    assert!(matches!(
+        timeout(
+            crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(300),
+            signal_rx.recv()
+        )
+        .await,
+        Ok(Some(ManagedSignal::Expired))
+    ));
+    fixture.stop().await;
 }
 
 #[tokio::test]
@@ -610,6 +725,334 @@ async fn frame_tree_seeds_initial_url_once_and_spa_is_main_frame_only() {
         Some("advid=18")
     );
     fixture.stop().await;
+}
+
+#[tokio::test]
+async fn guard_ready_requires_every_install_and_resume_ack_for_the_exact_page() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let watch = platform_watch(signals);
+    let ready = watch.guard_installed.clone();
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    let commands = fixture.begin_attach("S1", "T1").await;
+    assert_eq!(
+        commands
+            .iter()
+            .map(|c| c["method"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "Page.enable",
+            "Page.getFrameTree",
+            "Page.setLifecycleEventsEnabled",
+            "Page.addScriptToEvaluateOnNewDocument"
+        ]
+    );
+    assert_eq!(commands[2]["params"]["enabled"], true);
+    assert_eq!(commands[3]["params"]["runImmediately"], true);
+    assert!(
+        !ready.wait_ready(Duration::from_millis(40)).await,
+        "sending install commands is not readiness"
+    );
+
+    let tree = &commands[1];
+    for command in commands
+        .iter()
+        .filter(|c| c["method"] != "Page.getFrameTree")
+    {
+        fixture.acknowledge(command);
+    }
+    let mut wrong = command_reply(
+        tree,
+        json!({"frameTree":{"frame":{"id":"main","loaderId":"L0","url":"about:blank"}}}),
+    );
+    wrong["id"] = json!(99999);
+    fixture.send(wrong.clone());
+    wrong["id"] = tree["id"].clone();
+    wrong["sessionId"] = json!("other-session");
+    fixture.send(wrong);
+    fixture.barrier().await;
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "missing/extraneous tree ACK cannot resume page"
+    );
+    assert!(!ready.wait_ready(Duration::from_millis(40)).await);
+    fixture.acknowledge(tree);
+    let resume = fixture.command().await;
+    assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
+    assert!(
+        !ready.wait_ready(Duration::from_millis(40)).await,
+        "resume send is not readiness"
+    );
+    let mut wrong = command_reply(&resume, json!({}));
+    wrong["id"] = json!(99998);
+    fixture.send(wrong.clone());
+    wrong["id"] = resume["id"].clone();
+    wrong["sessionId"] = json!("other-session");
+    fixture.send(wrong);
+    // A valid worker resume reply cannot satisfy page readiness either.
+    fixture.send(json!({"method":"Target.attachedToTarget","params":{
+        "sessionId":"worker","targetInfo":{"targetId":"worker","type":"service_worker"}
+    }}));
+    let worker = fixture.command().await;
+    assert_eq!(worker["method"], "Runtime.runIfWaitingForDebugger");
+    fixture.acknowledge(&worker);
+    assert_eq!(fixture.command().await["method"], "Target.detachFromTarget");
+    fixture.barrier().await;
+    assert!(!ready.wait_ready(Duration::from_millis(40)).await);
+    fixture.acknowledge(&resume);
+    assert!(ready.wait_ready(Duration::from_secs(1)).await);
+    assert!(signal_rx.try_recv().is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn rejected_or_malformed_guard_and_resume_acks_fail_locally_without_readiness() {
+    for method in [
+        "Page.enable",
+        "Page.getFrameTree",
+        "Page.setLifecycleEventsEnabled",
+        "Page.addScriptToEvaluateOnNewDocument",
+        "Runtime.runIfWaitingForDebugger",
+    ] {
+        for invalid in ["error", "missing-result", "null-result", "array-result"] {
+            let (signals, mut signal_rx) = unbounded_channel();
+            let watch = platform_watch(signals);
+            let ready = watch.guard_installed.clone();
+            let status = watch.status.clone();
+            let mut fixture = StreamFixture::new(Some(watch)).await;
+            let commands = fixture.begin_attach("S1", "T1").await;
+            let command = if method == "Runtime.runIfWaitingForDebugger" {
+                for command in &commands {
+                    fixture.acknowledge(command);
+                }
+                fixture.command().await
+            } else {
+                commands
+                    .iter()
+                    .find(|c| c["method"] == method)
+                    .unwrap()
+                    .clone()
+            };
+            let mut reply = command_reply(&command, json!({}));
+            match invalid {
+                "error" => {
+                    reply["error"] = json!({"code":-32000,"message":"synthetic rejection"});
+                }
+                "missing-result" => {
+                    reply.as_object_mut().unwrap().remove("result");
+                }
+                "null-result" => reply["result"] = Value::Null,
+                "array-result" => reply["result"] = json!([]),
+                _ => unreachable!(),
+            }
+            fixture.send(reply);
+            assert!(
+                matches!(
+                    timeout(Duration::from_secs(1), signal_rx.recv()).await,
+                    Ok(Some(ManagedSignal::ConnectionLost))
+                ),
+                "{method} {invalid} must be local failure, not expiry"
+            );
+            assert_eq!(
+                status.current(),
+                crate::managed_cdp::LoginGuardStatus::MonitorGone
+            );
+            assert!(!ready.wait_ready(Duration::from_millis(20)).await);
+            fixture.failed().await;
+            assert!(signal_rx.recv().await.is_none());
+        }
+    }
+    for result in [
+        json!({}),
+        json!({"frameTree":{}}),
+        json!({"frameTree":{"frame":null}}),
+        json!({"frameTree":{"frame":{"id":"","url":"about:blank"}}}),
+    ] {
+        let (signals, mut signal_rx) = unbounded_channel();
+        let watch = platform_watch(signals);
+        let ready = watch.guard_installed.clone();
+        let mut fixture = StreamFixture::new(Some(watch)).await;
+        let commands = fixture.begin_attach("S1", "T1").await;
+        let tree = commands
+            .iter()
+            .find(|c| c["method"] == "Page.getFrameTree")
+            .unwrap();
+        fixture.send(command_reply(tree, result));
+        assert!(
+            matches!(
+                timeout(Duration::from_secs(1), signal_rx.recv()).await,
+                Ok(Some(ManagedSignal::ConnectionLost))
+            ),
+            "managed tree ACK must contain a usable frame"
+        );
+        assert!(!ready.wait_ready(Duration::from_millis(20)).await);
+        fixture.failed().await;
+    }
+}
+
+#[tokio::test]
+async fn queued_expiry_is_revoked_by_disconnect_before_watcher_classifies_it() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let watch = platform_watch(signals);
+    let status = watch.status.clone();
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    fixture.attach("S1", "T1").await;
+    fixture.send(navigation("S1", "https://agent.oceanengine.com/login"));
+    fixture.report().await;
+    fixture.send(page_loaded("S1", "main"));
+    fixture.barrier().await;
+    tokio::time::sleep(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(100)).await;
+    fixture.barrier().await;
+    assert_eq!(
+        status.current(),
+        crate::managed_cdp::LoginGuardStatus::ExpiryValid,
+        "expiry was actually published before disconnect"
+    );
+    fixture.close.send(()).unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), fixture.task)
+            .await
+            .unwrap()
+            .unwrap(),
+        Ok(())
+    );
+    fixture.server.await.unwrap();
+    assert_eq!(
+        status.current(),
+        crate::managed_cdp::LoginGuardStatus::MonitorGone
+    );
+    let (_exit_tx, mut exited) = tokio::sync::oneshot::channel();
+    assert!(
+        matches!(
+            crate::commands::wait_managed_signal(&status, &mut signal_rx, &mut exited).await,
+            Some(ManagedSignal::ConnectionLost)
+        ),
+        "queued Expired must be reclassified after disconnect"
+    );
+    assert!(matches!(
+        signal_rx.recv().await,
+        Some(ManagedSignal::ConnectionLost)
+    ));
+    assert!(signal_rx.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn spa_login_on_a_loaded_workbench_expires_without_another_load() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let watch = platform_watch(signals);
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    fixture.attach("S1", "T1").await;
+    fixture.send(navigation("S1", "https://agent.oceanengine.com/workbench"));
+    fixture.report().await;
+    fixture.send(page_loaded("S1", "main"));
+    fixture.send(
+        json!({"method":"Page.navigatedWithinDocument","sessionId":"S1","params":{
+            "frameId":"child","url":"https://agent.oceanengine.com/login"
+        }}),
+    );
+    fixture.barrier().await;
+    assert!(signal_rx.try_recv().is_err());
+    fixture.send(
+        json!({"method":"Page.navigatedWithinDocument","sessionId":"S1","params":{
+            "frameId":"main","url":"https://agent.oceanengine.com/login"
+        }}),
+    );
+    fixture.report().await;
+    assert!(matches!(
+        timeout(
+            crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(300),
+            signal_rx.recv()
+        )
+        .await,
+        Ok(Some(ManagedSignal::Expired))
+    ));
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn loading_restart_cancels_old_deadline_and_stale_loader_cannot_rearm_it() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let watch = platform_watch(signals);
+    let status = watch.status.clone();
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    fixture.attach("S1", "T1").await;
+    fixture.send(navigation("S1", "https://agent.oceanengine.com/login"));
+    fixture.report().await;
+    fixture.send(page_loaded("S1", "main"));
+    fixture.barrier().await;
+    tokio::time::sleep(crate::managed_cdp::LOGIN_SETTLE - Duration::from_millis(500)).await;
+    fixture.send(
+        json!({"method":"Page.frameStartedLoading","sessionId":"S1","params":{"frameId":"main"}}),
+    );
+    fixture.send(lifecycle("S1", "main", "L2", "init"));
+    fixture.send(page_loaded("S1", "main")); // stale L1 load
+    fixture.send(lifecycle("S1", "child", "L2", "load"));
+    fixture.barrier().await;
+    assert!(
+        timeout(
+            crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(100),
+            signal_rx.recv()
+        )
+        .await
+        .is_err(),
+        "restart must cancel old deadline before navigation commits"
+    );
+    assert_eq!(
+        status.current(),
+        crate::managed_cdp::LoginGuardStatus::NotExpired
+    );
+    let mut next = navigation("S1", "https://agent.oceanengine.com/login/retry");
+    next["params"]["frame"]["loaderId"] = json!("L2");
+    fixture.send(next);
+    fixture.report().await;
+    fixture.send(lifecycle("S1", "main", "L2", "load"));
+    assert!(
+        timeout(Duration::from_millis(200), signal_rx.recv())
+            .await
+            .is_err(),
+        "new loaded document gets a fresh settle window"
+    );
+    assert!(matches!(
+        timeout(
+            crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(300),
+            signal_rx.recv()
+        )
+        .await,
+        Ok(Some(ManagedSignal::Expired))
+    ));
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn main_error_document_is_connection_loss_not_credential_expiry() {
+    for error_frame in [
+        json!({"id":"main","loaderId":"L2","url":"chrome-error://chromewebdata/","unreachableUrl":"https://agent.oceanengine.com/login"}),
+        json!({"id":"main","loaderId":"L2","url":"https://agent.oceanengine.com/login","unreachableUrl":"https://agent.oceanengine.com/login"}),
+    ] {
+        let (signals, mut signal_rx) = unbounded_channel();
+        let watch = platform_watch(signals);
+        let status = watch.status.clone();
+        let mut fixture = StreamFixture::new(Some(watch)).await;
+        fixture.attach("S1", "T1").await;
+        // An iframe error must neither fail the main document nor expire credentials.
+        fixture.send(json!({"method":"Page.frameNavigated","sessionId":"S1","params":{"frame":{
+            "id":"child","parentId":"main","url":"chrome-error://chromewebdata/","unreachableUrl":"https://agent.oceanengine.com/login"
+        }}}));
+        fixture.barrier().await;
+        assert!(signal_rx.try_recv().is_err());
+        fixture.send(
+            json!({"method":"Page.frameNavigated","sessionId":"S1","params":{"frame":error_frame}}),
+        );
+        assert!(matches!(
+            timeout(Duration::from_secs(1), signal_rx.recv()).await,
+            Ok(Some(ManagedSignal::ConnectionLost))
+        ));
+        assert_eq!(
+            status.current(),
+            crate::managed_cdp::LoginGuardStatus::MonitorGone
+        );
+        fixture.failed().await;
+        assert!(signal_rx.recv().await.is_none());
+    }
 }
 
 #[tokio::test]

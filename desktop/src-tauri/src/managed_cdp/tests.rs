@@ -13,12 +13,17 @@ pub(super) fn localhost_watch(
         endpoint: base.join("logout").unwrap(),
         login_route: base.join("login").unwrap(),
     };
+    let monitor = ManagedSessionMonitor {
+        detector: LogoutDetector::new(policy.clone()),
+        notified: false,
+        status: LoginGuardStatusView::default(),
+    };
+    let status = monitor.status_view();
     crate::cdp::ManagedWatch {
         login_guard_script: policy.login_guard_script(),
-        monitor: ManagedSessionMonitor {
-            detector: LogoutDetector::new(policy),
-            notified: false,
-        },
+        monitor,
         signals,
+        status,
+        guard_installed: GuardInstalled::default(),
     }
 }

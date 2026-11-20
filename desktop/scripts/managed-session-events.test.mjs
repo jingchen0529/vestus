@@ -89,8 +89,9 @@ test("guard failures show closure-specific error messages without invalidating c
 test("connection-loss faults close the browser and return before credential reporting", () => {
   const commands = readFileSync(new URL("../src-tauri/src/commands/managed.rs", import.meta.url), "utf8");
   const watch = commands.slice(commands.indexOf("async fn run_managed_watch"));
-  // 非Expired 分支（ConnectionLost/None）就是本地故障路径。
-  const lostStart = watch.indexOf("other => {");
+  // Only the reviewed ConnectionLost signal enters the local-fault closure path.
+  assert.match(watch, /wait_managed_signal\(\s*&context\.status,\s*&mut signals,\s*&mut exited\s*\)\s*\.await/);
+  const lostStart = watch.search(/if\s+matches!\(\s*detected,\s*crate::cdp::ManagedSignal::ConnectionLost\s*\)/);
   const eventAt = watch.indexOf('"managed-session-guard-failed"', lostStart);
   const reportAt = watch.indexOf(".report_managed_session_expired(");
   assert.ok(lostStart >= 0 && eventAt > lostStart, "断连故障必须发 guard-failed 事件");
@@ -107,12 +108,35 @@ test("connection-loss faults close the browser and return before credential repo
   assert.doesNotMatch(lostBranch, /report_managed_session_expired|wait_managed_recovery|\.mark_error\(/);
 });
 
+test("stale expiry is rechecked after confirmation grace and ignored while monitoring is healthy", () => {
+  const commands = readFileSync(new URL("../src-tauri/src/commands/managed.rs", import.meta.url), "utf8");
+  const start = commands.indexOf("async fn wait_managed_signal");
+  const end = commands.indexOf("async fn run_managed_watch", start);
+  assert.ok(start >= 0 && end > start);
+  const wait = commands.slice(start, end);
+  assert.match(wait, /loop\s*\{/);
+  assert.match(wait, /_\s*=\s*&mut\s*\*exited\s*=>\s*return None/);
+  assert.match(wait, /!matches!\(signal,\s*Some\(crate::cdp::ManagedSignal::Expired\)\)/);
+  const graceAt = wait.search(/sleep\(Duration::from_millis\(200\)\)/);
+  const reviewAt = wait.indexOf("match status.current()");
+  assert.ok(graceAt >= 0 && reviewAt > graceAt, "expiry status must be rechecked after grace");
+  assert.match(wait, /LoginGuardStatus::ExpiryValid\s*=>\s*return signal/);
+  assert.match(
+    wait,
+    /LoginGuardStatus::MonitorGone\s*=>\s*\{\s*return Some\(crate::cdp::ManagedSignal::ConnectionLost\)\s*\}/,
+  );
+  assert.match(wait, /LoginGuardStatus::NotExpired\s*=>\s*\{\s*\}/);
+  assert.doesNotMatch(wait, /kill_|report_managed_session_expired|emit\(/);
+});
+
 test("expired signals run the full credential reporting flow", () => {
   const commands = readFileSync(new URL("../src-tauri/src/commands/managed.rs", import.meta.url), "utf8");
   const watch = commands.slice(commands.indexOf("async fn run_managed_watch"));
-  const expiredAt = watch.indexOf("ManagedSignal::Expired");
-  assert.ok(expiredAt >= 0);
-  const flow = watch.slice(expiredAt);
+  const reviewAt = watch.indexOf("wait_managed_signal(");
+  assert.ok(reviewAt >= 0);
+  const flow = watch.slice(reviewAt);
+  assert.match(flow, /spawn_blocking\(move \|\| \{\s*if !status\.is_expiry_valid\(\) \{\s*return None;\s*\}\s*Some\(browsers\.kill_browser_with_reason/);
+  assert.match(flow, /Ok\(None\)\s*=>\s*continue/);
   assert.match(flow, /kill_browser_with_reason\(\s*browser_id,\s*CloseReason::ManagedLogout\s*\)/);
   assert.match(flow, /report_managed_session_expired/);
   assert.match(flow, /"managed-session-expired"/);
@@ -121,12 +145,26 @@ test("expired signals run the full credential reporting flow", () => {
 
 test("collector drives the managed watch with a single CDP client", () => {
   const browser = readFileSync(new URL("../src-tauri/src/commands/browser.rs", import.meta.url), "utf8");
-  const injectAt = browser.indexOf("managed_cdp::inject_session");
+  const cookiesAt = browser.indexOf("managed_cdp::install_session_cookies");
   const spawnAt = browser.indexOf("run_managed_watch(");
   const startAt = browser.indexOf("activity_collector.start(");
-  assert.ok(spawnAt >= 0 && spawnAt < injectAt, "监控消费端必须在注入前启动");
-  assert.ok(injectAt < startAt, "活动采集（含防护信号）必须在注入成功后启动");
-  assert.doesNotMatch(browser, /prepare_logout_watch/);
+  const waitAt = browser.indexOf(".wait_ready(");
+  const navigateAt = browser.indexOf("managed_cdp::navigate_session");
+  assert.ok(cookiesAt >= 0 && spawnAt > cookiesAt, "Cookie 必须先安装，再启动监控消费端");
+  assert.ok(startAt > spawnAt && waitAt > startAt, "采集与监控必须先启动，再等待防护回执");
+  assert.ok(navigateAt > waitAt, "防护就绪回执必须先于首文档导航");
+  assert.match(browser.slice(waitAt, navigateAt), /managed_session_timeout/);
+  assert.match(browser, /let status = monitor\.status_view\(\);/);
+  assert.match(browser, /watch_context\.status = status;/);
+  assert.match(browser, /let target_id = managed_cdp::install_session_cookies/);
+  assert.match(browser, /GuardInstalled::for_target\(target_id\.clone\(\)\)/);
+  assert.match(browser, /guarded_target = Some\(target_id\);/);
+  const navigation = browser.slice(waitAt, browser.indexOf("if let Some(tx) = ready_tx", waitAt));
+  assert.match(navigation, /rt::runtime\(\)\.spawn\(async move \{/);
+  assert.match(navigation, /navigate_session\(\s*&endpoint,\s*&session,\s*&target\s*\)\s*\.await\s*\.is_err\(\)/);
+  assert.match(navigation, /status\.mark_monitor_gone\(\);\s*let _ = signals\.send\(cdp::ManagedSignal::ConnectionLost\);/);
+  assert.doesNotMatch(navigation, /ManagedSignal::Expired|report_managed_session_expired|timeout\(/);
+  assert.doesNotMatch(browser, /managed_cdp::inject_session|prepare_logout_watch/);
 
   const cdpSource = readFileSync(new URL("../src-tauri/src/cdp.rs", import.meta.url), "utf8");
   const collectAt = cdpSource.indexOf("pub async fn collect(");

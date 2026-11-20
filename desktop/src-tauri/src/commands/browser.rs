@@ -1,5 +1,6 @@
 //! 浏览器生命周期命令:打开平台、重置持久 profile。
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use super::*;
 /// 打开浏览器后返回的令牌，仅用于把状态机里的会话和 Chromium 进程对上。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrowserHandleView {
+    /// 外部桌面实例持有的浏览器被复用时为 0，本进程不接管其生命周期。
     pub browser_id: u64,
     /// 这个平台的浏览器本来就开着，这次没有启动新的浏览器进程。
     pub reused: bool,
@@ -56,6 +58,22 @@ pub(crate) fn validate_bootstrap_account_id(
         }
     }
     Ok(returned)
+}
+
+async fn wait_for_external_profile_release(profile_dir: &Path) -> CmdResult<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(profile::in_use_by_other_process(profile_dir), Ok(false)) {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(CommandError::new(
+                "桌面端正在关闭现有浏览器，请稍后重试",
+                "browser_close_timeout",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -217,22 +235,63 @@ pub async fn open_browser<R: Runtime>(
         let endpoint = browsers.session_endpoint(browser_id).ok_or_else(|| {
             CommandError::new("平台页面尚未就绪，请稍后重试", "browser_page_unavailable")
         })?;
-        cdp::open_or_activate_page(&endpoint, target.as_str())
-            .await
-            .map_err(|error| {
-                let message = match error {
-                    cdp::CdpError::NoMatchingPage => "平台页面已关闭，请重新初始化浏览器",
-                    _ => "平台页面不可用，请关闭并重新打开浏览器",
-                };
-                CommandError::new(message, "browser_page_unavailable")
-            })?;
-        return Ok(BrowserHandleView {
-            browser_id,
-            reused: true,
-            tab_action: Some("activated".into()),
-            direct_mode,
-            managed: managed_session.is_some(),
-        });
+        match cdp::open_or_activate_page(&endpoint, target.as_str()).await {
+            Ok(_) => {
+                return Ok(BrowserHandleView {
+                    browser_id,
+                    reused: true,
+                    tab_action: Some("activated".into()),
+                    direct_mode,
+                    managed: managed_session.is_some(),
+                });
+            }
+            Err(cdp::CdpError::NoMatchingPage) => {
+                // A stale browser without the requested platform page is
+                // owned by this desktop process, so close it and continue
+                // through the normal fresh-launch path.
+                kill_managed_browser(browsers.inner().clone(), browser_id).await?;
+                state.mark_browser_closed_for(browser_id);
+            }
+            Err(_) => {
+                return Err(CommandError::new(
+                    "平台页面不可用，请稍后重试",
+                    "browser_page_unavailable",
+                ));
+            }
+        }
+    }
+
+    // The browser may belong to another Vestus instance or may have survived
+    // a desktop restart. If its profile is live and CDP is ready, activate the
+    // existing page instead of treating the profile lock as a customer-facing
+    // launch failure. `0` is a sentinel because this process does not own the
+    // external browser session.
+    if let Some(endpoint) = browsers.external_session_endpoint(profile.dir()) {
+        match cdp::open_or_activate_page(&endpoint, target.as_str()).await {
+            Ok(_) => {
+                network.wake();
+                return Ok(BrowserHandleView {
+                    browser_id: 0,
+                    reused: true,
+                    tab_action: Some("activated".into()),
+                    direct_mode,
+                    managed: managed_session.is_some(),
+                });
+            }
+            Err(cdp::CdpError::NoMatchingPage) => {
+                // The external process is stale for this platform. Ask it to
+                // exit through CDP, wait for the profile lock to clear, then
+                // launch a fresh browser without asking the customer to act.
+                let _ = cdp::request_exit(&endpoint).await;
+                wait_for_external_profile_release(profile.dir()).await?;
+            }
+            Err(_) => {
+                return Err(CommandError::new(
+                    "现有浏览器页面暂不可用，请稍后重试",
+                    "browser_page_unavailable",
+                ));
+            }
+        }
     }
 
     // This is the identity on the exact ManagedSession injected below. Reused
@@ -257,6 +316,10 @@ pub async fn open_browser<R: Runtime>(
     // 采集通道：调试端点可读时才开，开不起来也只是这次会话没有日志。
     let activity_collector = activity.inner().clone();
     let browsers_for_activity = browsers.inner().clone();
+    // The browser endpoint becomes available just before `on_ready` runs.
+    // Wake diagnostics there so a sample taken during launch does not leave
+    // the CDP card in the endpoint-unavailable state until the next interval.
+    let network_for_ready = (*network).clone();
     // Activity uploads are authorized against the server-issued base profile
     // key.  The managed account/version suffix is only the local Chromium
     // namespace and must never be sent as the owner's profile identity.
@@ -290,6 +353,8 @@ pub async fn open_browser<R: Runtime>(
                 .identity
                 .clone()
                 .expect("consumed bootstrap has an identity"),
+            // 真实句柄在 on_ready 中由 monitor 创建后覆盖；这里先给安全侧默认值。
+            status: managed_cdp::LoginGuardStatusView::default(),
         });
     let (watch_exit_tx, watch_exit_rx) = if managed_launch {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -311,12 +376,27 @@ pub async fn open_browser<R: Runtime>(
         initial_url,
         disable_sandbox,
         move |endpoint| {
+            network_for_ready.wake();
+            // 托管顺序：先装 Cookie、启动采集并把固定 guard 装好并放行，确认后
+            // 才导航首文档。旧实现先导航再装载，首文档可能完全漏过防护。
             let mut managed_watch = None;
-            let injection = if let Some(session) = managed_session_for_ready {
-                rt::runtime().block_on(async {
-                    // 托管会话的登出/登录页检测与登录页交互锁都由采集连接驱动
-                    // （单 CDP 客户端，v0.2.10 验证过的模型）；第二条防护连接
-                    // 会让 window.open 弹窗停在 about:blank，已废弃。
+            let result = rt::runtime().block_on(async {
+                let mut guard_latch = None;
+                let mut guarded_target = None;
+                let mut navigation_failure = None;
+                if let Some(session) = managed_session_for_ready.as_ref() {
+                    // Cookie 必须在导航前落好；这一步不导航、不碰页面脚本。
+                    let target_id = managed_cdp::install_session_cookies(&endpoint, session)
+                        .await
+                        .map_err(|_| {
+                            CommandError::new(
+                                "托管登录会话注入失败，请重新打开平台或联系管理员",
+                                "managed_session_invalid",
+                            )
+                        })?;
+
+                    // 单个 CDP 连接：采集连接本身驱动登录检测和固定 guard，
+                    // 第二条防护连接会让 window.open 弹窗停在 about:blank。
                     if let Some(context) = logout_context {
                         let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
                         let unavailable = || {
@@ -325,52 +405,86 @@ pub async fn open_browser<R: Runtime>(
                                 "managed_guard_unavailable",
                             )
                         };
+                        let monitor =
+                            managed_cdp::ManagedSessionMonitor::for_session(&session.target_url)
+                                .ok_or_else(unavailable)?;
+                        let status = monitor.status_view();
+                        let installed = managed_cdp::GuardInstalled::for_target(target_id.clone());
+                        guarded_target = Some(target_id);
+                        navigation_failure = Some((status.clone(), signal_tx.clone()));
                         let watch = cdp::ManagedWatch {
                             login_guard_script: managed_cdp::logout_guard_script(
                                 &session.target_url,
                             )
                             .ok_or_else(unavailable)?,
-                            monitor: managed_cdp::ManagedSessionMonitor::for_session(
-                                &session.target_url,
-                            )
-                            .ok_or_else(unavailable)?,
+                            monitor,
                             signals: signal_tx,
+                            status: status.clone(),
+                            guard_installed: installed.clone(),
                         };
                         let exited = watch_exit_rx.ok_or_else(unavailable)?;
-                        rt::runtime().spawn(run_managed_watch(context, signal_rx, exited));
+                        let mut watch_context = context;
+                        watch_context.status = status;
+                        rt::runtime().spawn(run_managed_watch(watch_context, signal_rx, exited));
+                        guard_latch = Some(installed);
                         managed_watch = Some(watch);
                     }
-                    managed_cdp::inject_session(&endpoint, &session)
+                }
+
+                // 采集连接启动：attachedToTarget 时装 guard、放行，并标记就绪闩。
+                let browser_touch = {
+                    let browsers = browsers_for_activity.clone();
+                    Arc::new(move || {
+                        browsers.note_browser_activity(browser_id, platform_id, direct_mode)
+                    })
+                };
+                activity_collector.start(
+                    activity_key,
+                    endpoint.clone(),
+                    activity_owner,
+                    managed_watch,
+                    Some(browser_touch),
+                );
+
+                if let Some(session) = managed_session_for_ready.as_ref() {
+                    let installed = guard_latch.ok_or_else(|| {
+                        CommandError::new(
+                            "托管安全监控无法启用，请重新打开平台",
+                            "managed_guard_unavailable",
+                        )
+                    })?;
+                    if !installed
+                        .wait_ready(managed_cdp::GUARD_INSTALL_TIMEOUT)
                         .await
-                        .map_err(|_| {
-                            CommandError::new(
-                                "托管登录会话注入失败，请重新打开平台或联系管理员",
-                                "managed_session_invalid",
-                            )
-                        })
-                })
-            } else {
+                    {
+                        return Err(CommandError::new(
+                            "托管浏览器防护装载超时，请重新打开平台",
+                            "managed_session_timeout",
+                        ));
+                    }
+                    // 防护回执已确认：初始化期限不再覆盖网站导航/加载等待。
+                    let endpoint = endpoint.clone();
+                    let session = session.clone();
+                    let target = guarded_target.expect("guarded target ready");
+                    let (status, signals) = navigation_failure.expect("managed monitor ready");
+                    rt::runtime().spawn(async move {
+                        if managed_cdp::navigate_session(&endpoint, &session, &target)
+                            .await
+                            .is_err()
+                        {
+                            status.mark_monitor_gone();
+                            let _ = signals.send(cdp::ManagedSignal::ConnectionLost);
+                        }
+                    });
+                }
                 Ok(())
-            };
+            });
             if let Some(tx) = ready_tx {
-                let _ = tx.send(injection.clone());
+                let _ = tx.send(result.clone());
             }
-            if injection.is_err() {
+            if result.is_err() {
                 return;
             }
-            let browser_touch = {
-                let browsers = browsers_for_activity.clone();
-                Arc::new(move || {
-                    browsers.note_browser_activity(browser_id, platform_id, direct_mode)
-                })
-            };
-            activity_collector.start(
-                activity_key,
-                endpoint,
-                activity_owner,
-                managed_watch,
-                Some(browser_touch),
-            );
         },
         move || {
             if let Some(tx) = watch_exit_tx {

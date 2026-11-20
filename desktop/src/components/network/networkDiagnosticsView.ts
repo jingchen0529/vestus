@@ -61,6 +61,11 @@ function toneForStatus(status: string | undefined): "success" | "warning" | "des
   return "destructive";
 }
 
+function shouldShowRoute(key: DiagnosticsRoute, sample: NetworkSample | null): boolean {
+  if (key !== "browser") return true;
+  return ["success", "ok", "testing"].includes(effectiveStatus(sample) ?? "");
+}
+
 /** Converts the IPC snapshot into a stable, route-complete presentation model. */
 export function toNetworkDiagnosticsView(snapshot: NetworkDiagnosticsSnapshot | null): NetworkDiagnosticsViewModel {
   const samples = snapshot?.samples ?? [];
@@ -93,10 +98,11 @@ export function toNetworkDiagnosticsView(snapshot: NetworkDiagnosticsSnapshot | 
 
   return {
     latestAtMs,
-    routes: ROUTES.map(([key, label]) => {
+    routes: ROUTES.flatMap(([key, label]) => {
       const sample = byRoute.get(key) ?? null;
+      if (!shouldShowRoute(key, sample)) return [];
       const status = effectiveStatus(sample);
-      return { key, label, sample, statusLabel: labelForStatus(status), tone: toneForStatus(status) };
+      return [{ key, label, sample, statusLabel: labelForStatus(status), tone: toneForStatus(status) }];
     }),
     uploadLabel,
     uploadTone,

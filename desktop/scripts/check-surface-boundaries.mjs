@@ -65,7 +65,14 @@ function rustBody(source, signature) {
 
 // Ignore formatting, not whitespace inside literals. Used only for the tiny
 // fixed-template expression and CDP parameter values, not whole-file snapshots.
-const compact = (source) => (source.match(/"(?:\\.|[^"\\])*"|\S/g) || []).join("");
+const compact = (source) => {
+  const tokens = source.match(/"(?:\\.|[^"\\])*"|\S/g) || [];
+  // Rustfmt may add trailing commas when it wraps a fixed expression. Ignore
+  // those delimiters only, never commas or whitespace inside quoted values.
+  return tokens.filter((token, index) =>
+    token !== "," || !["}", ")", "]"].includes(tokens[index + 1]),
+  ).join("");
+};
 
 const webAdmin = read("../web/admin.html");
 assert(webAdmin.includes("/api/admin/auth/login"), "Web 管理后台缺少管理员登录接口");
@@ -252,20 +259,69 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
     documentScripts === 1,
     "地址采集只允许安装托管固定 guard 一个文档脚本",
   );
+  // The local source must remain an unchanged clone of the policy-produced field.
+  const installCompact = compact(installBody);
   assert(
-    /"source"\s*:\s*managed\s*\.\s*login_guard_script\b/.test(installBody),
+    /letmanaged=self\.managed\.as_ref\(\)\.map\(\|state\|state\.login_guard_script\.clone\(\)\);/.test(installCompact) &&
+      /ifletSome\(source\)=managed\{/.test(installCompact) &&
+      /"source":source[,}]/.test(installCompact),
     "托管 guard 必须由采集连接安装，且 source 只能来自 policy 生成的固定字段",
   );
   assert(
-    (installBody.match(/"source"\s*:/g) || []).length === 1,
+    (installBody.match(/"source"\s*:/g) || []).length === 1 &&
+      !/\bsource\s*(?:\+=|=(?!=))/.test(installBody),
     "文档脚本只能来自 policy 生成的 guard，不能使用前端动态 source",
   );
   const enableAt = installBody.indexOf('"Page.enable"');
-  const guardAt = installBody.indexOf("managed.login_guard_script");
-  const resumeAt = installBody.indexOf('"Runtime.runIfWaitingForDebugger"');
+  const treeAt = installBody.indexOf('"Page.getFrameTree"');
+  const lifecycleAt = installBody.indexOf('"Page.setLifecycleEventsEnabled"');
+  const guardAt = installBody.indexOf('"Page.addScriptToEvaluateOnNewDocument"');
   assert(
-    enableAt >= 0 && guardAt > enableAt && resumeAt > guardAt,
-    "固定 guard 必须在 Page.enable 之后、放行之前安装",
+    enableAt >= 0 && treeAt > enableAt && lifecycleAt > treeAt && guardAt > lifecycleAt,
+    "固定 guard 必须在 Page.enable 之后、frame tree 与 lifecycle 订阅之后安装",
+  );
+  assert(
+    /"Page\.setLifecycleEventsEnabled",json!\(\{"enabled":true\}\)/.test(installCompact) &&
+      /"source":source,"runImmediately":true/.test(installCompact),
+    "托管 guard 必须订阅 lifecycle 并覆盖当前文档（runImmediately: true）",
+  );
+  assert(
+    (installCompact.match(/GuardRequest::Install\(session_id\.to_string\(\)\)/g) || []).length === 4 &&
+      /ifmanaged\.is_some\(\)\{self\.guard_requests\.insert\(self\.next_id,GuardRequest::Install\(session_id\.to_string\(\)\)\);\}/.test(installCompact) &&
+      !installBody.includes('"Runtime.runIfWaitingForDebugger"') &&
+      /\}else\{commands\.push\(self\.resume_page\(session_id\)\);\}/.test(installCompact) &&
+      (installBody.match(/\.resume_page\(/g) || []).length === 1,
+    "托管安装必须登记四条 ACK，不能在安装命令发送时放行；仅普通页面可立即 resume_page",
+  );
+
+  const ackBody = rustBody(rustCdp, /\bfn\s+acknowledge_guard\s*\(/);
+  const ackCompact = compact(ackBody);
+  const resumeBody = rustBody(rustCdp, /\bfn\s+resume_page\s*\(/);
+  const handleBody = rustBody(rustCdp, /\bfn\s+handle\s*\(/);
+  const sessionCheckAt = ackCompact.indexOf('ifmessage.get("sessionId").and_then(Value::as_str)!=session{return;}');
+  const removeAt = ackCompact.indexOf('self.guard_requests.remove(&id);');
+  const acceptedAt = ackCompact.indexOf('letaccepted=message.get("error").is_none()&&message.get("result").is_some_and(Value::is_object)');
+  const rejectAt = ackCompact.indexOf('if!accepted{out.guard_failed=true;return;}');
+  const resumeAt = ackCompact.indexOf('out.commands.push(self.resume_page(&session));');
+  assert(
+    /letSome\(request\)=self\.guard_requests\.get\(&id\)\.cloned\(\)else\{return;?\};/.test(ackCompact) &&
+      sessionCheckAt >= 0 && acceptedAt > sessionCheckAt && rejectAt > acceptedAt &&
+      removeAt > rejectAt && resumeAt > removeAt &&
+      /self\.acknowledge_guard\(id,&message,&mutout\);/.test(compact(handleBody)),
+    "托管 ACK handler 必须先核对请求 ID、session、无 error 的对象 result，拒绝后退出，才允许 resume_page",
+  );
+  assert(
+    /GuardRequest::Install\(session\)=>\{letpending=self\.guard_requests\.values\(\)\.any\(\|request\|(?:\{)?matches!\(request,GuardRequest::Install\(other\)ifother==&session\)(?:\})?\);if!pending&&self\.sessions\.contains_key\(&session\)\{out\.commands\.push\(self\.resume_page\(&session\)\);\}\}/.test(ackCompact) &&
+      (collectSurface.match(/\.resume_page\(/g) || []).length === 2,
+    "托管页面只能在 ACK handler 确认同 session 全部安装请求完成后 resume_page",
+  );
+  assert(
+    /GuardRequest::Resume\(session\)=>\{ifletSome\(page\)=self\.sessions\.get\(&session\)\{ifletSome\(state\)=self\.managed\.as_ref\(\)\{state\.guard_installed\.mark_for\(&page\.target_id\);\}out\.guard_installed=true;\}\}/.test(ackCompact) &&
+      (collectSurface.match(/\.guard_installed\s*=/g) || []).length === 1 &&
+      (collectSurface.match(/\.mark_for\(/g) || []).length === 1 &&
+      resumeBody.includes('"Runtime.runIfWaitingForDebugger"') &&
+      /GuardRequest::Resume\(session_id\.to_string\(\)\)/.test(resumeBody),
+    "防护就绪只能由成功的 page resume ACK 发布，worker 或命令发送不能置位",
   );
   assert(
     !/__VESTUS_LOGIN_ROUTE__|login_guard\.js|include_str!/.test(rustCdp),

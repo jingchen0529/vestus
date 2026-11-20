@@ -145,32 +145,58 @@ pub(crate) struct ManagedLogoutContext<R: Runtime> {
     pub(crate) auth_generation: u64,
     pub(crate) device_id: Option<String>,
     pub(crate) identity: managed_cdp::ManagedSessionIdentity,
+    /// watcher 强杀前只读复核的阶段；只有监控器判定 ExpiryValid 才动凭据。
+    pub(crate) status: managed_cdp::LoginGuardStatusView,
 }
 
-/// 托管会话的后台监控消费端：等采集连接发来的第一个信号再行动。
-///
-/// `Expired`（平台登出/登录页停留超窗）→ 强杀浏览器并上报凭据过期；
-/// `ConnectionLost`（调试连接断开）→ 本地防护故障，关闭浏览器但绝不动凭据。
-/// 浏览器正常退出会先触发 `exited`，消费端直接返回，不产生任何信号。
+/// 等候经过复核的信号；旧 Expired 在健康监控下被撤销时继续等候，不关闭页面。
+pub(crate) async fn wait_managed_signal(
+    status: &managed_cdp::LoginGuardStatusView,
+    signals: &mut tokio::sync::mpsc::UnboundedReceiver<crate::cdp::ManagedSignal>,
+    exited: &mut tokio::sync::oneshot::Receiver<()>,
+) -> Option<crate::cdp::ManagedSignal> {
+    loop {
+        let signal = tokio::select! {
+            biased;
+            _ = &mut *exited => return None,
+            signal = signals.recv() => signal,
+        };
+        if !matches!(signal, Some(crate::cdp::ManagedSignal::Expired)) {
+            return Some(crate::cdp::ManagedSignal::ConnectionLost);
+        }
+        // 留出一次事件处理窗口，让排队的加载开始、跳离或断连撤销旧判定。
+        tokio::select! {
+            biased;
+            _ = &mut *exited => return None,
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+        match status.current() {
+            managed_cdp::LoginGuardStatus::ExpiryValid => return signal,
+            managed_cdp::LoginGuardStatus::MonitorGone => {
+                return Some(crate::cdp::ManagedSignal::ConnectionLost)
+            }
+            managed_cdp::LoginGuardStatus::NotExpired => {}
+        }
+    }
+}
+
+/// 有效失效才关闭并上报；断连只关闭本地浏览器，不修改凭据。
 pub(crate) async fn run_managed_watch<R: Runtime>(
     context: ManagedLogoutContext<R>,
     mut signals: tokio::sync::mpsc::UnboundedReceiver<crate::cdp::ManagedSignal>,
     mut exited: tokio::sync::oneshot::Receiver<()>,
 ) {
-    let detected = tokio::select! {
-        biased;
-        _ = &mut exited => return,
-        signal = signals.recv() => signal,
-    };
-    match detected {
-        Some(crate::cdp::ManagedSignal::Expired) => {}
-        other => {
+    let closed = loop {
+        let Some(detected) = wait_managed_signal(&context.status, &mut signals, &mut exited).await
+        else {
+            return;
+        };
+        if matches!(detected, crate::cdp::ManagedSignal::ConnectionLost) {
             // Chromium 可能在进程退出回调之前先断开调试连接。这段宽限只为
             // 生命周期收尾，绝不是给仍在运行的未防护进程续命；还活着就强关。
-            if other.is_some()
-                && tokio::time::timeout(Duration::from_millis(200), &mut exited)
-                    .await
-                    .is_ok()
+            if tokio::time::timeout(Duration::from_millis(200), &mut exited)
+                .await
+                .is_ok()
             {
                 return;
             }
@@ -211,24 +237,29 @@ pub(crate) async fn run_managed_watch<R: Runtime>(
             }
             return;
         }
-    }
-    let browsers = context.browsers.clone();
-    let browser_id = context.browser_id;
-    let closed = match rt::runtime()
-        .spawn_blocking(move || {
-            browsers.kill_browser_with_reason(browser_id, CloseReason::ManagedLogout)
-        })
-        .await
-    {
-        Ok(Ok(closed)) => closed,
-        Ok(Err(error)) => {
-            eprintln!("托管会话强杀或清理失败：{error}");
-            false
-        }
-        Err(error) => {
-            eprintln!("托管会话关闭任务失败：{error}");
-            false
-        }
+        let browsers = context.browsers.clone();
+        let browser_id = context.browser_id;
+        let status = context.status.clone();
+        let outcome = rt::runtime()
+            .spawn_blocking(move || {
+                if !status.is_expiry_valid() {
+                    return None;
+                }
+                Some(browsers.kill_browser_with_reason(browser_id, CloseReason::ManagedLogout))
+            })
+            .await;
+        break match outcome {
+            Ok(None) => continue,
+            Ok(Some(Ok(closed))) => closed,
+            Ok(Some(Err(error))) => {
+                eprintln!("托管会话强杀或清理失败：{error}");
+                false
+            }
+            Err(error) => {
+                eprintln!("托管会话关闭任务失败：{error}");
+                false
+            }
+        };
     };
     for attempt in 0..3 {
         match context

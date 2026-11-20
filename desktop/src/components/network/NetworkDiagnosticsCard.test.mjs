@@ -22,7 +22,7 @@ const {
   toNetworkDiagnosticsView,
 } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
-test("网络诊断卡覆盖空态、采样中和三条链路", () => {
+test("网络诊断卡覆盖空态、采样中和有效链路", () => {
   assert.match(viewSource, /等待首次采样/);
   assert.match(card, /采样中/);
   assert.match(viewSource, /管理端/);
@@ -42,7 +42,6 @@ test("网络诊断卡覆盖空态、采样中和三条链路", () => {
     [
       ["管理端", "暂无采样", "secondary"],
       ["VPN 代理", "暂无采样", "secondary"],
-      ["浏览器 CDP", "暂无采样", "secondary"],
     ],
   );
   assert.equal(formatCompactUploadSummary(empty), "暂无上报回执");
@@ -78,10 +77,11 @@ test("视图模型正确映射延迟、异常与紧凑上报摘要", () => {
     queuedCount: 12,
     droppedCount: 2,
   });
-  assert.equal(failed.routes[1].statusLabel, "代理认证失败");
-  assert.equal(failed.routes[1].tone, "destructive");
-  assert.equal(failed.routes[2].statusLabel, "CDP 不可用");
-  assert.equal(failed.routes[2].tone, "warning");
+  assert.deepEqual(failed.routes.map((route) => route.key), ["management", "vpn"]);
+  const failedVpn = failed.routes.find((route) => route.key === "vpn");
+  assert.ok(failedVpn);
+  assert.equal(failedVpn.statusLabel, "代理认证失败");
+  assert.equal(failedVpn.tone, "destructive");
   assert.equal(formatCompactUploadSummary(failed), "上报失败，等待重试");
 
   const droppedOnly = toNetworkDiagnosticsView({
@@ -102,8 +102,8 @@ test("卡片只消费快照，不提供第二个测速入口", () => {
 });
 
 test("宽窄布局都保留三条链路和时间信息，且平台入口启用紧凑模式", () => {
-  assert.match(card, /grid-cols-1[\s\S]*md:grid-cols-3/);
-  assert.match(card, /grid-cols-1[\s\S]*sm:grid-cols-3/);
+  assert.match(card, /compactRouteGridClass/);
+  assert.match(card, /defaultRouteGridClass/);
   assert.match(card, /data-variant="compact"/);
   assert.match(card, /formatDiagnosticsTimestampLabel/);
   assert.match(launcher, /<NetworkDiagnosticsCard[\s\S]*compact[\s\S]*\/>/);

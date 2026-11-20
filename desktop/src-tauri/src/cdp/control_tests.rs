@@ -199,6 +199,9 @@ struct Fixture {
     stderr: File,
     process: Option<crate::browser::TestBrowserProcess>,
     server: tokio::task::JoinHandle<()>,
+    /// 慢加载登录页的 parser-blocking 子资源由测试显式放行。
+    slow_login: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    slow_release: tokio::sync::watch::Sender<bool>,
 }
 
 impl Drop for Fixture {
@@ -254,11 +257,16 @@ impl Fixture {
             "http://127.0.0.1:{}/",
             listener.local_addr().unwrap().port()
         );
+        let slow_login = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let slow = slow_login.clone();
+        let (slow_release, release_rx) = tokio::sync::watch::channel(false);
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     break;
                 };
+                let slow = slow.clone();
+                let mut release_rx = release_rx.clone();
                 tokio::spawn(async move {
                     let mut request = [0; 8192];
                     let Ok(Ok(_)) =
@@ -266,7 +274,21 @@ impl Fixture {
                     else {
                         return;
                     };
-                    let body = r#"<!doctype html><title>Vestus local collector fixture</title>
+                    let request = String::from_utf8_lossy(&request).to_string();
+                    // parser-blocking script keeps this exact login document loading.
+                    // Releasing it heals via SPA before load, without a second navigation.
+                    if request.starts_with("GET /slow-resource ") {
+                        while !*release_rx.borrow_and_update() {
+                            if release_rx.changed().await.is_err() {
+                                return;
+                            }
+                        }
+                        let body = "window.fixtureSlowDocument = true; history.replaceState({}, '', '/workbench');";
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        let _ = stream.write_all(response.as_bytes()).await;
+                        return;
+                    }
+                    let page_body = r#"<!doctype html><title>Vestus local collector fixture</title>
                         <form><input id="input" name="quantity"><input id="checkbox" type="checkbox"><button type="submit">submit</button></form>
                         <iframe id="child" src="/frame"></iframe><div style="height:5000px">Local only</div>
                         <script>
@@ -275,10 +297,14 @@ impl Fixture {
                           fixtureSeen[kind]++; if (kind === 'submit') event.preventDefault();
                         });
                         </script>"#;
-                    let body = if String::from_utf8_lossy(&request).starts_with("GET /frame ") {
-                        "<!doctype html><title>Local child</title><p>iframe</p>"
+                    let body = if request.starts_with("GET /frame ") {
+                        "<!doctype html><title>Local child</title><p>iframe</p>".to_string()
+                    } else if request.starts_with("GET /login ")
+                        && slow.load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        format!("{page_body}<script src=\"/slow-resource\"></script>")
                     } else {
-                        body
+                        page_body.to_string()
                     };
                     let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                     let _ = stream.write_all(response.as_bytes()).await;
@@ -291,6 +317,8 @@ impl Fixture {
             stderr,
             process: None,
             server,
+            slow_login,
+            slow_release,
         }
     }
 
@@ -679,19 +707,14 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
         let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
         let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
         let watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        let installed = watch.guard_installed.clone();
         let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
         let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));
-        // about:blank itself never reports. Wait until the collecting session has
-        // attached before navigating the first real document.
-        let mut ready = false;
-        for _ in 0..100 {
-            let targets = control_command(&endpoint,"Target.getTargets",json!({})).await.unwrap();
-            ready = targets["targetInfos"].as_array().unwrap().iter().any(|t| t["targetId"] == target && t["attached"] == true);
-            if ready { break }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(ready, "collector attached to isolated blank target");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // A target attachment alone is not readiness: require the accepted page resume ACK.
+        assert!(
+            installed.wait_ready(crate::managed_cdp::GUARD_INSTALL_TIMEOUT).await,
+            "collector must accept guard installation and page resume before navigation"
+        );
         test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}workbench?advid=51")})).await;
         expected_report(&mut reports, &format!("{base}workbench"), Some("advid=51")).await;
         assert_eq!(test_evaluate(&endpoint, &target,
@@ -738,6 +761,116 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
         assert!(matches!(signal_rx.recv().await, Some(ManagedSignal::ConnectionLost)));
         assert!(signal_rx.recv().await.is_none());
         eprintln!("Real URL-only and managed-guard acceptance completed");
+    });
+}
+
+/// Slow login document remains guarded beyond the old expiry window, then its
+/// original parser-blocking resource is released and heals to workbench via SPA.
+/// An independent, fully loaded login remains the positive expiry control.
+#[test]
+#[ignore = "requires bundled VESTUS_CONTROL_CHROMIUM; opens isolated real browser windows"]
+fn slow_loading_login_never_expires_until_load_completes() {
+    let executable = PathBuf::from(
+        std::env::var_os("VESTUS_CONTROL_CHROMIUM").expect("bundled Chromium required"),
+    );
+    assert!(executable.is_absolute() && executable.is_file());
+    crate::rt::runtime().block_on(async {
+        let mut fixture = Fixture::new().await;
+        let base = fixture.url.clone();
+        // 让 /login 文档引用一个永不完成的子资源：导航提交后 load 不触发。
+        fixture
+            .slow_login
+            .store(true, std::sync::atomic::Ordering::Release);
+        let endpoint = fixture.launch_with_mode(&executable, "about:blank", true).await;
+        let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        let installed = watch.guard_installed.clone();
+        let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));
+
+        assert!(
+            installed.wait_ready(crate::managed_cdp::GUARD_INSTALL_TIMEOUT).await,
+            "collector must accept guard installation and page resume before slow navigation"
+        );
+
+        // 导航到慢加载登录页：导航提交有访问报告，但 load 不会完成。
+        test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}login")})).await;
+        expected_report(&mut reports, &format!("{base}login"), None).await;
+        assert_eq!(
+            test_evaluate(&endpoint, &target, "({state:document.readyState,guard:Object.hasOwn(window,'__vestusManagedLoginGuard'),inert:document.documentElement.inert})").await,
+            json!({"state":"loading","guard":true,"inert":true}),
+            "original login document must still be loading and guarded"
+        );
+
+        // 跨过两个观察窗都没有 Expired——页面仍在加载。
+        for _ in 0..2 {
+            assert!(
+                timeout(
+                    crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(200),
+                    signal_rx.recv()
+                )
+                .await
+                .is_err(),
+                "仍在加载的登录页不能误判失效"
+            );
+        }
+
+        // Release the original resource only after >8s: no second document is loaded.
+        fixture.slow_release.send(true).unwrap();
+        expected_report(&mut reports, &format!("{base}workbench"), None).await;
+        assert_eq!(
+            test_evaluate(&endpoint, &target, "new Promise(resolve => { const done=()=>resolve({state:document.readyState,route:location.pathname,original:window.fixtureSlowDocument===true,inert:document.documentElement.inert,guard:Object.hasOwn(window,'__vestusManagedLoginGuard')}); document.readyState==='complete'?done():addEventListener('load',done,{once:true}); })").await,
+            json!({"state":"complete","route":"/workbench","original":true,"inert":false,"guard":true}),
+            "the original slow document must heal and unlock via SPA"
+        );
+        assert!(
+            timeout(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(300), signal_rx.recv()).await.is_err(),
+            "healed original document must remain active beyond the expiry window"
+        );
+        close_fixture(&mut fixture, &endpoint).await;
+        let result = timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        assert!(matches!(result, Ok(()) | Err(CdpError::Transport(_))), "collector stopped after verified browser exit: {result:?}");
+        assert!(matches!(signal_rx.recv().await, Some(ManagedSignal::ConnectionLost)));
+        assert!(signal_rx.recv().await.is_none());
+
+        // Independent browser/monitor: a quiet, fully loaded login must still expire.
+        let mut fixture = Fixture::new().await;
+        let base = fixture.url.clone();
+        let endpoint = fixture.launch_with_mode(&executable, "about:blank", true).await;
+        let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        let installed = watch.guard_installed.clone();
+        let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));
+        assert!(installed.wait_ready(crate::managed_cdp::GUARD_INSTALL_TIMEOUT).await);
+        test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}login")})).await;
+        expected_report(&mut reports, &format!("{base}login"), None).await;
+        assert_eq!(
+            test_evaluate(&endpoint, &target, "new Promise(resolve => document.readyState === 'complete' ? resolve(true) : addEventListener('load', () => resolve(true), {once:true}))").await,
+            true,
+            "positive control login must reach complete"
+        );
+        assert!(
+            matches!(
+                timeout(
+                    crate::managed_cdp::LOGIN_SETTLE + Duration::from_secs(1),
+                    signal_rx.recv()
+                )
+                .await,
+                Ok(Some(ManagedSignal::Expired))
+            ),
+            "fully loaded, quiet login must expire"
+        );
+        close_fixture(&mut fixture, &endpoint).await;
+        let result = timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        assert!(
+            matches!(result, Ok(()) | Err(CdpError::Transport(_))),
+            "collector stopped after verified browser exit: {result:?}"
+        );
+        assert!(matches!(signal_rx.recv().await, Some(ManagedSignal::ConnectionLost)));
+        eprintln!("Slow-loading login regression completed");
     });
 }
 

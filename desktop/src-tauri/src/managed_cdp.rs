@@ -7,6 +7,7 @@
 //! on every managed page through a separate, fail-closed connection.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -29,6 +30,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// 它们等的是渲染进程就绪，巨量系页面冷启动可能任意慢，而挂起中的页面
 /// （waitForDebuggerOnStart）本就冻结不可交互，继续等待不构成防护缺口。
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// 等待采集连接装好固定 guard 的最长时间；仅覆盖本机 CDP 装载，不含导航/加载。
+pub(crate) const GUARD_INSTALL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const SET_COOKIES_COMMAND_ID: i64 = 1;
 const NAVIGATE_COMMAND_ID: i64 = 2;
@@ -598,20 +601,87 @@ pub(crate) fn page_navigate_command(session: &ManagedSession) -> Value {
     })
 }
 
-/// Inject a validated managed session into the one existing page target.
+/// Install validated cookies on the one existing page target, without navigating.
 ///
-/// The browser must already have exactly one page target.  This function never
-/// creates a target and never evaluates page JavaScript.  Cookie installation
-/// and navigation use separate short-lived control connections so the fixed
-/// command IDs remain easy to audit and the activity collector's read-only
-/// connection is never reused.
-pub(crate) async fn inject_session(
+/// Called before the collector attaches: cookies must be present when the target
+/// later navigates, but the navigation itself must wait until the collector has
+/// installed the fixed guard (see [`navigate_session`] and `GuardInstalled`).
+/// This function never creates a target or evaluates page JavaScript.
+pub(crate) async fn install_session_cookies(
     endpoint: &DevToolsEndpoint,
     session: &ManagedSession,
+) -> Result<String, ManagedCdpError> {
+    let mut socket = connect(endpoint).await?;
+    let (target_id, attached_session) = attach_single_target(&mut socket, session).await?;
+    let result = send_command(
+        &mut socket,
+        SET_COOKIES_COMMAND_ID,
+        "Network.setCookies",
+        json!({"cookies": session_cookie_values(session)}),
+        Some(&attached_session),
+    )
+    .await;
+    let detach = send_command(
+        &mut socket,
+        DETACH_COMMAND_ID,
+        "Target.detachFromTarget",
+        json!({"sessionId": attached_session}),
+        None,
+    )
+    .await;
+    result?;
+    detach.map(|_| target_id)
+}
+
+/// Navigate the one existing page target to the platform entry.
+///
+/// The caller must first confirm the collector has installed the fixed guard on
+/// this target (via `GuardInstalled`); navigating earlier leaves the first
+/// document unguarded. Never creates a target or evaluates page JavaScript.
+pub(crate) async fn navigate_session(
+    endpoint: &DevToolsEndpoint,
+    session: &ManagedSession,
+    expected_target: &str,
 ) -> Result<(), ManagedCdpError> {
-    let mut navigation_socket = connect(endpoint).await?;
+    let mut socket = connect(endpoint).await?;
+    let (target_id, attached_session) = attach_single_target(&mut socket, session).await?;
+    if target_id != expected_target {
+        return Err(ManagedCdpError::TargetMissing);
+    }
+    let navigate = send_command(
+        &mut socket,
+        NAVIGATE_COMMAND_ID,
+        "Page.navigate",
+        json!({"url": session.target_url}),
+        Some(&attached_session),
+    )
+    .await;
+    let detach = send_command(
+        &mut socket,
+        DETACH_COMMAND_ID,
+        "Target.detachFromTarget",
+        json!({"sessionId": attached_session}),
+        None,
+    )
+    .await;
+    let result = navigate?;
+    if result
+        .get("errorText")
+        .and_then(Value::as_str)
+        .is_some_and(|error| !error.is_empty())
+    {
+        return Err(ManagedCdpError::Command("managed navigation failed".into()));
+    }
+    detach.map(|_| ())
+}
+
+/// Attach to the single validated page target and return its session id.
+async fn attach_single_target(
+    socket: &mut ManagedSocket,
+    session: &ManagedSession,
+) -> Result<(String, String), ManagedCdpError> {
     let targets = send_command(
-        &mut navigation_socket,
+        socket,
         TARGETS_COMMAND_ID,
         "Target.getTargets",
         json!({}),
@@ -620,46 +690,19 @@ pub(crate) async fn inject_session(
     .await?;
     let target_id = select_single_target(&targets, &session.allowed_hosts)?;
     let attach = send_command(
-        &mut navigation_socket,
+        socket,
         ATTACH_COMMAND_ID,
         "Target.attachToTarget",
         json!({"targetId": target_id, "flatten": true}),
         None,
     )
     .await?;
-    let attached_session = attach
+    attach
         .get("sessionId")
         .and_then(Value::as_str)
-        .ok_or(ManagedCdpError::InvalidResponse)?
-        .to_string();
-
-    send_command(
-        &mut navigation_socket,
-        SET_COOKIES_COMMAND_ID,
-        "Network.setCookies",
-        json!({"cookies": session_cookie_values(session)}),
-        Some(&attached_session),
-    )
-    .await?;
-
-    let navigate = send_command(
-        &mut navigation_socket,
-        NAVIGATE_COMMAND_ID,
-        "Page.navigate",
-        json!({"url": session.target_url}),
-        Some(&attached_session),
-    )
-    .await;
-    let detach = send_command(
-        &mut navigation_socket,
-        DETACH_COMMAND_ID,
-        "Target.detachFromTarget",
-        json!({"sessionId": attached_session}),
-        None,
-    )
-    .await;
-    navigate?;
-    detach.map(|_| ())
+        .filter(|id| !id.is_empty())
+        .map(|session_id| (target_id, session_id.to_string()))
+        .ok_or(ManagedCdpError::InvalidResponse)
 }
 
 fn session_cookie_values(session: &ManagedSession) -> Vec<Value> {
@@ -766,13 +809,129 @@ impl LogoutPolicy {
 }
 
 /// 主 frame 落到登录页后等待自动跳转；固定脚本在整个等待窗口内锁住登录交互。
+///
+/// 观察窗只在「当前登录文档已加载完成、且仍稳定停留在 /login」之后才开始计时。
+/// 导航提交（`Page.frameNavigated`）只代表开始加载，慢加载期间绝不判失效。
 pub(crate) const LOGIN_SETTLE: Duration = Duration::from_secs(4);
+/// 截止点到达后给已排队的加载/跳转事件一次消费机会，避免调度抖动把旧文档误判为失效。
+/// 这段宽限只作用于采集连接的计时器，稳定登录页仍会在很短窗口内发出失效信号。
+pub(crate) const LOGIN_EXPIRY_CONFIRM_GRACE: Duration = Duration::from_millis(100);
+
+/// watcher 在强杀前只读复核的判定阶段。只有 `ExpiryValid` 允许动凭据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoginGuardStatus {
+    /// 监控器已判定失效（显式登出，或已加载完成的登录页稳定停留超窗）。
+    ExpiryValid,
+    /// 仍在加载、未到登录页或已跳走：保持浏览器，不能判凭据失效。
+    NotExpired,
+    /// 采集连接已断开：登录防护不再有效，按本地故障关闭，绝不动凭据。
+    MonitorGone,
+}
+
+const STATUS_NOT_EXPIRED: u8 = 0;
+const STATUS_EXPIRY_VALID: u8 = 1;
+const STATUS_MONITOR_GONE: u8 = 2;
+
+/// 采集连接写入、watcher 只读复核的原子阶段。默认 `NotExpired`，即安全侧。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LoginGuardStatusView {
+    value: Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl LoginGuardStatusView {
+    fn publish(&self, status: LoginGuardStatus) {
+        let code = match status {
+            LoginGuardStatus::ExpiryValid => STATUS_EXPIRY_VALID,
+            LoginGuardStatus::NotExpired => STATUS_NOT_EXPIRED,
+            LoginGuardStatus::MonitorGone => STATUS_MONITOR_GONE,
+        };
+        let _ = self.value.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |current| (current != STATUS_MONITOR_GONE).then_some(code),
+        );
+    }
+
+    pub(crate) fn current(&self) -> LoginGuardStatus {
+        match self.value.load(std::sync::atomic::Ordering::Acquire) {
+            STATUS_EXPIRY_VALID => LoginGuardStatus::ExpiryValid,
+            STATUS_MONITOR_GONE => LoginGuardStatus::MonitorGone,
+            _ => LoginGuardStatus::NotExpired,
+        }
+    }
+
+    /// 断连必须撤销尚未消费的失效信号，先更新状态再发送 ConnectionLost。
+    pub(crate) fn mark_monitor_gone(&self) {
+        self.publish(LoginGuardStatus::MonitorGone);
+    }
+
+    /// 只读检查；Expired 分支强杀前复核，只有 ExpiryValid 才允许动凭据。
+    pub(crate) fn is_expiry_valid(&self) -> bool {
+        self.current() == LoginGuardStatus::ExpiryValid
+    }
+}
+
+/// 采集连接装好托管 guard、可以安全导航的就绪闩。
+///
+/// 只有采集连接写完 `Runtime.runIfWaitingForDebugger`（guard 安装之后最后一条命令）
+/// 才置位；命令层先等它再 `Page.navigate`，消除首文档防护缺口。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GuardInstalled {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+    target: Option<String>,
+}
+
+impl GuardInstalled {
+    pub(crate) fn for_target(target: String) -> Self {
+        Self {
+            target: Some(target),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn mark_for(&self, target: &str) {
+        if self
+            .target
+            .as_deref()
+            .is_none_or(|expected| expected == target)
+        {
+            self.flag.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_ready(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 等待采集连接装好 guard；超时返回 false，调用方按初始化失败处理。
+    pub(crate) async fn wait_ready(&self, budget: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            if self.flag.load(std::sync::atomic::Ordering::Acquire) {
+                return true;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            tokio::time::sleep((deadline - now).min(Duration::from_millis(20))).await;
+        }
+    }
+}
 
 struct LogoutDetector {
     policy: LogoutPolicy,
     /// 每个已接管的标签页会话 -> 其主 frame id。只有这里登记过的会话会被
     /// 处理；复制标签页、新开标签页与首个标签页一视同仁。
     sessions: HashMap<String, Option<String>>,
+    /// 主 frame 当前落在 /login 的会话。
+    on_login: HashSet<String>,
+    /// 当前主文档的 loaderId；生命周期事件必须同时匹配主 frame 和 loader。
+    loaders: HashMap<String, String>,
+    /// 当前主文档已加载；业务文档的 load 也需记录，以覆盖 SPA 进入登录页。
+    loaded: HashSet<String>,
+    /// 已加载完成且仍停留在 /login 的会话 -> 自愈截止时刻。只有这些会话计时。
     pending_login: HashMap<String, tokio::time::Instant>,
     detected: bool,
 }
@@ -782,6 +941,9 @@ impl LogoutDetector {
         Self {
             policy,
             sessions: HashMap::new(),
+            on_login: HashSet::new(),
+            loaders: HashMap::new(),
+            loaded: HashSet::new(),
             pending_login: HashMap::new(),
             detected: false,
         }
@@ -792,7 +954,7 @@ impl LogoutDetector {
         !self.sessions.is_empty()
     }
 
-    /// 有标签页停在登录页时返回其自愈截止时刻；调用方据此把等待变成限时等待。
+    /// 有「已加载完成且仍停留在 /login」的页面时返回最早的自愈截止时刻。
     fn login_deadline(&self) -> Option<tokio::time::Instant> {
         self.pending_login
             .values()
@@ -800,7 +962,7 @@ impl LogoutDetector {
             .min()
     }
 
-    /// 截止时刻已到：登录页还没跳走，托管凭据判定失效。
+    /// 截止时刻已到：登录页加载完成后还没跳走，托管凭据判定失效。
     fn login_expired_at(&self, now: tokio::time::Instant) -> bool {
         self.login_deadline()
             .is_some_and(|deadline| now >= deadline)
@@ -836,6 +998,9 @@ impl LogoutDetector {
                 if let Some(session_id) = event.pointer("/params/sessionId").and_then(Value::as_str)
                 {
                     self.sessions.remove(session_id);
+                    self.on_login.remove(session_id);
+                    self.loaders.remove(session_id);
+                    self.loaded.remove(session_id);
                     // 关掉的标签页只移除自己的等待，不影响其他登录页。
                     self.pending_login.remove(session_id);
                 }
@@ -863,11 +1028,55 @@ impl LogoutDetector {
                             if event.pointer("/params/frameId").and_then(Value::as_str)
                                 == Some(main_frame_id)
                             {
-                                self.observe_url(
+                                self.observe_within_document(
                                     session_id,
                                     event.pointer("/params/url").and_then(Value::as_str),
                                 );
                             }
+                        }
+                    }
+                    Some("Page.lifecycleEvent") => {
+                        let is_main = self
+                            .sessions
+                            .get(session_id)
+                            .and_then(Option::as_deref)
+                            .is_some_and(|main| {
+                                event.pointer("/params/frameId").and_then(Value::as_str)
+                                    == Some(main)
+                            });
+                        if !is_main {
+                            return;
+                        }
+                        match event.pointer("/params/name").and_then(Value::as_str) {
+                            Some("init") => {
+                                let Some(loader) = event
+                                    .pointer("/params/loaderId")
+                                    .and_then(Value::as_str)
+                                    .filter(|loader| !loader.is_empty())
+                                else {
+                                    return;
+                                };
+                                // init announces the new document loader. Clear the old
+                                // document first, then bind subsequent load to this loader.
+                                self.loading_started(session_id);
+                                self.loaders
+                                    .insert(session_id.to_string(), loader.to_string());
+                            }
+                            Some("load") => {
+                                let loader =
+                                    event.pointer("/params/loaderId").and_then(Value::as_str);
+                                if self.loaders.get(session_id).map(String::as_str) == loader {
+                                    self.observe_loaded(session_id);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some("Page.frameStartedLoading") => {
+                        if event.pointer("/params/frameId").and_then(Value::as_str)
+                            == self.sessions.get(session_id).and_then(Option::as_deref)
+                        {
+                            self.loading_started(session_id);
                         }
                     }
                     _ => {}
@@ -888,6 +1097,16 @@ impl LogoutDetector {
             if let Some(tracked) = self.sessions.get_mut(session_id) {
                 *tracked = Some(id.to_string());
             }
+            self.loading_started(session_id);
+            self.loaders.remove(session_id);
+            if let Some(loader) = frame
+                .get("loaderId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                self.loaders
+                    .insert(session_id.to_string(), loader.to_string());
+            }
             self.observe_url(session_id, frame.get("url").and_then(Value::as_str));
         }
     }
@@ -895,16 +1114,58 @@ impl LogoutDetector {
     fn observe_url(&mut self, session_id: &str, url: Option<&str>) {
         let Some(url) = url else { return };
         if self.policy.matches(url) {
+            // 显式登出不依赖页面加载状态，立即判定。
+            self.detected = true;
+            return;
+        }
+        // 整文档导航意味着旧文档不会再发 load；清掉它的加载标记与计时，
+        // 任何仍在 /login 的计时都要等新文档 load 后才能重新开始。
+        self.loaded.remove(session_id);
+        self.pending_login.remove(session_id);
+        if self.policy.matches_login(url) {
+            // 只登记「当前在登录页」，真正计时在 observe_loaded 中进行。
+            self.on_login.insert(session_id.to_string());
+        } else {
+            self.on_login.remove(session_id);
+        }
+    }
+
+    /// 同文档导航（SPA 的 history 变更）。文档本身没有重新加载，加载完成门禁
+    /// 保持有效：已加载的文档切到 /login 仍按稳定停留处理，可以开始计时；
+    /// 切离 /login 则撤销计时。
+    fn observe_within_document(&mut self, session_id: &str, url: Option<&str>) {
+        let Some(url) = url else { return };
+        if self.policy.matches(url) {
             self.detected = true;
             return;
         }
         if self.policy.matches_login(url) {
-            // 每个标签首次落地各自计时；另一个标签的跳转不能延长或清掉它。
+            self.on_login.insert(session_id.to_string());
+            if self.loaded.contains(session_id) {
+                // 文档已在 /login 稳定加载，SPA 改路由到登录子路径仍需观察。
+                self.pending_login
+                    .entry(session_id.to_string())
+                    .or_insert_with(tokio::time::Instant::now);
+            }
+        } else {
+            self.on_login.remove(session_id);
+            self.pending_login.remove(session_id);
+        }
+    }
+
+    fn loading_started(&mut self, session_id: &str) {
+        self.loaded.remove(session_id);
+        self.pending_login.remove(session_id);
+        self.loaders.remove(session_id);
+    }
+
+    /// 生命周期 load 只标记当前主文档；仍在登录路由时开始观察窗。
+    fn observe_loaded(&mut self, session_id: &str) {
+        self.loaded.insert(session_id.to_string());
+        if self.on_login.contains(session_id) {
             self.pending_login
                 .entry(session_id.to_string())
                 .or_insert_with(tokio::time::Instant::now);
-        } else {
-            self.pending_login.remove(session_id);
         }
     }
 }
@@ -916,6 +1177,8 @@ impl LogoutDetector {
 pub(crate) struct ManagedSessionMonitor {
     detector: LogoutDetector,
     notified: bool,
+    /// watcher 只读复核的阶段；只有监控器明确发布 ExpiryValid 才允许动凭据。
+    status: LoginGuardStatusView,
 }
 
 impl ManagedSessionMonitor {
@@ -923,13 +1186,27 @@ impl ManagedSessionMonitor {
         LogoutPolicy::for_platform(target_url).map(|policy| Self {
             detector: LogoutDetector::new(policy),
             notified: false,
+            status: LoginGuardStatusView::default(),
         })
+    }
+
+    /// 交给 watcher 的只读复核句柄；与监控器共享同一原子阶段。
+    pub(crate) fn status_view(&self) -> LoginGuardStatusView {
+        self.status.clone()
     }
 
     /// 更新导航状态；仅显式登出立即通知，停留超窗由采集连接的截止时间判断。
     pub(crate) fn observe(&mut self, event: &Value) -> bool {
         self.detector.observe(event);
-        if !self.notified && self.detector.detected {
+        let valid =
+            self.detector.detected || self.detector.login_expired_at(tokio::time::Instant::now());
+        if !valid {
+            self.notified = false;
+            self.status.publish(LoginGuardStatus::NotExpired);
+            return false;
+        }
+        self.status.publish(LoginGuardStatus::ExpiryValid);
+        if self.detector.detected && !self.notified {
             self.notified = true;
             return true;
         }
@@ -950,6 +1227,7 @@ impl ManagedSessionMonitor {
                 || self.detector.login_expired_at(tokio::time::Instant::now()))
         {
             self.notified = true;
+            self.status.publish(LoginGuardStatus::ExpiryValid);
             return true;
         }
         false
@@ -1022,9 +1300,13 @@ async fn connect(endpoint: &DevToolsEndpoint) -> Result<ManagedSocket, ManagedCd
     .map_err(|error| ManagedCdpError::Connect(error.to_string()))?;
     let _ = stream.set_nodelay(true);
     let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE_BYTES));
-    let (socket, _) = client_async_with_config(endpoint.websocket_url(), stream, Some(config))
-        .await
-        .map_err(|error| ManagedCdpError::Connect(error.to_string()))?;
+    let (socket, _) = timeout(
+        CONNECT_TIMEOUT,
+        client_async_with_config(endpoint.websocket_url(), stream, Some(config)),
+    )
+    .await
+    .map_err(|_| ManagedCdpError::Connect("等待握手超时".into()))?
+    .map_err(|error| ManagedCdpError::Connect(error.to_string()))?;
     Ok(socket)
 }
 
@@ -1080,9 +1362,13 @@ async fn send_command_observing(
         }
         Err(ManagedCdpError::Transport("调试通道在回执之前关闭".into()))
     };
-    timeout(COMMAND_TIMEOUT, exchange)
-        .await
-        .map_err(|_| ManagedCdpError::Timeout)?
+    if method == "Page.navigate" {
+        exchange.await
+    } else {
+        timeout(COMMAND_TIMEOUT, exchange)
+            .await
+            .map_err(|_| ManagedCdpError::Timeout)?
+    }
 }
 
 #[cfg(test)]
@@ -1396,6 +1682,30 @@ mod tests {
                 Err(ManagedCdpError::SessionIdentityInvalid)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn login_guard_status_revokes_expiry_on_disconnect() {
+        let view = LoginGuardStatusView::default();
+        assert_eq!(view.current(), LoginGuardStatus::NotExpired);
+        assert!(!view.is_expiry_valid());
+        view.publish(LoginGuardStatus::ExpiryValid);
+        assert!(view.is_expiry_valid());
+        view.mark_monitor_gone();
+        assert_eq!(view.current(), LoginGuardStatus::MonitorGone);
+        assert!(!view.is_expiry_valid());
+    }
+
+    #[tokio::test]
+    async fn guard_installed_latch_waits_for_marker() {
+        let latch = GuardInstalled::for_target("T1".into());
+        assert!(!latch.is_ready());
+        assert!(!latch.wait_ready(Duration::from_millis(100)).await);
+        latch.mark_for("worker");
+        assert!(!latch.is_ready());
+        latch.mark_for("T1");
+        assert!(latch.is_ready());
+        assert!(latch.wait_ready(Duration::from_millis(100)).await);
     }
 }
 

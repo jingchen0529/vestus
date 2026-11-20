@@ -153,12 +153,17 @@ pub(crate) struct ManagedWatch {
     pub(crate) login_guard_script: String,
     pub(crate) monitor: crate::managed_cdp::ManagedSessionMonitor,
     pub(crate) signals: tokio::sync::mpsc::UnboundedSender<ManagedSignal>,
+    /// watcher 只读复核的判定阶段；与 monitor 共享同一原子值。
+    pub(crate) status: crate::managed_cdp::LoginGuardStatusView,
+    /// guard 安装完成的就绪闩；命令层据此决定何时 Page.navigate。
+    pub(crate) guard_installed: crate::managed_cdp::GuardInstalled,
 }
 
 struct ManagedCollectorState {
     login_guard_script: String,
     signals: tokio::sync::mpsc::UnboundedSender<ManagedSignal>,
     monitor: crate::managed_cdp::ManagedSessionMonitor,
+    guard_installed: crate::managed_cdp::GuardInstalled,
 }
 
 /// 把一个 Chromium 进程的活动采集到 `sink`，直到调试通道关闭（通常就是浏览器退出）。
@@ -172,10 +177,13 @@ pub async fn collect(
     sink: UnboundedSender<PageReport>,
     managed: Option<ManagedWatch>,
 ) -> Result<(), CdpError> {
+    let status = managed.as_ref().map(|watch| watch.status.clone());
     let signals = managed.as_ref().map(|watch| watch.signals.clone());
     let result = collect_events(endpoint, sink, managed).await;
-    // Expired is queued first; every exit, including connect/send/read failures,
-    // delivers exactly one ConnectionLost on the managed seam.
+    // 撤销旧 Expired 后再通知，排队的失效信号不能掩盖断连。
+    if let Some(status) = status {
+        status.mark_monitor_gone();
+    }
     if let Some(signals) = signals {
         let _ = signals.send(ManagedSignal::ConnectionLost);
     }
@@ -192,6 +200,7 @@ async fn collect_events(
         login_guard_script: watch.login_guard_script,
         signals: watch.signals,
         monitor: watch.monitor,
+        guard_installed: watch.guard_installed,
     });
 
     let (mut writer, mut reader) = socket.split();
@@ -223,6 +232,11 @@ async fn collect_events(
                     std::future::pending::<()>().await;
                 }
             } => {
+                // Let queued Page.frameStartedLoading / lifecycle events clear a
+                // superseded login deadline before publishing Expired. The
+                // downstream watcher has a separate status recheck, but the
+                // collector must also avoid emitting a stale raw signal.
+                tokio::time::sleep(crate::managed_cdp::LOGIN_EXPIRY_CONFIRM_GRACE).await;
                 if let Some(state) = collector.managed.as_mut() {
                     if state.monitor.expire_due() {
                         let _ = state.signals.send(ManagedSignal::Expired);
@@ -240,15 +254,20 @@ async fn collect_events(
             _ => continue,
         };
         let handled = collector.handle(&text);
+        if handled.guard_failed {
+            return Err(CdpError::Command(
+                "managed guard installation failed".into(),
+            ));
+        }
         for report in handled.reports {
             // 接收端没了说明这次会话已经收尾，继续采集没有意义。
             if sink.send(report).is_err() {
                 return Ok(());
             }
         }
-        for command in handled.commands {
+        for command in &handled.commands {
             writer
-                .send(Message::Text(command.into()))
+                .send(Message::Text(command.clone().into()))
                 .await
                 .map_err(|error| CdpError::Transport(error.to_string()))?;
         }
@@ -514,6 +533,9 @@ fn is_sensitive_key(key: &str) -> bool {
 struct Handled {
     commands: Vec<String>,
     reports: Vec<PageReport>,
+    /// 本批处理包含一次托管 page 的完整 install+放行，guard 已就位。
+    guard_installed: bool,
+    guard_failed: bool,
 }
 
 /// 协议状态机。刻意不碰 IO，于是整套分支都能在没有浏览器的情况下测。
@@ -534,6 +556,14 @@ struct Collector {
     sessions: HashMap<String, PageSession>,
     /// Exactly one initial frame-tree request per installed target.
     frame_tree_requests: HashMap<i64, String>,
+    guard_requests: HashMap<i64, GuardRequest>,
+}
+
+#[derive(Clone)]
+enum GuardRequest {
+    Install(String),
+    Resume(String),
+    AutoAttach,
 }
 
 #[derive(Default)]
@@ -557,6 +587,7 @@ impl Default for Collector {
             get_targets_id: 0,
             sessions: HashMap::new(),
             frame_tree_requests: HashMap::new(),
+            guard_requests: HashMap::new(),
         }
     }
 }
@@ -579,6 +610,10 @@ impl Collector {
                 "flatten": true,
             }),
         );
+        if self.managed.is_some() {
+            self.guard_requests
+                .insert(self.next_id, GuardRequest::AutoAttach);
+        }
         let get_targets = self.command(None, "Target.getTargets", json!({}));
         self.get_targets_id = self.next_id;
         vec![auto_attach, get_targets]
@@ -593,31 +628,100 @@ impl Collector {
         message.to_string()
     }
 
-    /// 给一个刚附上的 page session 装采集与固定防护，并放行它。
+    /// 托管页面必须收到所有安装回执后才放行；普通页面保留原有放行顺序。
     fn install(&mut self, session_id: &str) -> Vec<String> {
+        let managed = self
+            .managed
+            .as_ref()
+            .map(|state| state.login_guard_script.clone());
         let mut commands = vec![self.command(Some(session_id), "Page.enable", json!({}))];
+        if managed.is_some() {
+            self.guard_requests
+                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        }
         commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
         self.frame_tree_requests
             .insert(self.next_id, session_id.to_string());
-        if let Some(managed) = &self.managed {
-            // 登录页交互锁：仅托管模式按文档起始执行；暂停期间注册，
-            // 放行后的首个真实文档（含弹窗内容页）必然被覆盖。
+        if let Some(source) = managed {
+            self.guard_requests
+                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+            commands.push(self.command(
+                Some(session_id),
+                "Page.setLifecycleEventsEnabled",
+                json!({"enabled": true}),
+            ));
+            self.guard_requests
+                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
             commands.push(self.command(
                 Some(session_id),
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({
-                    "source": managed.login_guard_script,
-                    "runImmediately": false,
-                }),
+                json!({"source": source, "runImmediately": true}),
             ));
+            self.guard_requests
+                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        } else {
+            commands.push(self.resume_page(session_id));
         }
-        // 必须最后发：放行之前所有订阅都得就位，否则首个文档会漏采。
-        commands.push(self.command(
+        commands
+    }
+
+    fn resume_page(&mut self, session_id: &str) -> String {
+        let command = self.command(
             Some(session_id),
             "Runtime.runIfWaitingForDebugger",
             json!({}),
-        ));
-        commands
+        );
+        if self.managed.is_some() {
+            self.guard_requests
+                .insert(self.next_id, GuardRequest::Resume(session_id.to_string()));
+        }
+        command
+    }
+
+    fn acknowledge_guard(&mut self, id: i64, message: &Value, out: &mut Handled) {
+        let Some(request) = self.guard_requests.get(&id).cloned() else {
+            return;
+        };
+        let session = match &request {
+            GuardRequest::Install(session) | GuardRequest::Resume(session) => {
+                Some(session.as_str())
+            }
+            GuardRequest::AutoAttach => None,
+        };
+        if message.get("sessionId").and_then(Value::as_str) != session {
+            return;
+        }
+        let accepted = message.get("error").is_none()
+            && message.get("result").is_some_and(Value::is_object)
+            && (!self.frame_tree_requests.contains_key(&id)
+                || message
+                    .pointer("/result/frameTree/frame/id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty()));
+        if !accepted {
+            out.guard_failed = true;
+            return;
+        }
+        self.guard_requests.remove(&id);
+        match request {
+            GuardRequest::Install(session) => {
+                let pending = self.guard_requests.values().any(
+                    |request| matches!(request, GuardRequest::Install(other) if other == &session),
+                );
+                if !pending && self.sessions.contains_key(&session) {
+                    out.commands.push(self.resume_page(&session));
+                }
+            }
+            GuardRequest::Resume(session) => {
+                if let Some(page) = self.sessions.get(&session) {
+                    if let Some(state) = self.managed.as_ref() {
+                        state.guard_installed.mark_for(&page.target_id);
+                    }
+                    out.guard_installed = true;
+                }
+            }
+            GuardRequest::AutoAttach => {}
+        }
     }
 
     /// 放行一个我们不采集的 target，然后断开它。
@@ -657,6 +761,10 @@ impl Collector {
         };
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             if let Some(id) = message.get("id").and_then(Value::as_i64) {
+                self.acknowledge_guard(id, &message, &mut out);
+                if out.guard_failed {
+                    return out;
+                }
                 if id == self.get_targets_id {
                     out.commands = self.attach_existing_pages(&message);
                 } else if let Some(session) = self.frame_tree_requests.get(&id).cloned() {
@@ -685,6 +793,9 @@ impl Collector {
                     self.sessions.remove(gone);
                     self.frame_tree_requests
                         .retain(|_, session| session != gone);
+                    self.guard_requests.retain(|_, request| {
+                        !matches!(request, GuardRequest::Install(session) | GuardRequest::Resume(session) if session == gone)
+                    });
                 }
             }
             // 整文档跳转。只认主框架：iframe 的导航不是「用户访问了一个页面」。
@@ -694,6 +805,19 @@ impl Collector {
             "Page.frameNavigated" if self.is_installed_session(session_id) => {
                 let frame = params.get("frame").unwrap_or(&Value::Null);
                 if frame.get("parentId").is_none() {
+                    if self.managed.is_some()
+                        && (frame
+                            .get("unreachableUrl")
+                            .and_then(Value::as_str)
+                            .is_some_and(|url| !url.is_empty())
+                            || frame
+                                .get("url")
+                                .and_then(Value::as_str)
+                                .is_some_and(|url| url.starts_with("chrome-error://")))
+                    {
+                        out.guard_failed = true;
+                        return out;
+                    }
                     self.main_frame_navigation(session_id.unwrap(), frame, &mut out);
                 }
             }
@@ -753,9 +877,10 @@ impl Collector {
                 self.is_installed_session(params.get("sessionId").and_then(Value::as_str))
             }
             "Target.detachedFromTarget" => true,
-            "Page.frameNavigated" | "Page.navigatedWithinDocument" => {
-                self.is_installed_session(session_id)
-            }
+            "Page.frameNavigated"
+            | "Page.navigatedWithinDocument"
+            | "Page.lifecycleEvent"
+            | "Page.frameStartedLoading" => self.is_installed_session(session_id),
             _ => false,
         };
         if monitor_event {
@@ -1070,6 +1195,7 @@ mod tests {
                     "https://agent.oceanengine.com/",
                 )
                 .unwrap(),
+                guard_installed: crate::managed_cdp::GuardInstalled::default(),
             }),
             ..Collector::default()
         };
@@ -1094,11 +1220,28 @@ mod tests {
             })
             .collect();
         assert_eq!(scripts, vec!["(() => {})();"], "only fixed login guard");
-        assert_eq!(
-            method_of(handled.commands.last().unwrap()),
-            "Runtime.runIfWaitingForDebugger",
-            "放行必须是最后一条"
-        );
+        assert!(handled
+            .commands
+            .iter()
+            .all(|command| method_of(command) != "Runtime.runIfWaitingForDebugger"));
+        let mut resumed = Vec::new();
+        for command in &handled.commands {
+            let command: Value = serde_json::from_str(command).unwrap();
+            let result = if command["method"] == "Page.getFrameTree" {
+                json!({"frameTree":{"frame":{"id":"main","loaderId":"L0","url":"about:blank"}}})
+            } else {
+                json!({})
+            };
+            resumed.extend(
+                collector
+                    .handle(
+                        &json!({"id":command["id"],"sessionId":"S1","result":result}).to_string(),
+                    )
+                    .commands,
+            );
+        }
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(method_of(&resumed[0]), "Runtime.runIfWaitingForDebugger");
         assert!(signal_rx.try_recv().is_err());
 
         // 弹窗同样暂停 + 固定防护 + 放行（独立 targetId，不是已有页面的重复会话）。
@@ -1128,6 +1271,7 @@ mod tests {
                     "https://agent.oceanengine.com/",
                 )
                 .unwrap(),
+                guard_installed: crate::managed_cdp::GuardInstalled::default(),
             }),
             ..Collector::default()
         };
@@ -1159,6 +1303,7 @@ mod tests {
                     "https://agent.oceanengine.com/",
                 )
                 .unwrap(),
+                guard_installed: crate::managed_cdp::GuardInstalled::default(),
             }),
             ..Collector::default()
         };
@@ -1169,22 +1314,31 @@ mod tests {
             "https://agent.oceanengine.com/workbench",
         ));
 
-        // 登录页停留：观察窗内不报；到期后产生 Expired 信号。
+        // 登录页停留：加载完成才开始观察窗，窗口内不报；到期后产生 Expired 信号。
         collector.handle(
             &json!({"method": "Page.frameNavigated", "sessionId": "S1",
-                "params": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/login"}}})
+                "params": {"frame": {"id": "main", "loaderId":"L1", "url": "https://agent.oceanengine.com/login"}}})
             .to_string(),
         );
-        assert!(signal_rx.try_recv().is_err(), "观察窗内不报");
+        assert!(signal_rx.try_recv().is_err(), "仅导航提交不开始计时");
         std::thread::sleep(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(50));
+        assert!(
+            !collector.managed.as_mut().unwrap().monitor.expire_due(),
+            "没有加载完成事件时即使过了时长也不判失效"
+        );
+        // load 之后才开始 4 秒窗口：load 后立即不报。
         collector.handle(
-            &json!({"method": "Page.frameNavigated", "sessionId": "S1",
-                "params": {"frame": {"id": "main", "url": "https://agent.oceanengine.com/login"}}})
+            &json!({"method": "Page.lifecycleEvent", "sessionId": "S1",
+                "params": {"frameId": "main", "loaderId":"L1", "name":"load"}})
             .to_string(),
         );
-        assert!(signal_rx.try_recv().is_err(), "事件不会代替截止时间判定");
+        assert!(
+            !collector.managed.as_mut().unwrap().monitor.expire_due(),
+            "load 后仍在观察窗内"
+        );
+        std::thread::sleep(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(50));
         let state = collector.managed.as_mut().unwrap();
-        assert!(state.monitor.expire_due());
+        assert!(state.monitor.expire_due(), "加载完成且稳定停留超窗才判失效");
         let _ = state.signals.send(ManagedSignal::Expired);
         assert!(matches!(
             signal_rx.try_recv().unwrap(),

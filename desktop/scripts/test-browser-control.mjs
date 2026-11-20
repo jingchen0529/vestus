@@ -9,10 +9,11 @@ const desktop = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requiredTests = [
   "cdp::control_tests::target_commands_work_against_a_real_browser",
   "cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser",
+  "cdp::control_tests::slow_loading_login_never_expires_until_load_completes",
 ];
 const args = [
   "test", "--locked", "--lib",
-  "--", "--ignored", "--test-threads=1",
+  "--", "--ignored", "--exact", "--test-threads=1",
 ];
 
 // Keep the subprocess boundary injectable: Node regressions do not launch Chromium or Rust.
@@ -88,7 +89,7 @@ export async function runControlTest({
     && requiredTests.every((name) => testNames.includes(name));
   const passed = !failure && exitCode === 0 && !signal && ran;
   if (!passed && !failure) {
-    const message = "Control gate requires cargo exit 0 without a signal and exactly 2 named passing real-browser tests (lifecycle and URL-only collection/guard), 0 failed, 0 ignored; refusing a false success.\n";
+    const message = `Control gate requires cargo exit 0 without a signal and exactly ${requiredTests.length} named passing real-browser tests (lifecycle, URL-only collection/guard, and slow-loading login heal), 0 failed, 0 ignored; refusing a false success.\n`;
     appendFileSync(logPath, message);
     stderr.write(message);
   }

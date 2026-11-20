@@ -74,16 +74,69 @@ impl Collector {
         }))]
     }
     fn install(&mut self, session_id: &str) -> Vec<String> {
-        let mut commands = vec![
-            self.command(Some(session_id), "Page.enable", json!({})),
-            self.command(Some(session_id), "Page.getFrameTree", json!({})),
-        ];
-        if let Some(managed) = &self.managed {
-            commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
-                json!({"source": managed.login_guard_script, "runImmediately": false})));
+        let managed = self.managed.as_ref().map(|state| state.login_guard_script.clone());
+        let mut commands = vec![self.command(Some(session_id), "Page.enable", json!({}))];
+        if managed.is_some() {
+            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
         }
-        commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({})));
+        commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
+        if let Some(source) = managed {
+            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+            commands.push(self.command(Some(session_id), "Page.setLifecycleEventsEnabled", json!({"enabled": true})));
+            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+            commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": source, "runImmediately": true})));
+            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        } else {
+            commands.push(self.resume_page(session_id));
+        }
         commands
+    }
+    fn resume_page(&mut self, session_id: &str) -> String {
+        let command = self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({}));
+        if self.managed.is_some() {
+            self.guard_requests.insert(self.next_id, GuardRequest::Resume(session_id.to_string()));
+        }
+        command
+    }
+    fn acknowledge_guard(&mut self, id: i64, message: &Value, out: &mut Handled) {
+        let Some(request) = self.guard_requests.get(&id).cloned() else { return };
+        let session = match &request {
+            GuardRequest::Install(session) | GuardRequest::Resume(session) => Some(session.as_str()),
+            GuardRequest::AutoAttach => None,
+        };
+        if message.get("sessionId").and_then(Value::as_str) != session {
+            return;
+        }
+        let accepted = message.get("error").is_none() && message.get("result").is_some_and(Value::is_object);
+        if !accepted {
+            out.guard_failed = true;
+            return;
+        }
+        self.guard_requests.remove(&id);
+        match request {
+            GuardRequest::Install(session) => {
+                let pending = self.guard_requests.values().any(|request| {
+                    matches!(request, GuardRequest::Install(other) if other == &session)
+                });
+                if !pending && self.sessions.contains_key(&session) {
+                    out.commands.push(self.resume_page(&session));
+                }
+            }
+            GuardRequest::Resume(session) => {
+                if let Some(page) = self.sessions.get(&session) {
+                    if let Some(state) = self.managed.as_ref() {
+                        state.guard_installed.mark_for(&page.target_id);
+                    }
+                    out.guard_installed = true;
+                }
+            }
+            GuardRequest::AutoAttach => {}
+        }
+    }
+    fn handle(&mut self, text: &str) -> Handled {
+        self.acknowledge_guard(id, &message, &mut out);
+        out
     }
     fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {
         vec![
@@ -190,6 +243,16 @@ for (const eol of ["\n", "\r\n"]) {
   });
 }
 
+test("ACK boundary accepts rustfmt trailing commas without weakening quoted values", () => {
+  passes(runChecker({
+    [cdpPath]: managedSources[cdpPath]
+      .replaceAll('GuardRequest::Install(session_id.to_string()));', 'GuardRequest::Install(session_id.to_string()),\n            );')
+      .replaceAll('GuardRequest::Resume(session_id.to_string()));', 'GuardRequest::Resume(session_id.to_string()),\n            );')
+      .replace('"source": source, "runImmediately": true}', '"source": source, "runImmediately": true,}')
+      .replace('self.acknowledge_guard(id, &message, &mut out);', 'self.acknowledge_guard(id, &message, &mut out,);'),
+  }, { managed: true }));
+});
+
 test("guard accepts policy URL checks, style writes and harmless formatting changes", () => {
   passes(runChecker({
     [policyPath]: managedSources[policyPath]
@@ -253,15 +316,37 @@ for (const [name, from, to, expected] of [
 }
 
 for (const [name, from, to, expected] of [
-  ["dynamic install source", '"source": managed.login_guard_script', '"source": frontend.script', /只能来自 policy|policy 生成的固定字段/],
-  ["missing guard install", '"source": managed.login_guard_script', '"source": arbitrary_script', /policy 生成的固定字段/],
-  ["an extra document script", 'commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Runtime.runIfWaitingForDebugger"', /只允许安装托管固定 guard/],
+  ["dynamic install source", 'state.login_guard_script.clone()', 'frontend.script.clone()', /只能来自 policy|policy 生成的固定字段/],
+  ["missing guard install", '"source": source', '"source": arbitrary_script', /policy 生成的固定字段/],
+  ["an extra document script", 'commands.push(self.command(Some(session_id), "Page.getFrameTree"', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Page.getFrameTree"', /只允许安装托管固定 guard/],
   ["install before Page.enable", '"Page.enable"', '"Page.enableLater"', /Page\.enable 之后/],
   ["no debugger wait", '"waitForDebuggerOnStart": true', '"waitForDebuggerOnStart": false', /必须暂停新 target/],
   ["self-contained guard script", "struct ManagedWatch { login_guard_script: String }", 'struct ManagedWatch { login_guard_script: String }\nconst RAW: &str = include_str!("managed_cdp/login_guard.js");', /只能在 managed_cdp 的 policy 里生成/],
   ["collapsed failure signals", "pub enum ManagedSignal { Expired, ConnectionLost }", "pub enum ManagedSignal { Expired }", /必须区分凭据过期与防护连接断开/],
 ]) {
   test(`managed boundary rejects ${name}`, () => {
+    fails(runChecker(change(cdpPath, from, to), { managed: true }), expected);
+  });
+}
+
+for (const [name, from, to, expected] of [
+  ["disabled lifecycle", '"enabled": true', '"enabled": false', /必须订阅 lifecycle/],
+  ["guard not covering existing document", '"runImmediately": true', '"runImmediately": false', /runImmediately: true/],
+  ["resume before install ACKs", 'commands.push(self.command(Some(session_id), "Page.getFrameTree"', 'commands.push(self.resume_page(session_id));\n        commands.push(self.command(Some(session_id), "Page.getFrameTree"', /不能在安装命令发送时放行/],
+  ["missing install ACK registration", 'self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));', '/* missing registration */', /必须登记四条 ACK/],
+  ["ACK handler not dispatched", 'self.acknowledge_guard(id, &message, &mut out);', '/* missing dispatch */', /ACK handler 必须/],
+  ["untracked ACK ID", 'self.guard_requests.get(&id)', 'self.guard_requests.values().next()', /ACK handler 必须/],
+  ["wrong ACK session accepted", '!= session', '== session', /ACK handler 必须/],
+  ["protocol error accepted", 'message.get("error").is_none()', 'true', /ACK handler 必须/],
+  ["malformed ACK result accepted", 'message.get("result").is_some_and(Value::is_object)', 'message.get("result").is_some()', /ACK handler 必须/],
+  ["rejection does not stop resume", 'out.guard_failed = true;\n            return;', 'out.guard_failed = true;', /ACK handler 必须/],
+  ["resume while another install ACK pending", 'if !pending && self.sessions.contains_key(&session)', 'if self.sessions.contains_key(&session)', /全部安装请求完成后/],
+  ["other page ACK clears pending installs", 'if other == &session', 'if true', /全部安装请求完成后/],
+  ["untracked resume ACK", 'GuardRequest::Resume(session_id.to_string())', 'GuardRequest::AutoAttach', /成功的 page resume ACK/],
+  ["wrong target satisfies readiness", 'mark_for(&page.target_id)', 'mark_for(&other_target)', /成功的 page resume ACK/],
+  ["readiness published by install ACK", 'out.commands.push(self.resume_page(&session));', 'out.guard_installed = true; out.commands.push(self.resume_page(&session));', /全部安装请求完成后|成功的 page resume ACK/],
+]) {
+  test(`managed ACK boundary rejects ${name}`, () => {
     fails(runChecker(change(cdpPath, from, to), { managed: true }), expected);
   });
 }
@@ -297,8 +382,8 @@ for (const method of ["Runtime.evaluate", "Runtime.callFunctionOn", "Input.dispa
 for (const method of ["Runtime.enable", "Runtime.addBinding", "Runtime.bindingCalled"]) {
   test(`address-only collection rejects ${method}`, () => {
     fails(runChecker(change(cdpPath,
-      'self.command(Some(session_id), "Page.enable", json!({})),',
-      `self.command(Some(session_id), "Page.enable", json!({})),\n            self.command(Some(session_id), "${method}", json!({})),`,
+      'self.command(Some(session_id), "Page.enable", json!({}))',
+      `self.command(Some(session_id), "Page.enable", json!({})), self.command(Some(session_id), "${method}", json!({}))`,
     ), { managed: true }), /只读采集用不着的能力/);
   });
 }

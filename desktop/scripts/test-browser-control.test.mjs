@@ -8,10 +8,15 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runControlTest } from "./test-browser-control.mjs";
 
-const passing = [
-  "running 1 test\ntest cdp::control_tests::target_commands_work_against_a_real_browser ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 333 filtered out; finished in 0.01s\n",
-  "running 1 test\ntest cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 333 filtered out; finished in 0.01s\n",
-].join("");
+const passingTests = [
+  "cdp::control_tests::target_commands_work_against_a_real_browser",
+  "cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser",
+  "cdp::control_tests::slow_loading_login_never_expires_until_load_completes",
+];
+const passingOutputs = passingTests.map((name) =>
+  `running 1 test\ntest ${name} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 333 filtered out; finished in 0.01s\n`,
+);
+const passing = passingOutputs.join("");
 
 async function exercise(t, { output, code = 0, signal = null, error, throws = false, chrome = process.execPath } = {}) {
   const root = mkdtempSync(join(tmpdir(), "vestus-control-runner-"));
@@ -32,8 +37,8 @@ async function exercise(t, { output, code = 0, signal = null, error, throws = fa
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
       queueMicrotask(() => {
-        const selectedOutput = passing.split(/(?=running 1 test\n)/)[invocations.length - 1];
-        const testOutput = output ?? selectedOutput;
+        const selectedOutput = passingOutputs[invocations.length - 1];
+        const testOutput = typeof output === "function" ? output(selectedOutput, invocations.length - 1) : output ?? selectedOutput;
         child.stdout.emit("data", Buffer.from(testOutput.slice(0, 17)));
         child.stdout.emit("data", Buffer.from(testOutput.slice(17)));
         if (invocations.length === 1) child.stderr.emit("data", Buffer.from("cargo diagnostics\n"));
@@ -60,21 +65,18 @@ test("missing cargo error followed by close cannot pass and is recorded and prin
   assert.match(run.result.error, /spawn cargo ENOENT/);
 });
 
-test("only the two required real-browser tests succeed with locked serial selection", async (t) => {
+test("all three required real-browser tests succeed with locked exact serial selection", async (t) => {
   const run = await exercise(t);
   assert.equal(run.status, 0);
   assert.equal(run.result.passed, true);
   assert.equal(run.result.exitCode, 0);
   assert.equal(run.result.signal, null);
-  assert.equal(run.invocations.length, 2);
-  assert.deepEqual(run.invocations.map(([command, args]) => [command, args.at(-1)]), [
-    ["cargo", "cdp::control_tests::target_commands_work_against_a_real_browser"],
-    ["cargo", "cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser"],
-  ]);
+  assert.equal(run.invocations.length, 3);
+  assert.deepEqual(run.invocations.map(([command, args]) => [command, args.at(-1)]),
+    passingTests.map((name) => ["cargo", name]));
   for (const invocation of run.invocations) {
     assert.deepEqual(invocation[1].slice(0, 3), ["test", "--locked", "--lib"]);
-    assert.deepEqual(invocation[1].slice(3, 5), ["--", "--ignored"]);
-    assert.equal(invocation[1][5], "--test-threads=1");
+    assert.deepEqual(invocation[1].slice(3, 7), ["--", "--ignored", "--exact", "--test-threads=1"]);
     assert.equal(invocation[2].cwd, fileURLToPath(new URL("../src-tauri", import.meta.url)));
     assert.equal(invocation[2].env.VESTUS_CONTROL_CHROMIUM, process.execPath);
     assert.deepEqual(invocation[2].stdio, ["ignore", "pipe", "pipe"]);
@@ -83,17 +85,19 @@ test("only the two required real-browser tests succeed with locked serial select
   assert.match(run.stderr, /cargo diagnostics/);
   assert.ok(passing.split("\n").filter((line) => line.startsWith("test cdp::")).every((line) => run.log.includes(line)));
   assert.match(run.log, /cargo diagnostics/);
-  assert.equal(run.result.stdout.split("\n").filter((line) => line.startsWith("test cdp::")).length, 2);
+  assert.equal(run.result.stdout.split("\n").filter((line) => line.startsWith("test cdp::")).length, 3);
   assert.equal(run.result.stderr, "cargo diagnostics\n");
 });
 
 for (const [name, options] of [
   ["zero tests selected", { output: "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out;\n" }],
   ["all ignored", { output: "running 1 test\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 42 filtered out;\n" }],
-  ["unexpected extra passing test", { output: passing.replace("1 passed", "2 passed") }],
-  ["missing URL-only test", { output: passing.replace(/^running 1 test\ntest cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser \.\.\. ok\n\ntest result: ok\. 1 passed; 0 failed; 0 ignored; 333 filtered out; finished in 0\.01s\n/m, "") }],
-  ["renamed URL-only test", { output: passing.replace("url_only_collection_and_managed_guard_against_a_real_browser", "unrelated_real_browser_test") }],
-  ["passing plus ignored", { output: passing.replace("0 ignored", "1 ignored") }],
+  ["unexpected extra passing test", { output: (text) => text.replace("1 passed", "2 passed") }],
+  ["missing URL-only test", { output: (text, index) => index === 1 ? "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;\n" : text }],
+  ["renamed URL-only test", { output: (text) => text.replace("url_only_collection_and_managed_guard_against_a_real_browser", "unrelated_real_browser_test") }],
+  ["missing slow-loading test", { output: (text, index) => index === 2 ? "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;\n" : text }],
+  ["renamed slow-loading test", { output: (text) => text.replace("slow_loading_login_never_expires_until_load_completes", "unrelated_slow_test") }],
+  ["passing plus ignored", { output: (text) => text.replace("0 ignored", "1 ignored") }],
   ["no test summary", { output: "cargo diagnostics only\n" }],
   ["nonzero cargo exit", { code: 101 }],
   ["cargo terminated by signal", { code: 0, signal: "SIGTERM" }],
@@ -108,11 +112,14 @@ for (const [name, options] of [
   });
 }
 
-test("control gate requires the named URL-only acceptance test as well as lifecycle control", async (t) => {
-  const run = await exercise(t, { output: passing.replace(/^test cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser \.\.\. ok\n/m, "") });
-  assert.equal(run.status, 1, "a forged count without the address-only test must not pass");
-  assert.match(run.stderr, /URL-only|url_only|命名/);
-});
+for (const [index, name] of passingTests.entries()) {
+  test(`control gate requires named acceptance ${name}, not just a forged count`, async (t) => {
+    const run = await exercise(t, { output: (text, selected) => selected === index
+      ? text.replace(`test ${name} ... ok\n`, "") : text });
+    assert.equal(run.status, 1, "a forged count without the required test must not pass");
+    assert.match(run.stderr, /named passing real-browser tests/);
+  });
+}
 
 test("synchronous spawn errors are also recorded as failure", async (t) => {
   const run = await exercise(t, { throws: true, error: new Error("cargo unavailable") });

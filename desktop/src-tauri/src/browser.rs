@@ -378,6 +378,18 @@ impl BrowserSessionManager {
             .and_then(|session| session.endpoint.lock().expect("调试端点锁已中毒").clone())
     }
 
+    /// Find a usable DevTools endpoint for a browser process owned by another
+    /// desktop instance. A profile lock alone is insufficient because it may
+    /// be stale. Require both a live owner and a valid browser-level endpoint.
+    pub fn external_session_endpoint(&self, profile_dir: &Path) -> Option<DevToolsEndpoint> {
+        if !profile::in_use_by_other_process(profile_dir).ok()? {
+            return None;
+        }
+        parse_devtools_active_port(
+            &std::fs::read_to_string(profile_dir.join(DEVTOOLS_PORT_FILE)).ok()?,
+        )
+    }
+
     /// A monitor disconnect during an intentional close is not a guard failure.
     /// Unknown process status is kept live so a failed guard still forces cleanup.
     pub(crate) fn is_running(&self, session_id: u64) -> bool {
@@ -2301,8 +2313,20 @@ mod tests {
             profile.join("SingletonLock"),
         )
         .unwrap();
+        std::fs::write(
+            profile.join(DEVTOOLS_PORT_FILE),
+            "51234\n/devtools/browser/external\n",
+        )
+        .unwrap();
 
         let manager = BrowserSessionManager::default();
+        assert_eq!(
+            manager.external_session_endpoint(&profile),
+            Some(DevToolsEndpoint {
+                port: 51234,
+                browser_path: "/devtools/browser/external".into(),
+            })
+        );
         assert!(matches!(
             launch_fake(&manager, 1, &executable, &profile),
             Err(BrowserError::ProfileBusy)
