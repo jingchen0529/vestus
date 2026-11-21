@@ -189,6 +189,7 @@ function MainLayout() {
     let unlistenExpiredFn: (() => void) | undefined;
     let unlistenRecoveredFn: (() => void) | undefined;
     let unlistenGuardFailedFn: (() => void) | undefined;
+    let unlistenPageGuardFailedFn: (() => void) | undefined;
 
     void tauriBridge
       .getStatus()
@@ -310,12 +311,30 @@ function MainLayout() {
         // A failed event subscription must not create an unhandled rejection.
       });
 
+    // 后续标签页的局部防护故障不关闭其他页面，也不刷新凭据或自动重开。
+    tauriBridge
+      .onManagedPageGuardFailed((payload) => {
+        if (!isActive() || !payload.pageClosed) return;
+        error(
+          "托管标签页已关闭",
+          "该标签页安全防护初始化失败，已仅关闭此标签页；其他页面可继续使用，托管账号凭据未被标记为失效",
+        );
+      })
+      .then((unlisten) => {
+        if (isActive()) unlistenPageGuardFailedFn = unlisten;
+        else unlisten();
+      })
+      .catch(() => {
+        // A failed event subscription must not create an unhandled rejection.
+      });
+
     return () => {
       active = false;
       if (unlistenFn) unlistenFn();
       if (unlistenExpiredFn) unlistenExpiredFn();
       if (unlistenRecoveredFn) unlistenRecoveredFn();
       if (unlistenGuardFailedFn) unlistenGuardFailedFn();
+      if (unlistenPageGuardFailedFn) unlistenPageGuardFailedFn();
     };
   }, [desktopRuntime, authReady, currentUser]);
 

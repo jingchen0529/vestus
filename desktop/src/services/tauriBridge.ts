@@ -85,6 +85,21 @@ export interface ManagedSessionGuardFailedEvent {
   browserClosed: boolean;
 }
 
+export interface ManagedPageGuardFailedEvent {
+  platformId: number;
+  managedAccountId: number;
+  credentialVersion: number;
+  browserId: number;
+  reason:
+    | "guard_install_failed"
+    | "guard_install_timeout"
+    | "monitor_install_failed"
+    | "monitor_install_timeout"
+    | "page_resume_failed"
+    | "page_resume_timeout";
+  pageClosed: true;
+}
+
 export interface BrowserProfileResetView {
   /** 删掉的平台环境个数（代理与直连分开计）。 */
   removed: number;
@@ -274,6 +289,21 @@ export const tauriBridge = {
     const { listen } = await import("@tauri-apps/api/event");
     return await listen<ManagedSessionGuardFailedEvent>(
       "managed-session-guard-failed",
+      (event) => {
+        callback(event.payload);
+      }
+    );
+  },
+
+  async onManagedPageGuardFailed(
+    callback: (payload: ManagedPageGuardFailedEvent) => void
+  ): Promise<() => void> {
+    if (!isTauri()) {
+      throw new Error("该功能仅可在 Vestus 桌面客户端中使用");
+    }
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<ManagedPageGuardFailedEvent>(
+      "managed-page-guard-failed",
       (event) => {
         callback(event.payload);
       }

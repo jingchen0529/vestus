@@ -98,6 +98,7 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::cdp;
+use crate::managed_cdp;
 use crate::profile::{self, ProfileSpec, DEVTOOLS_PORT_FILE};
 use crate::rt;
 
@@ -190,6 +191,10 @@ pub enum BrowserError {
     AlreadyRunning,
     #[error("无法启动 Chromium：{0}")]
     Spawn(String),
+    /// 托管启动前在 profile 里生成预装登录防护扩展失败。详情只进 Debug/日志，
+    /// 用户看到的固定文案由命令层配 managed_guard_unavailable 错误码下发。
+    #[error("托管登录防护扩展准备失败，请重试")]
+    LoginGuardExtension(String),
     #[error("客户端正在退出，不能再启动浏览器")]
     ShuttingDown,
 }
@@ -312,6 +317,10 @@ struct LaunchProcessRequest<'a> {
     disable_sandbox: bool,
     /// Disable CfT's testing field-trial configuration for controlled A/B runs.
     disable_field_trial_config: bool,
+    /// 托管启动的平台入口 URL。`Some` 时在托管 profile 清理之后、进程启动之前
+    /// 在 profile 目录里生成预装登录防护扩展，并追加 `--load-extension`；
+    /// 普通持久启动为 `None`，绝不带该开关。
+    login_guard_target_url: Option<&'a str>,
 }
 
 impl Default for BrowserSessionManager {
@@ -421,6 +430,7 @@ impl BrowserSessionManager {
         local_proxy: Option<&str>,
         target_url: &str,
         disable_sandbox: bool,
+        login_guard_target_url: Option<&str>,
         on_ready: G,
         on_exit: F,
     ) -> Result<u64, BrowserError>
@@ -446,6 +456,7 @@ impl BrowserSessionManager {
                 window,
                 disable_sandbox,
                 disable_field_trial_config: disable_field_trial_config_from_env(),
+                login_guard_target_url,
             },
             on_ready,
             on_exit,
@@ -510,6 +521,7 @@ impl BrowserSessionManager {
                 window,
                 disable_sandbox,
                 disable_field_trial_config: false,
+                login_guard_target_url: None,
             },
             on_ready,
             on_exit,
@@ -541,6 +553,7 @@ impl BrowserSessionManager {
             window,
             disable_sandbox,
             disable_field_trial_config,
+            login_guard_target_url,
         } = request;
         if !self.inner.accepting_launches.load(Ordering::Acquire) {
             return Err(BrowserError::ShuttingDown);
@@ -556,6 +569,14 @@ impl BrowserSessionManager {
         }
         create_private_dir(&profile_dir)?;
         profile::prepare_for_launch(&profile_dir).map_err(BrowserError::from)?;
+        // 托管启动的扩展预装只能在这里做：托管 profile 清理会整目录删除，
+        // 命令层提前写好的文件活不到 spawn。清理/准备完成后、启动前生成。
+        let login_guard_extension = login_guard_target_url
+            .map(|guard_target| {
+                managed_cdp::write_login_guard_extension(&profile_dir, guard_target)
+                    .map_err(|error| BrowserError::LoginGuardExtension(error.to_string()))
+            })
+            .transpose()?;
         let arguments = chromium_arguments(
             &profile_dir,
             local_proxy,
@@ -563,6 +584,7 @@ impl BrowserSessionManager {
             window,
             disable_sandbox,
             disable_field_trial_config,
+            login_guard_extension.as_deref(),
         );
         #[cfg(test)]
         let arguments = {
@@ -1465,6 +1487,7 @@ fn chromium_arguments(
     window: Option<WindowGeometry>,
     disable_sandbox: bool,
     disable_field_trial_config: bool,
+    login_guard_extension: Option<&Path>,
 ) -> Vec<OsString> {
     // 占用检测按这个参数去认进程，所以必须和 profile 模块用同一个函数拼。
     let mut args = vec![OsString::from(profile::user_data_dir_argument(profile_dir))];
@@ -1515,6 +1538,14 @@ fn chromium_arguments(
         "--window-size={},{}",
         geometry.width, geometry.height
     )));
+    // 托管启动预装的 MV3 登录防护扩展（unpacked）。只属于托管 profile；起始
+    // 网址按约定永远是最后一个参数，这个开关必须排在它之前。
+    if let Some(extension) = login_guard_extension {
+        args.push(OsString::from(format!(
+            "--load-extension={}",
+            extension.display()
+        )));
+    }
     args.push(OsString::from(target_url));
     args
 }
@@ -1551,6 +1582,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         );
         let rendered: Vec<String> = arguments
             .into_iter()
@@ -1594,6 +1626,7 @@ mod tests {
             None,
             true,
             false,
+            None,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1618,6 +1651,7 @@ mod tests {
             None,
             true,
             false,
+            None,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1641,6 +1675,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1659,6 +1694,7 @@ mod tests {
             None,
             false,
             true,
+            None,
         );
         let disabled: Vec<String> = disabled
             .into_iter()
@@ -1681,6 +1717,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         );
         let default: Vec<String> = default
             .into_iter()
@@ -1719,6 +1756,7 @@ mod tests {
             Some(geometry),
             false,
             false,
+            None,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1742,6 +1780,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         )
         .into_iter()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1851,6 +1890,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         );
         let rendered: Vec<String> = arguments
             .into_iter()
@@ -1861,6 +1901,66 @@ mod tests {
         assert!(!rendered
             .iter()
             .any(|arg| arg.starts_with("--proxy-server=")));
+    }
+
+    /// 托管启动把预装登录防护扩展目录作为 --load-extension 交给 Chromium，且必须
+    /// 出现在起始网址之前——起始网址按约定永远是最后一个参数。
+    #[test]
+    fn chromium_arguments_preload_login_guard_extension_before_the_target_url() {
+        let extension = Path::new("/tmp/vestus-profile-test/vestus-login-guard-extension");
+        let rendered: Vec<String> = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            Some("http://127.0.0.1:51234"),
+            "about:blank",
+            None,
+            false,
+            false,
+            Some(extension),
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+
+        let flag = format!("--load-extension={}", extension.display());
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|argument| **argument == flag)
+                .count(),
+            1,
+            "extension flag must appear exactly once"
+        );
+        let flag_index = rendered
+            .iter()
+            .position(|argument| *argument == flag)
+            .unwrap();
+        let url_index = rendered
+            .iter()
+            .position(|argument| argument == "about:blank")
+            .unwrap();
+        assert!(flag_index < url_index);
+        assert_eq!(rendered.last().unwrap(), "about:blank");
+    }
+
+    /// 普通持久启动绝不带 --load-extension：扩展预装只属于托管 profile。
+    #[test]
+    fn chromium_arguments_omit_login_guard_extension_for_ordinary_launches() {
+        let rendered: Vec<String> = chromium_arguments(
+            Path::new("/tmp/vestus-profile-test"),
+            None,
+            "https://platform.example.test/",
+            None,
+            false,
+            false,
+            None,
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(!rendered
+            .iter()
+            .any(|argument| argument.starts_with("--load-extension")));
     }
 
     #[test]
@@ -2397,6 +2497,7 @@ mod tests {
                     window: None,
                     disable_sandbox: false,
                     disable_field_trial_config: false,
+                    login_guard_target_url: None,
                 },
                 |_| {},
                 || {},
@@ -2442,6 +2543,74 @@ mod tests {
         ));
         // 被拒绝的启动同样不能删别人的环境。
         assert!(rejected_profile.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 托管启动必须在托管 profile 清理之后、进程启动之前生成预装登录防护扩展，
+    /// 并把 --load-extension 指到该 profile 目录；起始网址仍是最后一个参数。
+    /// 清理会整目录删除托管 profile，所以扩展只能由启动链路在清理后生成。
+    #[cfg(unix)]
+    #[test]
+    fn managed_launch_generates_login_guard_extension_and_passes_it_to_chromium() {
+        let root = scratch_dir("managed-guard-extension");
+        let arguments_path = root.join("argv.txt");
+        let executable = fake_chromium(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}\"\nexec sleep 30\n",
+                arguments_path.display()
+            ),
+        );
+        let manager = BrowserSessionManager::default();
+        let profile = root.join("p7-proxy-managed-a9-v1");
+        let expected_extension = profile.join("vestus-login-guard-extension");
+        manager
+            .launch_process_with_hook(
+                LaunchProcessRequest {
+                    session_id: 9,
+                    executable: &executable,
+                    profile_dir: profile.clone(),
+                    ephemeral: true,
+                    extra_arguments: &[],
+                    local_proxy: Some("http://127.0.0.1:51234"),
+                    target_url: "about:blank",
+                    window: None,
+                    disable_sandbox: false,
+                    disable_field_trial_config: false,
+                    login_guard_target_url: Some("https://agent.oceanengine.com/workbench"),
+                },
+                |_| {},
+                || {},
+                || {},
+            )
+            .unwrap();
+        assert!(expected_extension.join("manifest.json").exists());
+        assert!(expected_extension.join("guard.js").exists());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let arguments = loop {
+            match std::fs::read_to_string(&arguments_path) {
+                Ok(text) if !text.is_empty() => break text,
+                _ => assert!(
+                    std::time::Instant::now() < deadline,
+                    "fake chromium argv was never captured"
+                ),
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let lines: Vec<String> = arguments.lines().map(String::from).collect();
+        let flag = format!("--load-extension={}", expected_extension.display());
+        let flag_index = lines
+            .iter()
+            .position(|argument| *argument == flag)
+            .expect("--load-extension must reach chromium");
+        let url_index = lines
+            .iter()
+            .position(|argument| argument == "about:blank")
+            .expect("initial url must reach chromium");
+        assert!(flag_index < url_index);
+        assert_eq!(lines.last().unwrap(), "about:blank");
+        assert_eq!(rt::runtime().block_on(manager.close_all()), 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

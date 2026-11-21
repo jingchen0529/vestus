@@ -39,6 +39,67 @@ test("lease changes auto-resync the desktop config without manual refresh", () =
   assert.doesNotMatch(tail, /setDesktopConfig\(null\)/);
 });
 
+test("page guard failures expose a separate closure-confirmed event with allowlisted reasons", () => {
+  const bridge = readFileSync(new URL("../src/services/tauriBridge.ts", import.meta.url), "utf8");
+  const payload = bridge.match(/export interface ManagedPageGuardFailedEvent \{([^}]+)\}/)?.[1];
+  assert.ok(payload, "page failures need their own event contract");
+  const fields = payload.trim().split("\n").map((line) => line.trim());
+  assert.deepEqual(fields.slice(0, 4), [
+    "platformId: number;",
+    "managedAccountId: number;",
+    "credentialVersion: number;",
+    "browserId: number;",
+  ]);
+  assert.deepEqual([...payload.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]), [
+    "guard_install_failed", "guard_install_timeout",
+    "monitor_install_failed", "monitor_install_timeout",
+    "page_resume_failed", "page_resume_timeout",
+  ]);
+  assert.equal(fields.at(-1), "pageClosed: true;");
+  assert.doesNotMatch(payload, /url|content|browserClosed|sessionStatus|reported|applied/);
+  const listener = bridge.match(/async onManagedPageGuardFailed\([\s\S]*?\n  \},/)?.[0];
+  assert.ok(listener);
+  assert.match(listener, /callback: \(payload: ManagedPageGuardFailedEvent\) => void/);
+  assert.match(listener, /Promise<\(\) => void>/);
+  assert.match(listener, /if \(!isTauri\(\)\) \{\s*throw new Error\(/);
+  assert.match(listener, /await import\("@tauri-apps\/api\/event"\)/);
+  assert.match(listener, /return await listen<ManagedPageGuardFailedEvent>\(\s*"managed-page-guard-failed"/);
+  assert.match(listener, /callback\(event\.payload\)/);
+  assert.doesNotMatch(listener, /managed-session-|invokeDesktop/);
+});
+
+test("page guard failure notifies only the closed tab and leaves healthy sessions alone", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const start = app.indexOf(".onManagedPageGuardFailed");
+  const end = app.indexOf(".then((unlisten) => {", start);
+  assert.ok(start >= 0 && end > start, "a page-specific UI subscription is required");
+  const subscription = app.slice(start, end);
+  const callback = subscription.match(/\.onManagedPageGuardFailed\(\(payload\) => \{([\s\S]*)\}\)/)?.[1];
+  assert.ok(callback);
+  assert.doesNotMatch(subscription, /syncDesktopConfig|openBrowser|browserClosed|setStatus|setDesktopConfig\w*|setProxyEnabled|localStorage|logout/);
+  const notifications = [];
+  const payload = {
+    platformId: 7, managedAccountId: 9, credentialVersion: 3, browserId: 23,
+    reason: "guard_install_failed", pageClosed: true,
+  };
+  const notify = new Function("payload", "isActive", "error", callback);
+  notify(payload, () => true, (...args) => notifications.push(args));
+  assert.deepEqual(notifications, [[
+    "托管标签页已关闭",
+    "该标签页安全防护初始化失败，已仅关闭此标签页；其他页面可继续使用，托管账号凭据未被标记为失效",
+  ]]);
+  notify(payload, () => false, (...args) => notifications.push(args));
+  assert.equal(notifications.length, 1, "inactive effects must not notify");
+
+  const listenerTail = app.slice(end, app.indexOf("\n    return () => {", end));
+  assert.match(app, /let unlistenPageGuardFailedFn: \(\(\) => void\) \| undefined;/);
+  assert.match(listenerTail, /if \(isActive\(\)\) unlistenPageGuardFailedFn = unlisten;\s*else unlisten\(\);/);
+  assert.match(listenerTail, /\.catch\(\(\) => \{/);
+  const cleanup = app.slice(app.indexOf("\n    return () => {", end), app.indexOf("\n  }, [", end));
+  assert.match(cleanup, /if \(unlistenPageGuardFailedFn\) unlistenPageGuardFailedFn\(\);/);
+  assert.ok(cleanup.indexOf("active = false;") < cleanup.indexOf("unlistenPageGuardFailedFn();"));
+});
+
 test("guard failures expose an independent event and monitor-only payload", () => {
   const bridge = readFileSync(new URL("../src/services/tauriBridge.ts", import.meta.url), "utf8");
   const payload = bridge.match(/export interface ManagedSessionGuardFailedEvent \{([^}]+)\}/)?.[1];

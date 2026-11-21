@@ -96,6 +96,7 @@ impl StreamFixture {
         };
         let auto = fixture.command().await;
         assert_eq!(auto["method"], "Target.setAutoAttach");
+        // In managed mode this reply is the tracked AutoAttach guard ACK.
         fixture.send(json!({"id":auto["id"],"result":{}}));
         assert_eq!(fixture.command().await["method"], "Target.getTargets");
         fixture
@@ -112,14 +113,35 @@ impl StreamFixture {
         self.events.send(message).unwrap();
     }
 
+    /// Attach the bootstrap page (managed-initial or ordinary) and collect its
+    /// install commands without acknowledging any of them.
     async fn begin_attach(&mut self, session: &str, target: &str) -> Vec<Value> {
+        // Flatten autoAttach suspends every new target until
+        // runIfWaitingForDebugger, regardless of the waitFor flag. The resume is
+        // therefore sent unconditionally inside the install batch (never
+        // ACK-gated); only its ACK participates in the readiness latch/budget.
         self.send(json!({"method":"Target.attachedToTarget","params":{
             "sessionId":session,"targetInfo":{"targetId":target,"type":"page","url":"about:blank"},
-            "waitingForDebugger":true
+            "waitingForDebugger":!self.managed
         }}));
-        let count = if self.managed { 4 } else { 3 };
+        let count = if self.managed { 5 } else { 3 };
         let mut commands = Vec::new();
         for _ in 0..count {
+            commands.push(self.command().await);
+        }
+        commands
+    }
+
+    /// Attach a managed additional page (popup): monitor commands plus the
+    /// unconditional batch resume; no guard script.
+    async fn begin_attach_additional(&mut self, session: &str, target: &str) -> Vec<Value> {
+        debug_assert!(self.managed, "additional pages only exist in managed mode");
+        self.send(json!({"method":"Target.attachedToTarget","params":{
+            "sessionId":session,"targetInfo":{"targetId":target,"type":"page","url":"about:blank"},
+            "waitingForDebugger":false
+        }}));
+        let mut commands = Vec::new();
+        for _ in 0..4 {
             commands.push(self.command().await);
         }
         commands
@@ -128,18 +150,12 @@ impl StreamFixture {
     fn acknowledge(&self, command: &Value) {
         let result = if command["method"] == "Page.getFrameTree" {
             json!({"frameTree":{"frame":{"id":"main","loaderId":"L0","url":"about:blank"}}})
+        } else if command["method"] == "Page.addScriptToEvaluateOnNewDocument" {
+            json!({"identifier":"fixture-guard"})
         } else {
             json!({})
         };
         self.send(command_reply(command, result));
-    }
-
-    async fn accept_resume(&mut self, session: &str) -> Value {
-        let resume = self.command().await;
-        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
-        assert_eq!(resume["sessionId"], session);
-        self.acknowledge(&resume);
-        resume
     }
 
     /// Managed tree races delay only the valid tree ACK; ordinary trees always
@@ -154,15 +170,38 @@ impl StreamFixture {
         commands
     }
 
+    /// Fully attach one page. Managed installs ACK the four install commands
+    /// first and the batch resume last — readiness requires all five ACKs
+    /// including the resume. Ordinary pages keep their frame tree pending for
+    /// the test.
     async fn attach(&mut self, session: &str, target: &str) -> Vec<Value> {
-        let mut commands = self.attach_before_tree(session, target).await;
+        let commands = self.begin_attach(session, target).await;
         if self.managed {
-            let tree = commands
+            for command in &commands {
+                if command["method"] != "Runtime.runIfWaitingForDebugger" {
+                    self.acknowledge(command);
+                }
+            }
+            let resume = commands
                 .iter()
-                .find(|c| c["method"] == "Page.getFrameTree")
+                .find(|c| c["method"] == "Runtime.runIfWaitingForDebugger")
                 .unwrap();
-            self.acknowledge(tree);
-            commands.push(self.accept_resume(session).await);
+            self.acknowledge(resume);
+        } else {
+            for command in &commands {
+                if command["method"] != "Page.getFrameTree" {
+                    self.acknowledge(command);
+                }
+            }
+        }
+        commands
+    }
+
+    /// Fully attach and acknowledge a managed additional page (all four ACKs).
+    async fn attach_additional(&mut self, session: &str, target: &str) -> Vec<Value> {
+        let commands = self.begin_attach_additional(session, target).await;
+        for command in &commands {
+            self.acknowledge(command);
         }
         commands
     }
@@ -239,6 +278,10 @@ fn command_reply(command: &Value, result: Value) -> Value {
         reply["sessionId"] = session.clone();
     }
     reply
+}
+
+fn reject_command(command: &Value, session: &str) -> Value {
+    json!({"id":command["id"],"sessionId":session,"error":{"code":-32000,"message":"synthetic rejection"}})
 }
 
 fn lifecycle(session: &str, frame: &str, loader: &str, name: &str) -> Value {
@@ -412,7 +455,9 @@ async fn pre_tree_spa_away_from_login_cannot_expire_from_stale_login_tree() {
             "frame":{"id":"main","loaderId":"L1","url":"https://agent.oceanengine.com/login"}
         }}}),
     );
-    fixture.accept_resume("S1").await;
+    // The tree ACK completes the install on its own; the buffered workbench
+    // visit outranks the stale login route.
+    fixture.barrier().await;
     fixture.send(page_loaded("S1", "main"));
     assert_eq!(
         fixture.report().await.url_params.as_deref(),
@@ -505,16 +550,21 @@ async fn managed_initial_tree_starts_deadline_and_detach_cancels_it() {
         }}}),
     );
     fixture.report().await;
-    fixture.accept_resume("S1").await;
     fixture.send(page_loaded("S1", "main"));
     fixture.barrier().await;
     fixture.send(json!({"method":"Target.detachedFromTarget","params":{"sessionId":"S1"}}));
-    assert!(timeout(
-        crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(100),
-        signal_rx.recv()
-    )
-    .await
-    .is_err());
+    let verify = fixture.command().await;
+    assert_eq!(verify["method"], "Target.getTargets");
+    fixture.send(command_reply(&verify, json!({"targetInfos":[]})));
+    assert!(
+        timeout(
+            crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(100),
+            signal_rx.recv()
+        )
+        .await
+        .is_err(),
+        "detaching the initial page cancels its login deadline without a signal"
+    );
     let commands = fixture.attach_before_tree("S2", "T2").await;
     let tree = commands
         .iter()
@@ -526,7 +576,6 @@ async fn managed_initial_tree_starts_deadline_and_detach_cancels_it() {
         }}}),
     );
     fixture.report().await;
-    fixture.accept_resume("S2").await;
     fixture.send(page_loaded("S2", "main"));
     assert!(matches!(
         timeout(
@@ -545,14 +594,19 @@ async fn rejected_duplicate_session_cannot_expire_managed_session() {
     let watch = platform_watch(signals);
     let mut fixture = StreamFixture::new(Some(watch)).await;
     fixture.attach("S1", "T1").await;
+    // The second session on an installed target is detached at browser level:
+    // no resume, no install, and it can never report or expire anything.
     fixture.send(json!({"method":"Target.attachedToTarget","params":{
-        "sessionId":"S9","targetInfo":{"targetId":"T1","type":"page","url":"about:blank"}
+        "sessionId":"S9","targetInfo":{"targetId":"T1","type":"page","url":"about:blank"},
+        "waitingForDebugger":false
     }}));
-    assert_eq!(
-        fixture.command().await["method"],
-        "Runtime.runIfWaitingForDebugger"
+    let detach = fixture.command().await;
+    assert_eq!(detach["method"], "Target.detachFromTarget");
+    assert!(
+        detach.get("sessionId").is_none(),
+        "detach is a browser-level command"
     );
-    assert_eq!(fixture.command().await["method"], "Target.detachFromTarget");
+    assert_eq!(detach["params"]["sessionId"], "S9");
     fixture.send(navigation(
         "S9",
         "https://sso.oceanengine.com/account/page/service/sso_logout",
@@ -607,6 +661,15 @@ async fn quiet_managed_login_expires_once_without_runtime_events() {
             .filter(|c| c["method"] == "Page.addScriptToEvaluateOnNewDocument")
             .count(),
         1
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| c["method"] == "Runtime.runIfWaitingForDebugger")
+            .count(),
+        1,
+        "the resume ships unconditionally inside the install batch and only \
+         its ACK participates in the latch/budget"
     );
     fixture.send(navigation("S1", "https://agent.oceanengine.com/login"));
     fixture.report().await;
@@ -728,7 +791,435 @@ async fn frame_tree_seeds_initial_url_once_and_spa_is_main_frame_only() {
 }
 
 #[tokio::test]
-async fn guard_ready_requires_every_install_and_resume_ack_for_the_exact_page() {
+async fn managed_additional_page_installs_monitors_and_resumes_in_one_batch() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let mut watch = platform_watch(signals);
+    watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target("initial".into());
+    let ready = watch.guard_installed.clone();
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    let initial = fixture.attach("initial-session", "initial").await;
+    let methods: Vec<&str> = initial
+        .iter()
+        .map(|c| c["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        methods,
+        vec![
+            "Page.addScriptToEvaluateOnNewDocument",
+            "Page.enable",
+            "Page.getFrameTree",
+            "Page.setLifecycleEventsEnabled",
+            "Runtime.runIfWaitingForDebugger",
+        ],
+        "the bootstrap page installs the full guard and resumes within the \
+         same batch; only the ACKs gate readiness"
+    );
+    fixture.barrier().await;
+    assert!(
+        ready.is_ready(),
+        "every install ACK (including the resume ACK) completes the latch"
+    );
+
+    let popup = fixture.attach_additional("popup-session", "popup").await;
+    let methods: Vec<&str> = popup
+        .iter()
+        .map(|c| c["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        methods,
+        vec![
+            "Page.enable",
+            "Page.getFrameTree",
+            "Page.setLifecycleEventsEnabled",
+            "Runtime.runIfWaitingForDebugger",
+        ],
+        "additional pages install monitors plus the unconditional batch \
+         resume; no guard script"
+    );
+    for command in &popup {
+        assert_eq!(command["sessionId"], "popup-session");
+    }
+    fixture.barrier().await;
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "no addScript may follow the monitor ACKs; the resume already shipped \
+         inside the batch"
+    );
+    fixture.send(navigation(
+        "popup-session",
+        "https://agent.oceanengine.com/workbench",
+    ));
+    assert_eq!(
+        fixture.report().await.url,
+        "https://agent.oceanengine.com/workbench"
+    );
+    fixture.barrier().await;
+    assert!(signal_rx.try_recv().is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn managed_popup_guard_timeout_closes_only_failed_target_and_keeps_monitor_alive() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let mut watch = platform_watch(signals);
+    watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target("initial".into());
+    let status = watch.status.clone();
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    fixture.attach("healthy", "initial").await;
+    fixture.barrier().await;
+    let popup = fixture
+        .begin_attach_additional("failed-popup", "failed")
+        .await;
+    assert_eq!(
+        popup.len(),
+        4,
+        "popups install monitors plus the unconditional batch resume"
+    );
+    fixture.barrier().await;
+    tokio::time::pause();
+    tokio::time::advance(crate::managed_cdp::GUARD_INSTALL_TIMEOUT + Duration::from_millis(1))
+        .await;
+    tokio::time::resume();
+    let close = fixture.command().await;
+    assert_eq!(close["method"], "Target.closeTarget");
+    assert_eq!(close["params"]["targetId"], "failed");
+    assert!(close.get("sessionId").is_none());
+    fixture.send(command_reply(&close, json!({"success": true})));
+    let verify = fixture.command().await;
+    assert_eq!(verify["method"], "Target.getTargets");
+    fixture.send(command_reply(
+        &verify,
+        json!({"targetInfos":[{"targetId":"initial","type":"page"}]}),
+    ));
+    fixture.barrier().await;
+    assert!(matches!(
+        signal_rx.try_recv(),
+        Ok(ManagedSignal::PageClosed {
+            reason: "monitor_install_timeout"
+        })
+    ));
+    assert!(signal_rx.try_recv().is_err());
+    assert!(!status.is_expiry_valid());
+    // Late monitor ACKs from the forgotten session are inert.
+    for command in &popup {
+        fixture.acknowledge(command);
+    }
+    fixture.send(navigation(
+        "failed-popup",
+        "https://agent.oceanengine.com/login",
+    ));
+    fixture.send(navigation(
+        "healthy",
+        "https://agent.oceanengine.com/workbench",
+    ));
+    assert_eq!(
+        fixture.report().await.url,
+        "https://agent.oceanengine.com/workbench"
+    );
+    assert!(
+        timeout(Duration::from_millis(100), fixture.reports.recv())
+            .await
+            .is_err(),
+        "late ACKs and events of the closed popup never report"
+    );
+    fixture.barrier().await;
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "late ACKs cannot resurrect or resume the closed popup"
+    );
+    assert!(signal_rx.try_recv().is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn duplicate_managed_session_is_detached_without_double_counting() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let mut watch = platform_watch(signals);
+    watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target("initial".into());
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    fixture.attach("healthy", "initial").await;
+    fixture.barrier().await;
+    let canonical = fixture.begin_attach_additional("canonical", "popup").await;
+    // The duplicate session for an already installed target is detached at
+    // browser level immediately; it must not resume or install anything.
+    fixture.send(json!({"method":"Target.attachedToTarget","params":{
+        "sessionId":"duplicate","targetInfo":{"targetId":"popup","type":"page","url":"about:blank"},
+        "waitingForDebugger":false
+    }}));
+    let detach = fixture.command().await;
+    assert_eq!(detach["method"], "Target.detachFromTarget");
+    assert!(
+        detach.get("sessionId").is_none(),
+        "detach is a browser-level command"
+    );
+    assert_eq!(detach["params"]["sessionId"], "duplicate");
+    fixture.barrier().await;
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "duplicate must not bypass the canonical install"
+    );
+    for command in &canonical {
+        fixture.acknowledge(command);
+    }
+    fixture.send(navigation(
+        "canonical",
+        "https://agent.oceanengine.com/workbench",
+    ));
+    assert_eq!(
+        fixture.report().await.url,
+        "https://agent.oceanengine.com/workbench"
+    );
+    fixture.send(navigation(
+        "duplicate",
+        "https://agent.oceanengine.com/workbench",
+    ));
+    assert!(
+        timeout(Duration::from_millis(100), fixture.reports.recv())
+            .await
+            .is_err(),
+        "the detached duplicate never reports"
+    );
+    fixture.barrier().await;
+    assert!(signal_rx.try_recv().is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn popup_setup_failures_are_local_until_target_removal_cannot_be_verified() {
+    for missing in [
+        "enable",
+        "tree",
+        "lifecycle",
+        "rejected-enable",
+        "rejected-tree",
+        "rejected-lifecycle",
+        "close-present",
+        "close-silent",
+    ] {
+        let (signals, mut signal_rx) = unbounded_channel();
+        let mut watch = platform_watch(signals);
+        watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target("initial".into());
+        let mut fixture = StreamFixture::new(Some(watch)).await;
+        fixture.attach("healthy", "initial").await;
+        fixture.barrier().await;
+        let popup = fixture.begin_attach_additional("child", "popup").await;
+        assert_eq!(popup.len(), 4);
+        // popup = [enable, tree, lifecycle, resume]; the resume ACK is just one
+        // of the four monitor ACKs.
+        match missing {
+            "enable" => {
+                fixture.acknowledge(&popup[1]);
+                fixture.acknowledge(&popup[2]);
+                fixture.acknowledge(&popup[3]);
+            }
+            "tree" => {
+                fixture.acknowledge(&popup[0]);
+                fixture.acknowledge(&popup[2]);
+                fixture.acknowledge(&popup[3]);
+            }
+            "lifecycle" => {
+                fixture.acknowledge(&popup[0]);
+                fixture.acknowledge(&popup[1]);
+                fixture.acknowledge(&popup[3]);
+            }
+            "rejected-enable" => fixture.send(reject_command(&popup[0], "child")),
+            "rejected-tree" => fixture.send(reject_command(&popup[1], "child")),
+            "rejected-lifecycle" => fixture.send(reject_command(&popup[2], "child")),
+            "close-present" | "close-silent" => {
+                fixture.acknowledge(&popup[0]);
+                fixture.acknowledge(&popup[2]);
+                fixture.acknowledge(&popup[3]);
+            }
+            _ => unreachable!(),
+        }
+        if !missing.starts_with("rejected-") {
+            fixture.barrier().await;
+            tokio::time::pause();
+            tokio::time::advance(
+                crate::managed_cdp::GUARD_INSTALL_TIMEOUT + Duration::from_millis(1),
+            )
+            .await;
+            tokio::time::resume();
+        }
+        let close = fixture.command().await;
+        assert_eq!(close["method"], "Target.closeTarget", "{missing}");
+        assert_eq!(close["params"]["targetId"], "popup");
+        if matches!(missing, "close-present" | "close-silent") {
+            if missing == "close-present" {
+                fixture.send(command_reply(&close, json!({"success":true})));
+                let verify = fixture.command().await;
+                assert_eq!(verify["method"], "Target.getTargets", "{missing}");
+                fixture.send(command_reply(
+                    &verify,
+                    json!({"targetInfos":[{"targetId":"popup"}]}),
+                ));
+            }
+            fixture.barrier().await;
+            tokio::time::pause();
+            tokio::time::advance(
+                crate::managed_cdp::GUARD_INSTALL_TIMEOUT + Duration::from_millis(1),
+            )
+            .await;
+            tokio::time::resume();
+            fixture.failed().await;
+            assert!(matches!(
+                signal_rx.try_recv(),
+                Ok(ManagedSignal::ConnectionLost)
+            ));
+        } else {
+            fixture.send(command_reply(&close, json!({"success":true})));
+            let verify = fixture.command().await;
+            assert_eq!(verify["method"], "Target.getTargets", "{missing}");
+            fixture.send(command_reply(
+                &verify,
+                json!({"targetInfos":[{"targetId":"initial"}]}),
+            ));
+            fixture.barrier().await;
+            let expected = if missing.starts_with("rejected-") {
+                "monitor_install_failed"
+            } else {
+                "monitor_install_timeout"
+            };
+            assert!(
+                matches!(signal_rx.try_recv(), Ok(ManagedSignal::PageClosed { reason }) if reason == expected),
+                "{missing}"
+            );
+            fixture.send(navigation(
+                "healthy",
+                "https://agent.oceanengine.com/workbench",
+            ));
+            assert_eq!(
+                fixture.report().await.url,
+                "https://agent.oceanengine.com/workbench"
+            );
+            assert!(signal_rx.try_recv().is_err());
+            fixture.stop().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn popup_close_waits_for_target_disappearance_without_retiring_healthy_pages() {
+    let (signals, mut signal_rx) = unbounded_channel();
+    let mut watch = platform_watch(signals);
+    watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target("initial".into());
+    let mut fixture = StreamFixture::new(Some(watch)).await;
+    fixture.attach("healthy", "initial").await;
+    fixture.barrier().await;
+    let popup = fixture.begin_attach_additional("child", "popup").await;
+    fixture.send(reject_command(&popup[0], "child"));
+    let close = fixture.command().await;
+    assert_eq!(close["method"], "Target.closeTarget");
+    fixture.send(command_reply(&close, json!({"success":true})));
+    let first = fixture.command().await;
+    assert_eq!(first["method"], "Target.getTargets");
+    fixture.send(command_reply(
+        &first,
+        json!({"targetInfos":[{"targetId":"initial"},{"targetId":"popup"}]}),
+    ));
+    fixture.barrier().await;
+    assert!(
+        signal_rx.try_recv().is_err(),
+        "close ACK can precede asynchronous target destruction"
+    );
+    // The bounded verify retry re-checks instead of assuming destruction.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(150)).await;
+    tokio::time::resume();
+    let second = fixture.command().await;
+    assert_eq!(second["method"], "Target.getTargets");
+    fixture.send(command_reply(
+        &second,
+        json!({"targetInfos":[{"targetId":"initial"}]}),
+    ));
+    fixture.barrier().await;
+    assert!(matches!(
+        signal_rx.try_recv(),
+        Ok(ManagedSignal::PageClosed {
+            reason: "monitor_install_failed"
+        })
+    ));
+    fixture.send(navigation(
+        "healthy",
+        "https://agent.oceanengine.com/workbench",
+    ));
+    assert_eq!(
+        fixture.report().await.url,
+        "https://agent.oceanengine.com/workbench"
+    );
+    assert!(signal_rx.try_recv().is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn detached_popup_is_verified_and_surviving_target_is_closed() {
+    for survives in [false, true] {
+        let (signals, mut signal_rx) = unbounded_channel();
+        let mut watch = platform_watch(signals);
+        watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target("initial".into());
+        let mut fixture = StreamFixture::new(Some(watch)).await;
+        fixture.attach("healthy", "initial").await;
+        fixture.barrier().await;
+        let popup = fixture.begin_attach_additional("child", "popup").await;
+        fixture.send(json!({"method":"Target.detachedFromTarget","params":{"sessionId":"child"}}));
+        let verify = fixture.command().await;
+        assert_eq!(
+            verify["method"], "Target.getTargets",
+            "detach is not target destruction"
+        );
+        let targets = if survives {
+            json!([{"targetId":"initial"},{"targetId":"popup"}])
+        } else {
+            json!([{"targetId":"initial"}])
+        };
+        fixture.send(command_reply(&verify, json!({"targetInfos":targets})));
+        if survives {
+            let close = fixture.command().await;
+            assert_eq!(close["method"], "Target.closeTarget");
+            // A re-attach while the target is being closed is detached as-is.
+            fixture.send(json!({"method":"Target.attachedToTarget","params":{
+                "sessionId":"child2","targetInfo":{"targetId":"popup","type":"page","url":"about:blank"},
+                "waitingForDebugger":false
+            }}));
+            let reattach = fixture.command().await;
+            assert_eq!(reattach["method"], "Target.detachFromTarget");
+            assert!(reattach.get("sessionId").is_none());
+            assert_eq!(reattach["params"]["sessionId"], "child2");
+            fixture.send(command_reply(&close, json!({"success":true})));
+            let verify = fixture.command().await;
+            fixture.send(command_reply(
+                &verify,
+                json!({"targetInfos":[{"targetId":"initial"}]}),
+            ));
+        }
+        fixture.barrier().await;
+        if survives {
+            assert!(matches!(
+                signal_rx.try_recv(),
+                Ok(ManagedSignal::PageClosed {
+                    reason: "monitor_install_failed"
+                })
+            ));
+        }
+        // Late ACKs of the forgotten session are ignored entirely.
+        for command in &popup {
+            fixture.acknowledge(command);
+        }
+        fixture.barrier().await;
+        assert!(fixture.commands.try_recv().is_err());
+        assert!(
+            timeout(Duration::from_millis(100), fixture.reports.recv())
+                .await
+                .is_err(),
+            "late ACKs of the detached popup never report"
+        );
+        assert!(signal_rx.try_recv().is_err());
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn managed_initial_readiness_requires_every_install_ack_for_the_exact_page() {
     let (signals, mut signal_rx) = unbounded_channel();
     let watch = platform_watch(signals);
     let ready = watch.guard_installed.clone();
@@ -743,22 +1234,26 @@ async fn guard_ready_requires_every_install_and_resume_ack_for_the_exact_page() 
             "Page.addScriptToEvaluateOnNewDocument",
             "Page.enable",
             "Page.getFrameTree",
-            "Page.setLifecycleEventsEnabled"
+            "Page.setLifecycleEventsEnabled",
+            "Runtime.runIfWaitingForDebugger",
         ]
     );
     assert_eq!(commands[3]["params"]["enabled"], true);
     assert_eq!(commands[0]["params"]["runImmediately"], true);
+    assert_eq!(commands[4]["sessionId"], "S1");
     assert!(
         !ready.wait_ready(Duration::from_millis(40)).await,
         "sending install commands is not readiness"
     );
 
     let tree = &commands[2];
-    for command in commands
-        .iter()
-        .filter(|c| c["method"] != "Page.getFrameTree")
-    {
-        fixture.acknowledge(command);
+    let resume = &commands[4];
+    // Acknowledge every install command except the tree and the resume.
+    for command in commands.iter() {
+        let method = command["method"].as_str().unwrap();
+        if method != "Page.getFrameTree" && method != "Runtime.runIfWaitingForDebugger" {
+            fixture.acknowledge(command);
+        }
     }
     let mut wrong = command_reply(
         tree,
@@ -769,26 +1264,13 @@ async fn guard_ready_requires_every_install_and_resume_ack_for_the_exact_page() 
     wrong["id"] = tree["id"].clone();
     wrong["sessionId"] = json!("other-session");
     fixture.send(wrong);
-    fixture.barrier().await;
-    assert!(
-        fixture.commands.try_recv().is_err(),
-        "missing/extraneous tree ACK cannot resume page"
-    );
-    assert!(!ready.wait_ready(Duration::from_millis(40)).await);
-    fixture.acknowledge(tree);
-    let resume = fixture.command().await;
-    assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
-    assert!(
-        !ready.wait_ready(Duration::from_millis(40)).await,
-        "resume send is not readiness"
-    );
-    let mut wrong = command_reply(&resume, json!({}));
+    let mut wrong = command_reply(resume, json!({}));
     wrong["id"] = json!(99998);
     fixture.send(wrong.clone());
     wrong["id"] = resume["id"].clone();
     wrong["sessionId"] = json!("other-session");
     fixture.send(wrong);
-    // A valid worker resume reply cannot satisfy page readiness either.
+    // A valid worker round trip cannot satisfy page readiness either.
     fixture.send(json!({"method":"Target.attachedToTarget","params":{
         "sessionId":"worker","targetInfo":{"targetId":"worker","type":"service_worker"}
     }}));
@@ -797,15 +1279,31 @@ async fn guard_ready_requires_every_install_and_resume_ack_for_the_exact_page() 
     fixture.acknowledge(&worker);
     assert_eq!(fixture.command().await["method"], "Target.detachFromTarget");
     fixture.barrier().await;
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "missing/extraneous tree or resume ACKs cannot complete the install"
+    );
     assert!(!ready.wait_ready(Duration::from_millis(40)).await);
-    fixture.acknowledge(&resume);
-    assert!(ready.wait_ready(Duration::from_secs(1)).await);
+    fixture.acknowledge(tree);
+    assert!(
+        !ready.wait_ready(Duration::from_millis(40)).await,
+        "the tree ACK alone is not readiness: the batch resume ACK is still pending"
+    );
+    fixture.acknowledge(resume);
+    assert!(
+        ready.wait_ready(Duration::from_secs(1)).await,
+        "readiness requires the exact tree and resume ACKs of the exact page"
+    );
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "readiness completes without commands beyond the install batch"
+    );
     assert!(signal_rx.try_recv().is_err());
     fixture.stop().await;
 }
 
 #[tokio::test]
-async fn rejected_or_malformed_guard_and_resume_acks_fail_locally_without_readiness() {
+async fn rejected_or_malformed_initial_install_acks_fail_the_collector() {
     for method in [
         "Page.enable",
         "Page.getFrameTree",
@@ -820,18 +1318,11 @@ async fn rejected_or_malformed_guard_and_resume_acks_fail_locally_without_readin
             let status = watch.status.clone();
             let mut fixture = StreamFixture::new(Some(watch)).await;
             let commands = fixture.begin_attach("S1", "T1").await;
-            let command = if method == "Runtime.runIfWaitingForDebugger" {
-                for command in &commands {
-                    fixture.acknowledge(command);
-                }
-                fixture.command().await
-            } else {
-                commands
-                    .iter()
-                    .find(|c| c["method"] == method)
-                    .unwrap()
-                    .clone()
-            };
+            let command = commands
+                .iter()
+                .find(|c| c["method"] == method)
+                .unwrap()
+                .clone();
             let mut reply = command_reply(&command, json!({}));
             match invalid {
                 "error" => {

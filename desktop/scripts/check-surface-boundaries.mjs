@@ -74,6 +74,46 @@ const compact = (source) => {
   ).join("");
 };
 
+// Inspect individual command/branch boundaries rather than snapshotting a
+// function or counting all ACK variants in the collector. This stays lexical:
+// runtime state-machine behavior is covered by Rust/stream tests, not proven here.
+function rustCalls(source, name) {
+  const masked = maskSource(source, { strings: true });
+  const calls = [];
+  for (const match of masked.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
+    const start = masked.indexOf("(", match.index);
+    let depth = 1;
+    let end = start + 1;
+    for (; end < masked.length && depth; end += 1) {
+      if (masked[end] === "(") depth += 1;
+      if (masked[end] === ")") depth -= 1;
+    }
+    assert(depth === 0, `边界检查无法定位 ${name} 调用结尾`);
+    calls.push({ start: match.index, end, args: source.slice(start + 1, end - 1) });
+  }
+  return calls;
+}
+
+const occurrences = (source, pattern) => (source.match(pattern) || []).length;
+const commandsIn = (source) => rustCalls(source, "command").map((call) => ({
+  ...call,
+  method: call.args.match(/"([A-Za-z]+\.[A-Za-z]+)"/)?.[1],
+}));
+
+function ifBranches(source, condition) {
+  const masked = maskSource(source, { strings: true });
+  const match = masked.match(condition);
+  if (!match) return { yes: "", no: "" };
+  const start = masked.indexOf("{", match.index + match[0].length);
+  const end = blockEnd(masked, start);
+  const otherwise = masked.slice(end).match(/^\s*else\s*\{/);
+  const elseStart = otherwise ? end + otherwise[0].lastIndexOf("{") : -1;
+  return {
+    yes: source.slice(start + 1, end - 1),
+    no: elseStart < 0 ? "" : source.slice(elseStart + 1, blockEnd(masked, elseStart) - 1),
+  };
+}
+
 const webAdmin = read("../web/admin.html");
 assert(webAdmin.includes("/api/admin/auth/login"), "Web 管理后台缺少管理员登录接口");
 assert(!webAdmin.includes("/api/user/auth/login"), "Web 管理后台不得包含桌面用户登录接口");
@@ -244,54 +284,74 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
     assert(!pattern.test(guard), `托管固定 guard 不得读取或执行：${capability}`);
   }
 
-  // 单连接模型：地址订阅与托管固定 guard 就位后才放行。
+  // 扩展防护模型（2026-11-21）：登录页交互锁由随包 MV3 扩展在 document_start 注入。
+  // 采集连接不再暂停任何 target——实测 Chrome/157 上 noopener 弹窗的防护安装回执
+  // 要等 resume 才返回，暂停会形成回执循环。CDP 只负责采集订阅、就绪闩与退出监控。
   const openingCommands = rustBody(rustCdp, /\bfn\s+opening_commands\s*\(/);
   assert(
     /"autoAttach"\s*:\s*true\b/.test(openingCommands) &&
-      /"waitForDebuggerOnStart"\s*:\s*true\b/.test(openingCommands) &&
+      /letwait_for_debugger=self\.managed\.is_none\(\);/.test(compact(openingCommands)) &&
+      /"waitForDebuggerOnStart"\s*:\s*wait_for_debugger/.test(openingCommands) &&
       /"flatten"\s*:\s*true\b/.test(openingCommands),
-    "采集连接必须暂停新 target（waitForDebuggerOnStart: true）才能安装固定防护",
+    "托管必须关闭 debugger 暂停（waitForDebuggerOnStart=managed.is_none()），普通采集保持暂停+立即放行",
   );
 
   const installBody = rustBody(rustCdp, /\bfn\s+install\s*\(/);
-  const documentScripts = (installBody.match(/"Page\.addScriptToEvaluateOnNewDocument"/g) || []).length;
+  const installCompact = compact(installBody);
+  const documentScripts = occurrences(collectSurface, /"Page\.addScriptToEvaluateOnNewDocument"/g);
   assert(
     documentScripts === 1,
-    "地址采集只允许安装托管固定 guard 一个文档脚本",
+    "地址采集只允许安装托管固定 guard 一个文档脚本（初始页兜底层）",
   );
-  // The local source must remain an unchanged clone of the policy-produced field.
-  const installCompact = compact(installBody);
+  // The local source must remain an unchanged clone of the policy-produced field,
+  // injected only into the initial page as a second layer behind the extension.
   assert(
-    /letmanaged=self\.managed\.as_ref\(\)\.map\(\|state\|state\.login_guard_script\.clone\(\)\);/.test(installCompact) &&
-      /ifletSome\(source\)=managed\{/.test(installCompact) &&
-      /"source":source[,}]/.test(installCompact),
-    "托管 guard 必须由采集连接安装，且 source 只能来自 policy 生成的固定字段",
+    /letmanaged=self\.managed\.is_some\(\);/.test(installCompact) &&
+      /ifletSome\(state\)=self\.managed\.as_ref\(\)\{ifinitial\{commands\.push\(self\.command\(/.test(installCompact) &&
+      /"source":state\.login_guard_script\.clone\(\),"runImmediately":true/.test(installCompact) &&
+      (installBody.match(/"source"\s*:/g) || []).length === 1,
+    "托管 guard 只能来自 policy 生成的固定字段，且只注入初始页（主防线是随包扩展）",
   );
+  const installCommands = commandsIn(installBody);
   assert(
-    (installBody.match(/"source"\s*:/g) || []).length === 1 &&
-      !/\bsource\s*(?:\+=|=(?!=))/.test(installBody),
-    "文档脚本只能来自 policy 生成的 guard，不能使用前端动态 source",
+    compact(installCommands.find((command) => command.method === "Page.addScriptToEvaluateOnNewDocument")?.args ?? "")
+      .startsWith('Some(session_id),"Page.addScriptToEvaluateOnNewDocument",'),
+    "固定 guard 必须绑定当前 session 的安装请求，不能跨页安装",
   );
+  // 初始页：guard → enable → tree → lifecycle，各登记 Install ACK；
+  // 后续页：enable → tree → lifecycle，各登记 Monitor ACK，且不得出现文档脚本。
+  const addScriptAt = installBody.indexOf('"Page.addScriptToEvaluateOnNewDocument"');
   const enableAt = installBody.indexOf('"Page.enable"');
   const treeAt = installBody.indexOf('"Page.getFrameTree"');
   const lifecycleAt = installBody.indexOf('"Page.setLifecycleEventsEnabled"');
-  const guardAt = installBody.indexOf('"Page.addScriptToEvaluateOnNewDocument"');
   assert(
-    guardAt >= 0 && enableAt > guardAt && treeAt > enableAt && lifecycleAt > treeAt,
-    "固定 guard 必须在 Page.enable 之前安装，frame tree 与 lifecycle 订阅随后执行",
+    addScriptAt >= 0 && enableAt > addScriptAt && treeAt > enableAt && lifecycleAt > treeAt,
+    "初始固定 guard 必须在 Page.enable 之前安装，frame tree 与 lifecycle 订阅随后执行",
   );
   assert(
-    /"Page\.setLifecycleEventsEnabled",json!\(\{"enabled":true\}\)/.test(installCompact) &&
-      /"source":source,"runImmediately":true/.test(installCompact),
-    "托管 guard 必须订阅 lifecycle 并覆盖当前文档（runImmediately: true）",
+    (installCompact.match(/tracked\(self,GuardRequest::Install\);/g) || []).length === 1 &&
+      (installCompact.match(/tracked\(self,ifinitial\{GuardRequest::Install\}else\{GuardRequest::Monitor\}\);/g) || []).length === 4 &&
+      (installCompact.match(/self\.frame_tree_requests\s*\.\s*insert\s*\(\s*self\.next_id,\s*session_id\.to_string\(\)\s*\)/g) || []).length === 1,
+    "初始页登记五条 Install ACK（guard 字面量 + enable/tree/lifecycle/resume 走初始分支），后续页登记四条 Monitor ACK，tree 每页恰好一条",
   );
   assert(
-    (installCompact.match(/GuardRequest::Install\(session_id\.to_string\(\)\)/g) || []).length === 4 &&
-      /if(?:self\.)?managed\.is_some\(\)\{self\.guard_requests\.insert\(self\.next_id,GuardRequest::Install\(session_id\.to_string\(\)\)\);\}/.test(installCompact) &&
-      !installBody.includes('"Runtime.runIfWaitingForDebugger"') &&
-      /\}else\{commands\.push\(self\.resume_page\(session_id\)\);\}/.test(installCompact) &&
-      (installBody.match(/\.resume_page\(/g) || []).length === 1,
-    "托管安装必须登记四条 ACK，不能在安装命令发送时放行；仅普通页面可立即 resume_page",
+    /ifletSome\(page\)=self\.sessions\.get\(session_id\)\.is_some_and\(\|page\|page\.initial\);/.test(installCompact) ||
+      /letinitial=self\.sessions\.get\(session_id\)\.is_some_and\(\|page\|page\.initial\);/.test(installCompact),
+    "初始/后续判定必须来自 page.initial，不能按 URL 或首次附着猜",
+  );
+  const ordinaryResume = ifBranches(installBody.slice(treeAt), /\bif\s+managed\s*\b/).no;
+  assert(
+    compact(ordinaryResume) === "commands.push(self.resume_page(session_id));" &&
+      occurrences(installBody, /\.resume_page\s*\(/g) === 2,
+    "resume 必须在安装批次内无条件发送（flatten autoAttach 会挂起新 target，与 waitFor 无关）；普通采集保持原路径",
+  );
+  assert(
+    /"Page\.setLifecycleEventsEnabled",json!\(\{"enabled":true\}\)/.test(installCompact),
+    "托管采集必须订阅 lifecycle（登录页稳定停留判定的输入）",
+  );
+  assert(
+    !/GuardRequest::Resume\(|GuardRequest::Guard\(|PagePhase|\.resumed\b|Resume\(String\)/.test(rustCdp),
+    "暂停状态机不得回归：实测 flatten autoAttach 下 noopener 弹窗的防护回执依赖 resume，构成回执循环",
   );
 
   const ackBody = rustBody(rustCdp, /\bfn\s+acknowledge_guard\s*\(/);
@@ -301,27 +361,166 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
   const sessionCheckAt = ackCompact.indexOf('ifmessage.get("sessionId").and_then(Value::as_str)!=session{return;}');
   const removeAt = ackCompact.indexOf('self.guard_requests.remove(&id);');
   const acceptedAt = ackCompact.indexOf('letaccepted=message.get("error").is_none()&&message.get("result").is_some_and(Value::is_object)');
-  const rejectAt = ackCompact.indexOf('if!accepted{out.guard_failed=true;return;}');
-  const resumeAt = ackCompact.indexOf('out.commands.push(self.resume_page(&session));');
+  const rejection = ifBranches(ackBody, /\bif\s*!\s*accepted\s*/).yes;
+  const rejectAt = ackBody.indexOf(rejection);
   assert(
     /letSome\(request\)=self\.guard_requests\.get\(&id\)\.cloned\(\)else\{return;?\};/.test(ackCompact) &&
-      sessionCheckAt >= 0 && acceptedAt > sessionCheckAt && rejectAt > acceptedAt &&
-      removeAt > rejectAt && resumeAt > removeAt &&
+      /GuardRequest::Install\(session\)\|GuardRequest::Monitor\(session\)=>\{?Some\(session\.as_str\(\)\)\}?/.test(ackCompact) &&
+      sessionCheckAt >= 0 && acceptedAt > sessionCheckAt && removeAt > acceptedAt &&
+      rejectAt > ackBody.indexOf("let accepted") &&
+      ackBody.indexOf(rejection) + rejection.length < ackBody.indexOf("self.guard_requests.remove") &&
+      /self\.fail_page\(session,reason,out\);/.test(compact(rejection)) &&
       /self\.acknowledge_guard\(id,&message,&mutout\);/.test(compact(handleBody)),
-    "托管 ACK handler 必须先核对请求 ID、session、无 error 的对象 result，拒绝后退出，才允许 resume_page",
+    "托管 ACK handler 必须先核对请求 ID、session、无 error 的对象 result；拒绝按请求类别走局部或全局失败",
   );
   assert(
-    /GuardRequest::Install\(session\)=>\{letpending=self\.guard_requests\.values\(\)\.any\(\|request\|(?:\{)?matches!\(request,GuardRequest::Install\(other\)ifother==&session\)(?:\})?\);if!pending&&self\.sessions\.contains_key\(&session\)\{out\.commands\.push\(self\.resume_page\(&session\)\);\}\}/.test(ackCompact) &&
-      (collectSurface.match(/\.resume_page\(/g) || []).length === 2,
-    "托管页面只能在 ACK handler 确认同 session 全部安装请求完成后 resume_page",
+    /GuardRequest::Install\(_\)=>"guard_install_failed"/.test(ackCompact) &&
+      /GuardRequest::Monitor\(_\)=>"monitor_install_failed"/.test(ackCompact) &&
+      /GuardRequest::AutoAttach=>\{out\.guard_failed=true;return;\}/.test(ackCompact),
+    "ACK 拒绝必须按请求类别分类：初始防护失败全局关闭，订阅失败只关所属页",
   );
   assert(
-    /GuardRequest::Resume\(session\)=>\{ifletSome\(page\)=self\.sessions\.get\(&session\)\{ifletSome\(state\)=self\.managed\.as_ref\(\)\{state\.guard_installed\.mark_for\(&page\.target_id\);\}out\.guard_installed=true;\}\}/.test(ackCompact) &&
-      (collectSurface.match(/\.guard_installed\s*=/g) || []).length === 1 &&
-      (collectSurface.match(/\.mark_for\(/g) || []).length === 1 &&
+    /!self\.frame_tree_requests\.contains_key\(&id\)\|\|message\.pointer\("\/result\/frameTree\/frame\/id"\)\.and_then\(Value::as_str\)\.is_some_and\(\|id\|!id\.is_empty\(\)\)/.test(ackCompact),
+    "frame tree ACK 必须验证非空主 frame ID，不能只接受任意对象 result",
+  );
+  const dispatch = ackBody.slice(ackBody.indexOf("self.guard_requests.remove(&id);"));
+  const arm = (variant) => rustBody(dispatch, new RegExp(`\\bGuardRequest::${variant}\\(session\\)\\s*=>`));
+  const initialArm = compact(arm("Install"));
+  const monitorArm = compact(arm("Monitor"));
+  assert(
+    /letpending=self\.guard_requests\.values\(\)\.any\(\|request\|matches!\(request,GuardRequest::Install\(other\)ifother==&session\)\);if!pending\{ifletSome\(page\)=self\.sessions\.get_mut\(&session\)\{page\.deadline=None;ifletSome\(state\)=self\.managed\.as_ref\(\)\{state\.guard_installed\.mark_for\(&page\.target_id\);\}out\.guard_installed=true;\}\}/.test(initialArm) &&
+      monitorArm === "self.finish_popup_setup(&session);" &&
+      occurrences(ackBody, /\.resume_page\s*\(/g) === 0 &&
+      occurrences(ackBody, /\.enable_popup\s*\(/g) === 0,
+    "初始页全部安装回执完成即置就绪闩（扩展模式无暂停、无 resume）；后续页只由 Monitor ACK 收尾",
+  );
+  // Resume is a tightly scoped debugger-release exception, not general Runtime:
+  // ordinary collection and worker/duplicate release, never managed pages.
+  const collectorBody = rustBody(rustCdp, /\bimpl\s+Collector\b/);
+  const resumeDetach = rustBody(rustCdp, /\bfn\s+resume_and_detach\s*\(/);
+  const withoutRelease = collectorBody.replace(resumeBody, "").replace(resumeDetach, "");
+  assert(
+    !withoutRelease.includes('"Runtime.runIfWaitingForDebugger"') &&
+      occurrences(collectorBody, /\.resume_page\s*\(/g) ===
+        occurrences(installBody + ackBody + resumeDetach, /\.resume_page\s*\(/g) &&
       resumeBody.includes('"Runtime.runIfWaitingForDebugger"') &&
-      /GuardRequest::Resume\(session_id\.to_string\(\)\)/.test(resumeBody),
-    "防护就绪只能由成功的 page resume ACK 发布，worker 或命令发送不能置位",
+      !/GuardRequest::Resume/.test(resumeBody) &&
+      !/page\.resumed|\.phase\s*=/.test(resumeBody),
+    "resume 回执只参与初始就绪闩与后续页预算，绝不能变成防护 ACK 门禁；worker/重复 session 释放保留",
+  );
+  const attached = rustBody(rustCdp, /\bfn\s+on_attached\s*\(/);
+  assert(
+    /initial:self\.managed\.as_ref\(\)\.is_some_and\(\|state\|state\.guard_installed\.is_initial_target\(target_id\)\)/.test(compact(attached)),
+    "初始 target 必须由就绪闩的 target 标识判定，追加页面不得满足首次导航就绪",
+  );
+  const duplicate = rustBody(attached, /\bif\s+self\s*\.\s*is_installed_target\s*\(target_id\)/);
+  const duplicateBranches = ifBranches(duplicate, /\bif\s+self\s*\.\s*managed\s*\.\s*is_some\s*\(\s*\)\s*/);
+  assert(
+    commandsIn(duplicateBranches.yes).map((command) => command.method).join(",") === "Target.detachFromTarget" &&
+      !/resume/.test(duplicateBranches.yes) &&
+      /out\.commands\.extend\(self\.resume_and_detach\(&session_id\)\);/.test(compact(duplicateBranches.no)) &&
+      compact(ifBranches(attached, /\bif\s+self\s*\.\s*sessions\s*\.\s*contains_key\s*\(&session_id\)/).yes) === "return;",
+    "重复追加 attachment：托管直接断开（不暂停无须放行），普通保持先放行再断开",
+  );
+
+  const events = rustBody(rustCdp, /\basync\s+fn\s+collect_events\s*\(/);
+  assert(
+    occurrences(events, /\bconnect\s*\(/g) === 1 &&
+      !/\b(?:connect|connect_async|control_command|tokio\s*::\s*spawn)\s*\(/.test(collectorBody) &&
+      !/\b(?:connect|connect_async|control_command)\s*\(/.test(rustBody(rustCdp, /\bpub\s+async\s+fn\s+collect\s*\(/)),
+    "托管防护与地址采集必须共用唯一长连接，不得新增第二个防护客户端",
+  );
+
+  const deadline = compact(rustBody(rustCdp, /\bfn\s+setup_deadline\s*\(/));
+  const expiry = compact(rustBody(rustCdp, /\bfn\s+expire_setup\s*\(/));
+  const failure = compact(rustBody(rustCdp, /\bfn\s+fail_page\s*\(/));
+  const finish = compact(rustBody(rustCdp, /\bfn\s+finish_popup_setup\s*\(/));
+  assert(
+    /deadline:self\.managed\.as_ref\(\)\.map\(\|_\|\{tokio::time::Instant::now\(\)\+crate::managed_cdp::GUARD_INSTALL_TIMEOUT\}\)/.test(compact(attached)) &&
+      /self\.sessions\.values\(\)\.filter_map\(\|page\|page\.deadline\)/.test(deadline) &&
+      /self\.closing_targets\.values\(\)/.test(deadline) && /closing\.deadline/.test(deadline) && deadline.endsWith(".min()") &&
+      /page\.deadline\.is_some_and\(\|deadline\|deadline<=now\)/.test(expiry) &&
+      /self\.fail_page\(&session,reason,&mutout\);/.test(expiry) &&
+      /letreason=ifpage\.initial\{"guard_install_timeout"\}else\{"monitor_install_timeout"\};/.test(expiry) &&
+      !/page_resume_timeout|page_resume_failed|GuardRequest::Guard|GuardRequest::Resume|PagePhase|\.resumed/.test(rustCdp) &&
+      !/\bfn\s+enable_popup\s*\(/.test(rustCdp) &&
+      /closing\.deadline<=now/.test(expiry) && /out\.guard_failed=true;returnout;/.test(expiry) &&
+      /collector\.expire_setup\(\)/.test(events) && /collector\.setup_deadline\(\)/.test(events) &&
+      /sleep_until\(deadline\)\.await/.test(events) &&
+      /ifletSome\(deadline\)=setup_deadline\{tokio::time::sleep_until\(deadline\)\.await;/.test(compact(events)) &&
+      /matches!\(request,GuardRequest::Monitor\(session\)ifsession==session_id\)/.test(finish) &&
+      /if!pending\{ifletSome\(page\)=self\.sessions\.get_mut\(session_id\)\{page\.deadline=None;/.test(finish) &&
+      /self\.frame_tree_requests\s*\.\s*retain\(\|_,session\|session!=session_id\)/.test(finish),
+    "每个托管页面及关闭验证必须有有界 deadline，缺失 ACK 必须定时处理；Monitor 集合完成后即清除追加页面 deadline",
+  );
+  assert(
+    /ifpage\.initial\{out\.guard_failed=true;return;\}/.test(failure) &&
+      /lettarget=page\.target_id\.clone\(\);/.test(failure) &&
+      /filter\(\|\(_,page\)\|page\.target_id==target\)/.test(failure) &&
+      /self\.forget_session\(&session\);/.test(failure) &&
+      /deadline:tokio::time::Instant::now\(\)\+crate::managed_cdp::GUARD_INSTALL_TIMEOUT/.test(failure) &&
+      /self\.command\(None,"Target.closeTarget",json!\(\{"targetId":target\}\)\)/.test(failure) &&
+      /self\.close_requests\.insert\(self\.next_id,CloseRequest::Close\(target\)\);/.test(failure),
+    "初始失败必须 fail closed，追加失败只能关闭所属 target 并清理同 target session，关闭验证保持有界",
+  );
+  const closeBody = rustBody(rustCdp, /\bfn\s+acknowledge_close\s*\(/);
+  const closeCompact = compact(closeBody);
+  const closeArm = compact(rustBody(closeBody, /\bCloseRequest::Close\(target\)\s*=>/));
+  const verifyPattern = /\bCloseRequest::Verify\(target\)(?:\s*\|\s*CloseRequest::Detached\(target\))?\s*=>/;
+  const verifyBody = rustBody(closeBody, verifyPattern);
+  const verifyArm = compact(verifyBody);
+  assert(
+    /letSome\(request\)=self\.close_requests\.get\(&id\)\.cloned\(\)else\{return;?\};/.test(closeCompact) &&
+      /ifmessage\.get\("sessionId"\)\.is_some\(\)\{return;\}/.test(closeCompact) &&
+      closeCompact.indexOf('ifmessage.get("sessionId")') < closeCompact.indexOf("self.close_requests.remove(&id)") &&
+      /self\.command\(None,"Target.getTargets",json!\(\{\}\)\)/.test(closeArm) &&
+      /self\.close_requests\.insert\(self\.next_id,CloseRequest::Verify\(target\)\);/.test(closeArm) &&
+      /message\.pointer\("\/result\/targetInfos"\)\.and_then\(Value::as_array\)\.filter\(\|targets\|(?:\{)?message\.get\("error"\)\.is_none\(\)&&targets\.iter\(\)\.all\(\|info\|\{info\.get\("targetId"\)\.and_then\(Value::as_str\)\.is_some_and\(\|id\|!id\.is_empty\(\)\)\}\)(?:\})?\)else\{out\.guard_failed=true;return;\}/.test(verifyArm) &&
+      /info\.get\("targetId"\)\.and_then\(Value::as_str\)==Some\(&target\)/.test(verifyArm) &&
+      /ifletSome\(closed\)=self\.closing_targets\.remove\(&target\)/.test(verifyArm) &&
+      /ManagedSignal::PageClosed\{reason:closed\.reason\}/.test(verifyArm) &&
+      occurrences(collectSurface, /ManagedSignal::PageClosed\s*\{/g) === 1 &&
+      /self\.acknowledge_close\(id,&message,&mutout\);/.test(compact(handleBody)),
+    "关闭验证必须核对请求 ID、无 session 的 browser ACK、有效 targetInfos 与所属 target 缺席，才发布 scoped PageClosed；detach 不是销毁证明",
+  );
+  const detachedBody = rustBody(rustCdp, /\bfn\s+on_detached\s*\(/);
+  if (detachedBody || /CloseRequest::Detached\b/.test(closeBody)) {
+    const detachedCompact = compact(detachedBody);
+    assert(
+      /self\.sessions\.get\(session_id\)\.map\(\|page\|\(page\.target_id\.clone\(\),page\.initial\)\)/.test(detachedCompact) &&
+        /self\.closing_targets\.insert\(target\.clone\(\),ClosingTarget\{/.test(detachedCompact) &&
+        /deadline:tokio::time::Instant::now\(\)\+crate::managed_cdp::GUARD_INSTALL_TIMEOUT/.test(detachedCompact) &&
+        /initial,notify:false/.test(detachedCompact) &&
+        /self\.command\(None,"Target.getTargets",json!\(\{\}\)\)/.test(detachedCompact) &&
+        /self\.close_requests\.insert\(self\.next_id,CloseRequest::Detached\(target\)\);/.test(detachedCompact) &&
+        /CloseRequest::Verify\(target\)\|CloseRequest::Detached\(target\)=>/.test(closeCompact) &&
+        /letdetached=matches!\(&request,CloseRequest::Detached\(_\)\);/.test(closeCompact) &&
+        /ifclosing\.initial\{out\.guard_failed=true;return;\}/.test(verifyArm) &&
+        /closing\.notify=true;/.test(verifyArm) &&
+        /self\.command\(None,"Target.closeTarget",json!\(\{"targetId":target\}\)\)/.test(verifyArm) &&
+        /self\.closing_targets\.remove\(&target\)\.filter\(\|closed\|closed\.notify\)/.test(verifyArm) &&
+        /self\.on_detached\(gone,&mutout\);/.test(compact(handleBody)),
+      "canonical detach 必须隔离同 target、登记有界 Detached 缺席验证；存活初始页 fail closed，存活追加页 scoped close，用户关闭静默清理",
+    );
+  }
+  assert(
+    !/\.deadline\s*=|closing_targets\s*\.\s*insert\s*\(/.test(closeBody),
+    "关闭验证不得续期 deadline 或重建 closing target，重试必须受原有期限约束",
+  );
+  if (/\bretry_at\b/.test(closeBody)) {
+    assert(
+      /closing\.retry_at/.test(deadline) &&
+        /closing\.retry_at\.is_some_and\(\|deadline\|deadline<=now\)/.test(expiry) &&
+        /self\.close_requests\.insert\(self\.next_id,CloseRequest::Verify\(target\)\);/.test(expiry) &&
+        /self\.command\(None,"Target.getTargets",json!\(\{\}\)\)/.test(expiry),
+      "关闭重试必须由有界 timer 唤醒并继续登记 scoped Verify 请求",
+    );
+  }
+  const present = ifBranches(verifyBody, /\bif\s+targets\s*\.\s*iter\s*\(\s*\)\s*\.\s*any\s*\(/).yes;
+  assert(
+    present && /return;$/.test(compact(present)) &&
+      !/PageClosed|closing_targets\s*\.\s*remove/.test(present),
+    "关闭验证中 target 仍存在时必须退出或有界重试，不能误报 PageClosed",
   );
   assert(
     !/__VESTUS_LOGIN_ROUTE__|login_guard\.js|include_str!/.test(rustCdp),
@@ -332,6 +531,38 @@ if (managedFilesPresent.some(Boolean) || /\bmod\s+managed_cdp\s*;/.test(rustProd
   assert(
     /\bExpired\b/.test(managedSignal) && /\bConnectionLost\b/.test(managedSignal),
     "托管信号必须区分凭据过期与防护连接断开",
+  );
+
+  // 随包扩展生成：登录防护主防线。桌面端每次托管启动用 policy 生成 manifest 与
+  // guard.js（同一模板），不支持的 fail closed；guard 模板仍只允许一份。
+  const extensionBody = rustBody(managed, /\bfn\s+write_login_guard_extension\s*\(/);
+  const extensionCompact = compact(extensionBody);
+  assert(
+    /\bfn\s+write_login_guard_extension\s*\(/.test(managed) &&
+      /LogoutPolicy::for_platform\(target_url\)\.ok_or_else\(\|\|/.test(extensionCompact) &&
+      /std::io::Error::new\(\s*std::io::ErrorKind::InvalidInput,/.test(extensionCompact) &&
+      /"manifest_version":3,/.test(extensionCompact) &&
+      /"run_at":"document_start","all_frames":false,"world":"MAIN"/.test(extensionCompact) &&
+      /"matches":\[format!\("\{origin\}\/\*"\)\]/.test(extensionCompact) &&
+      /std::fs::write\(extension_dir\.join\("guard\.js"\),policy\.login_guard_script\(\)\)\?;/.test(extensionCompact) &&
+      (managed.match(/include_str!\("managed_cdp\/login_guard\.js"\)/g) || []).length === 1,
+    "扩展目录只能由 policy 生成（MAIN 世界、document_start、仅登录 origin、单份模板），不支持的平台必须失败",
+  );
+  const rustBrowser = rustProduction(read("src-tauri/src/browser.rs"));
+  const chromiumArgs = rustBody(rustBrowser, /\bfn\s+chromium_arguments\s*\(/);
+  const chromiumArgsCompact = compact(chromiumArgs);
+  assert(
+    /login_guard_extension: Option<&Path>/.test(rustBrowser) &&
+      /ifletSome\(extension\)=login_guard_extension\{/.test(chromiumArgsCompact) &&
+      /"--load-extension=\{\}",/.test(chromiumArgsCompact) &&
+      occurrences(chromiumArgsCompact, /--load-extension=\{\}/g) === 1 &&
+      chromiumArgsCompact.indexOf('"--load-extension={}",') > chromiumArgsCompact.indexOf('"--window-size={}",') ,
+    "chromium_arguments 必须只在提供扩展目录时追加一次 --load-extension，且位于起始网址之前",
+  );
+  assert(
+    /BrowserError::LoginGuardExtension\(_\)=>CommandError::new\(/.test(compact(rustBody(rustCommandSource, /\bfn\s+managed_launch_command_error\s*\(/))) &&
+      rustCommandSource.includes('"managed_guard_unavailable"'),
+    "扩展准备失败必须 fail closed 并映射 managed_guard_unavailable，不得降级为通用启动错误",
   );
 
   // These checks are production-only: local fake-page tests may deliberately

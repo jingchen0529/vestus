@@ -60,6 +60,18 @@ pub(crate) fn validate_bootstrap_account_id(
     Ok(returned)
 }
 
+/// 浏览器启动失败的命令层翻译。托管启动独有的扩展准备失败单独给错误码，
+/// 前端据此提示重新打开平台；其余保持通用浏览器错误码。
+pub(crate) fn managed_launch_command_error(error: BrowserError) -> CommandError {
+    match error {
+        BrowserError::LoginGuardExtension(_) => CommandError::new(
+            "托管登录防护扩展准备失败，请重试",
+            "managed_guard_unavailable",
+        ),
+        error => browser_command_error(error),
+    }
+}
+
 async fn wait_for_external_profile_release(profile_dir: &Path) -> CmdResult<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -338,6 +350,10 @@ pub async fn open_browser<R: Runtime>(
     };
     let managed_session_for_ready = managed_session.clone();
     let managed_launch = managed_session.is_some();
+    // 托管启动预装 MV3 登录防护扩展：生成发生在浏览器管理器的托管 profile 清理
+    // 之后、进程启动之前（见 BrowserSessionManager::launch），这里只传平台入口。
+    // 不支持的平台（策略为空）在生成时显式失败，按托管防护不可用处理。
+    let login_guard_target_url = managed_launch.then(|| launch.target_url.as_str());
     let logout_context = managed_session
         .as_ref()
         .map(|session| ManagedLogoutContext {
@@ -375,6 +391,7 @@ pub async fn open_browser<R: Runtime>(
         local_proxy.as_deref(),
         initial_url,
         disable_sandbox,
+        login_guard_target_url,
         move |endpoint| {
             network_for_ready.wake();
             // 托管顺序：先装 Cookie、启动采集并把固定 guard 装好并放行，确认后
@@ -498,7 +515,7 @@ pub async fn open_browser<R: Runtime>(
     ) {
         state.mark_browser_closed_for(browser_id);
         emit_status(&app, &state);
-        return Err(browser_command_error(error));
+        return Err(managed_launch_command_error(error));
     }
     browsers.note_browser_activity(browser_id, platform_id, direct_mode);
     network.wake();

@@ -74,20 +74,17 @@ bootstrap 的两分钟 TTL 是消费期限，不是浏览器会话期限。已�
 
 ## watcher 与固定 login guard 的范围（单连接模型）
 
-托管会话只有**一条** CDP 连接：活动采集连接（v0.2.10 验证的单客户端模型）。
-它通过 `Target.setAutoAttach`（`waitForDebuggerOnStart: true`、无过滤、flatten）
-暂停所有新 target，按顺序安装 `Page.enable → Runtime.enable → addBinding →
-采集脚本 → 登录页交互锁脚本`，最后以 `Runtime.runIfWaitingForDebugger` 放行；
-非 page target（Service Worker 等）先放行再断开。同一连接的事件流同时喂给
-活动采集与 `LogoutDetector`（登出 URL、登录页 4 秒观察窗）。
+托管会话只有**一条长期自动附加/采集连接**；Cookie 注入和首次导航复用短期控制连接，不建立第二条 auto-attach 监控连接。
 
-> 2026-11-04 变更：废弃独立的第二条防护连接。真实巨量环境中，任何形式的第二条
-> autoAttach 连接都会让 `window.open` 弹窗停在 about:blank 永不导航（与命令内容
-> 无关，passive 只挂不发也一样）；v0.2.10 的单连接模型无此问题。暂停期间注册的
-> 登录防护脚本覆盖弹窗内容页等所有后续文档；附加瞬间已在登录页的极端情况不再
-> 单独检测（暂停模型下不存在"未就绪页面"窗口）。检测到登出/登录页停留超窗或
-> 连接断开时，采集连接发出 `Expired`/`ConnectionLost` 信号，由命令层执行既有
-> 的关闭、上报与前端事件流程；本地故障绝不上报凭据过期。
+- **登录页防护主防线**：随包 MV3 扩展（`document_start`、`world: MAIN`、只匹配托管平台登录 origin），托管启动时由 `managed_cdp::write_login_guard_extension` 写入 profile 内扩展目录并经 `--load-extension` 加载。CDP 不再暂停任何 target——实测 Chrome/157 上 noopener 弹窗的防护安装回执要等 resume 才返回，暂停会形成回执循环。
+- 初始 target：注入 Cookie 后，采集器再通过 CDP 装一层固定 guard 作为兜底（扩展先装时该注入因幂等标记为空操作），确认四条安装回执后置就绪闩，再允许首次业务导航。
+- 后续 target：只装采集订阅（`Page.enable`、frame tree、lifecycle），不装 guard、不放行；订阅与主 frame 建立共享有界初始化预算。订阅失败只关闭受影响的 target，核对浏览器 target 列表确认其消失后通知 `managed-page-guard-failed`；清理无法确认才升级全局防护故障。
+- worker 等非 page target 在普通采集下仍先放行再断开（托管不暂停，放行为无害空操作）；同 target 的重复 session 直接断开，不重复计数。
+- 固定登录脚本只对配置的同源 `/login` 及其子路径锁定交互；扩展与 CDP 注入同一份脚本、共享幂等标记。活动采集只处理 Page URL 事件，不读取输入、Cookie 或 DOM 内容。
+- 明确登出以及已加载登录页稳定停留仍由现有 `Expired` 流程销毁托管浏览器并上报原凭据版本。局部初始化故障及 `ConnectionLost` 不上报凭据过期。
+
+**能力边界（2026-11-21 更新）**：`--load-extension` 与 `world: MAIN` 已在随包 Chrome for Testing 157（macOS arm64、windowed、loopback 页面）实测；Windows、品牌 Chrome、生产 profile、CSP 页面未验证。扩展可被本机用户禁用或移除，与 CDP 注入同为最佳努力防护，不是对抗本机用户的安全边界；控制本机的人仍可能修改/禁用扩展或脚本。隔离世界内联脚本注入在 CfT 157 已失效，不得再作为防护手段引用。
+
 
 ### 能力与保证的边界
 
@@ -111,16 +108,13 @@ PYTHON_DOTENV_DISABLED=1 VESTUS_MANAGED_CHROMIUM_PATH= python3 -m pytest -o addo
 Rust 单元回归（不打开旧的可见外网浏览器测试）：
 
 ```sh
-cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib -- \
-  --skip target_commands_work_against_a_real_browser
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib -- --test-threads=1
 ```
 
 真实 Chromium 隔离回归，将环境变量指向已有 Chromium 可执行文件，不使用真实用户 profile：
 
 ```sh
-VESTUS_TEST_CHROMIUM_PATH="/absolute/path/to/chromium" \
-  cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib real_ -- --ignored \
-  --skip real_browser_upgrade_round_trip --skip real_chromium_persistence_matrix
+VESTUS_CONTROL_CHROMIUM="/absolute/path/to/chromium" npm --prefix desktop run test:control
 ```
 
 这些隔离回归覆盖本地页面重定向、SPA 同文档登出、Cookie 注入顺序、进程树强杀、目录清理、跨进程 lease 和快速重开。它们不访问真实方舟账号，不能替代授权账号的生产平台回归。
@@ -130,17 +124,21 @@ VESTUS_TEST_CHROMIUM_PATH="/absolute/path/to/chromium" \
 只使用本地 fake HTTP 页面和测试专用临时 profile，不复用用户目录、不访问生产账号。设置测试 Chromium 路径后，串行运行托管 CDP 集成测试：
 
 ```sh
-VESTUS_TEST_CHROMIUM_PATH="/absolute/path/to/chromium" \
-  cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib \
-  managed_cdp::integration_tests -- --ignored --test-threads=1
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib \
+  cdp::stream_tests -- --test-threads=1
+# 真实弹窗：当前 noopener 用例仍失败，不忽略其结果。
+VESTUS_CONTROL_CHROMIUM="/absolute/path/to/chromium" \
+  cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib \
+  cdp::control_tests::managed_async_popups_remain_interactive_against_a_real_browser \
+  -- --ignored --exact --test-threads=1 --nocapture
 ```
 
 需要核对的行为：
 
-- 第一个标签、复制/新开标签和连续多 tab 的防护就绪过程，核对 browser page-only 自动附加与 `Page.enable → 固定脚本安装 → Page.getFrameTree → 恢复页面` 顺序，以及并发附加的去重和超时处理。对已就绪页面后续进入登录路由，验证根节点隐藏且 inert，普通键盘输入、粘贴、鼠标、表单提交被拦截。
+- 初始 target 的完整安装回执、后续 target 仅采集订阅（无暂停/无 resume）、并发去重及本地初始化超时；不得以 `Target.createTarget` 成功代替 `window.open` 弹窗回归。验证已就绪页面后续进入登录路由时根节点隐藏且 inert，键盘输入、粘贴、鼠标和表单提交被拦截。
 - `/login` 与 `/login/…` 命中；相似路径、其他 origin、普通查询参数及 SSO 中转不被整站误锁。SPA history 往返与文档导航都同步；自动回工作台时恢复原 root 状态。
 - 已就绪 tab 后续进入登录页时独立观察 4 秒。其他 tab 的导航不能无限续期；关闭待判定 tab 不应误报；持续登录页才触发一次对应会话失效信号。
-- 真实 Chromium 用 `Target.createTarget(url)` 直接打开 fake 登录页，验证未就绪页面在目标创建/更新、附加或枚举时一经发现即本地 guard failure，不等待 4 秒、不发凭据过期。此测试不能要求首脚本完全未执行或登录页从未闪现；桌面层还须验证关闭本次浏览器和 `monitor_failed` 故障 toast。
+- 直接打开 fake 登录页、noopener/noreferrer 和异步赋 URL 的 popup 必须检查实际文档防护与业务活性，而不是只看 target 附着或迟到 ACK。当前 noopener 活性未通过，后续直接登录页断言尚未走到；不得宣称零闪现、零执行或零输入。
 - guard 安装被拒绝、连接断开、命令无回执超时与普通关闭分别验证。防护失败不能当成凭据过期；初始防护失败不得继续注入。浏览器关闭与 `managed-session-guard-failed` 的消费/显示还需桌面命令层回归，不能仅凭 CDP 测试断言完整链路通过。
 
 本地测试为了模拟用户和断言 fake 页面状态，可以使用 `Runtime.evaluate` 或输入命令；这不是生产 guard 的权限。边界检查只对固定 guard 与相关生产代码限制能力，不以全工程字符串黑名单误拦测试。
@@ -156,7 +154,7 @@ node --test desktop/scripts/check-surface-boundaries.test.mjs
 ## 发布前仍需验证
 
 - **待用户授权线上复测：第 5 页「本地推」**。在本地 debug 桌面端使用已授权方舟测试账号复现该入口及多 tab 的实际登录/退出路径，区分已就绪页面的 SSO 自动恢复/持续登录页 4 秒后失效，与未就绪页面直达登录页的立即本地故障关闭、不报过期；同时检查主动关闭是否误报。此项尚未完成；不能将本地 fake 页面或构造 URL 的结果写成线上已通过。
-- 新开/复制标签直接打开登录页的首文档执行时序与立即失败关闭，必须在目标 Chromium 版本实测；自动附加及 `waitingForDebugger: true` 不证明脚本在登录页面首代码之前安装。不同平台版本、禁用 JavaScript、登录页闪现均需如实记录，不给出绝对保证。
+- 新开/复制标签、noopener 投放路径及直达登录页的时序，必须在目标 Chromium 版本实测；当前隔离 noopener 回归失败，普通 createTarget 或自动附着成功不能替代。不同平台版本、禁用 JavaScript、登录页闪现均需如实记录，不给绝对保证。
 - 防护连接故障和超时须核对桌面层只发送 `managed-session-guard-failed`、不误报凭据过期；正常退出不发送此故障，关闭失败时正确反映 `browserClosed: false`。
 - Windows 实机的 Job 进程树、占用查询、文件锁及清理时序；交叉类型检查不能替代运行测试。
 - 生产 MySQL 的迁移及并发锁行为；临时 SQLite 测试不能证明生产库一致性。

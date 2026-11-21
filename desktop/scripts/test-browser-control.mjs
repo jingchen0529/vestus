@@ -10,6 +10,7 @@ const requiredTests = [
   "cdp::control_tests::target_commands_work_against_a_real_browser",
   "cdp::control_tests::url_only_collection_and_managed_guard_against_a_real_browser",
   "cdp::control_tests::slow_loading_login_never_expires_until_load_completes",
+  "cdp::control_tests::managed_async_popups_remain_interactive_against_a_real_browser",
 ];
 const args = [
   "test", "--locked", "--lib",
@@ -89,7 +90,7 @@ export async function runControlTest({
     && requiredTests.every((name) => testNames.includes(name));
   const passed = !failure && exitCode === 0 && !signal && ran;
   if (!passed && !failure) {
-    const message = `Control gate requires cargo exit 0 without a signal and exactly ${requiredTests.length} named passing real-browser tests (lifecycle, URL-only collection/guard, and slow-loading login heal), 0 failed, 0 ignored; refusing a false success.\n`;
+    const message = `Control gate requires cargo exit 0 without a signal and exactly ${requiredTests.length} named passing real-browser tests (lifecycle, URL-only collection/guard, slow-loading login heal, and asynchronous managed popups), 0 failed, 0 ignored; refusing a false success.\n`;
     appendFileSync(logPath, message);
     stderr.write(message);
   }

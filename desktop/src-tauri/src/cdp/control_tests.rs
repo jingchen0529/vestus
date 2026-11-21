@@ -201,6 +201,7 @@ struct Fixture {
     server: tokio::task::JoinHandle<()>,
     /// 慢加载登录页的 parser-blocking 子资源由测试显式放行。
     slow_login: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    slow_popup_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
     slow_release: tokio::sync::watch::Sender<bool>,
 }
 
@@ -259,6 +260,8 @@ impl Fixture {
         );
         let slow_login = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let slow = slow_login.clone();
+        let slow_popup_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let popup_started = slow_popup_started.clone();
         let (slow_release, release_rx) = tokio::sync::watch::channel(false);
         let server = tokio::spawn(async move {
             loop {
@@ -266,6 +269,7 @@ impl Fixture {
                     break;
                 };
                 let slow = slow.clone();
+                let popup_started = popup_started.clone();
                 let mut release_rx = release_rx.clone();
                 tokio::spawn(async move {
                     let mut request = [0; 8192];
@@ -279,7 +283,10 @@ impl Fixture {
                     // Releasing it heals via SPA before load, without a second navigation.
                     if request.starts_with("GET /slow-resource ") {
                         while !*release_rx.borrow_and_update() {
-                            if release_rx.changed().await.is_err() {
+                            if !matches!(
+                                timeout(Duration::from_secs(30), release_rx.changed()).await,
+                                Ok(Ok(()))
+                            ) {
                                 return;
                             }
                         }
@@ -287,6 +294,19 @@ impl Fixture {
                         let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         let _ = stream.write_all(response.as_bytes()).await;
                         return;
+                    }
+                    // Hold the popup's main response, not a renderer command: other
+                    // targets must stay interactive while this navigation is pending.
+                    if request.starts_with("GET /slow-popup?") {
+                        popup_started.store(true, std::sync::atomic::Ordering::Release);
+                        while !*release_rx.borrow_and_update() {
+                            if !matches!(
+                                timeout(Duration::from_secs(30), release_rx.changed()).await,
+                                Ok(Ok(()))
+                            ) {
+                                return;
+                            }
+                        }
                     }
                     let page_body = r#"<!doctype html><title>Vestus local collector fixture</title>
                         <form><input id="input" name="quantity"><input id="checkbox" type="checkbox"><button type="submit">submit</button></form>
@@ -318,12 +338,13 @@ impl Fixture {
             process: None,
             server,
             slow_login,
+            slow_popup_started,
             slow_release,
         }
     }
 
     async fn launch(&mut self, executable: &std::path::Path, url: &str) -> DevToolsEndpoint {
-        self.launch_with_mode(executable, url, false).await
+        self.launch_with_mode(executable, url, false, None).await
     }
 
     async fn launch_with_mode(
@@ -331,6 +352,7 @@ impl Fixture {
         executable: &std::path::Path,
         url: &str,
         headless: bool,
+        extension: Option<&std::path::Path>,
     ) -> DevToolsEndpoint {
         crate::browser::prepare_test_sandbox_access(executable)
             .expect("prepare bundled Chromium sandbox permissions before launch");
@@ -354,7 +376,13 @@ impl Fixture {
                 "--disable-quic",
                 "--password-store=basic",
                 "--use-mock-keychain",
-            ])
+            ]);
+        // 托管 fixture 的预装 MV3 登录防护扩展（unpacked，位于同一临时 profile 内），
+        // 与生产 chromium_arguments 相同的开关与顺序：必须在起始 URL 之前。
+        if let Some(extension) = extension {
+            command.arg(format!("--load-extension={}", extension.display()));
+        }
+        command
             .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -414,47 +442,51 @@ async fn test_page_command(
     method: &str,
     params: Value,
 ) -> Value {
-    let mut socket = connect(endpoint).await.unwrap();
-    socket
-        .send(Message::Text(
-            json!({"id":1,"method":"Target.attachToTarget","params":{
-                "targetId":target,"flatten":true
-            }})
-            .to_string()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    let session = loop {
-        let Some(Ok(Message::Text(text))) = socket.next().await else {
-            panic!("attach reply missing")
-        };
-        let reply: Value = serde_json::from_str(&text).unwrap();
-        if reply["id"] == 1 {
-            assert!(reply.get("error").is_none(), "test attach failed: {reply}");
-            break reply["result"]["sessionId"].as_str().unwrap().to_string();
-        }
-    };
-    socket
-        .send(Message::Text(
-            json!({"id":2,"sessionId":session,"method":method,"params":params})
+    timeout(Duration::from_secs(5), async {
+        let mut socket = connect(endpoint).await.unwrap();
+        socket
+            .send(Message::Text(
+                json!({"id":1,"method":"Target.attachToTarget","params":{
+                    "targetId":target,"flatten":true
+                }})
                 .to_string()
                 .into(),
-        ))
-        .await
-        .unwrap();
-    let result = loop {
-        let Some(Ok(Message::Text(text))) = socket.next().await else {
-            panic!("page reply missing")
+            ))
+            .await
+            .unwrap();
+        let session = loop {
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                panic!("attach reply missing")
+            };
+            let reply: Value = serde_json::from_str(&text).unwrap();
+            if reply["id"] == 1 {
+                assert!(reply.get("error").is_none(), "test attach failed: {reply}");
+                break reply["result"]["sessionId"].as_str().unwrap().to_string();
+            }
         };
-        let reply: Value = serde_json::from_str(&text).unwrap();
-        if reply["id"] == 2 {
-            assert!(reply.get("error").is_none(), "test command failed: {reply}");
-            break reply["result"].clone();
-        }
-    };
-    let _ = socket.close(None).await;
-    result
+        socket
+            .send(Message::Text(
+                json!({"id":2,"sessionId":session,"method":method,"params":params})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let result = loop {
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                panic!("page reply missing")
+            };
+            let reply: Value = serde_json::from_str(&text).unwrap();
+            if reply["id"] == 2 {
+                assert!(reply.get("error").is_none(), "test command failed: {reply}");
+                break reply["result"].clone();
+            }
+        };
+        let _ = socket.close(None).await;
+        result
+    })
+    .await
+    .unwrap_or_else(|_| panic!("local test page command deadline: {method}"))
 }
 
 async fn test_evaluate(endpoint: &DevToolsEndpoint, target: &str, expression: &str) -> Value {
@@ -658,7 +690,7 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
         let mut fixture = Fixture::new().await;
         let base = fixture.url.clone();
         let initial = format!("{base}first?advid=42&token=fixture#top");
-        let endpoint = fixture.launch_with_mode(&executable, &initial, true).await;
+        let endpoint = fixture.launch_with_mode(&executable, &initial, true, None).await;
         let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
         assert_eq!(test_evaluate(&endpoint, &target, "new Promise(resolve => document.readyState === 'complete' ? resolve(true) : addEventListener('load', () => resolve(true), {once:true}))").await, true);
         let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
@@ -705,10 +737,15 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
 
         let mut fixture = Fixture::new().await;
         let base = fixture.url.clone();
-        let endpoint = fixture.launch_with_mode(&executable, "about:blank", true).await;
+        // 托管段与生产托管启动一致：临时 profile 内预装 MV3 登录防护扩展。
+        let extension_dir = write_fixture_login_guard_extension(&fixture.root, &[&base]);
+        let endpoint = fixture
+            .launch_with_mode(&executable, "about:blank", true, Some(&extension_dir))
+            .await;
         let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
         let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
-        let watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        let mut watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target(target.clone());
         let installed = watch.guard_installed.clone();
         let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
         let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));
@@ -726,6 +763,14 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
             json!({"guard":true,"inert":false,"binding":"undefined"}));
         test_evaluate(&endpoint, &target, "window.open('/popup?advid=52','managed-popup','width=400,height=300'); true").await;
         expected_report(&mut reports, &format!("{base}popup"), Some("advid=52")).await;
+        // 弹窗不是初始 target：采集连接只对初始页装第二层 guard，弹窗上的标记
+        // 只能来自预装扩展——这是扩展真实加载的廉价直接证据。
+        let managed_popup = test_target_for_url(&endpoint, &format!("{base}popup?advid=52")).await;
+        assert_eq!(
+            test_evaluate(&endpoint, &managed_popup, "Object.hasOwn(window,'__vestusManagedLoginGuard')").await,
+            true,
+            "preinstalled extension must mark opener popups (the CDP layer never injects them)"
+        );
         test_evaluate(&endpoint, &target, "const popup=window.open('', 'managed-empty-popup'); popup.location='/popup?advid=53'; true").await;
         expected_report(&mut reports, &format!("{base}popup"), Some("advid=53")).await;
         // Keep login, blocked interactions and self-healing in one renderer task.
@@ -768,6 +813,223 @@ fn url_only_collection_and_managed_guard_against_a_real_browser() {
     });
 }
 
+async fn test_target_for_url(endpoint: &DevToolsEndpoint, url: &str) -> String {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some((target, _)) = page_targets(endpoint)
+                .await
+                .expect("list isolated fixture targets")
+                .into_iter()
+                .find(|(_, current)| current == url)
+            {
+                return target;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("local target URL deadline: {url}"))
+}
+
+/// 托管 fixture 启动的预装 MV3 登录防护扩展：manifest 与生产
+/// `managed_cdp::write_login_guard_extension` 的形状逐项一致（MV3、
+/// document_start、MAIN 世界、all_frames false），guard.js 复用与 CDP 第二层
+/// 完全相同的那份策略脚本——`localhost_test_watch` 组装 fixture 策略时产出的
+/// `login_guard_script` 就是生产 `LogoutPolicy::login_guard_script` 模板的输出，
+/// 这里绝不内联复制 JS。matches 覆盖本次托管会话涉及的全部 fixture origin
+/// （生产只有一个平台 origin；fixture 需要第二个 loopback origin 来验证跨源
+/// 隔离行为）。route 仍钉在首个（托管平台）origin 的 /login：模板在 origin
+/// 门处提前返回，跨源页面既不落标记也不落锁（断言 guard:false），跨源
+/// /login 只是普通业务。
+fn write_fixture_login_guard_extension(profile_dir: &std::path::Path, origins: &[&str]) -> PathBuf {
+    assert!(
+        !origins.is_empty(),
+        "fixture extension needs at least one origin"
+    );
+    let (signals, _drain) = tokio::sync::mpsc::unbounded_channel();
+    let script = crate::managed_cdp::localhost_test_watch(origins[0], signals).login_guard_script;
+    assert!(
+        !script.contains("__VESTUS_LOGIN_ROUTE__"),
+        "guard template placeholder must already be substituted by the policy"
+    );
+    assert!(script.contains("__vestusManagedLoginGuard"));
+    let extension_dir = profile_dir.join("vestus-login-guard-extension");
+    std::fs::create_dir_all(&extension_dir).unwrap();
+    let matches = origins
+        .iter()
+        .map(|origin| {
+            let parsed = url::Url::parse(origin).unwrap();
+            format!("{}/*", parsed.origin().ascii_serialization())
+        })
+        .collect::<Vec<_>>();
+    let manifest = json!({
+        "manifest_version": 3,
+        "name": "Vestus 登录防护",
+        "version": "1.0.0",
+        "content_scripts": [{
+            "js": ["guard.js"],
+            "matches": matches,
+            "run_at": "document_start",
+            "all_frames": false,
+            "world": "MAIN",
+        }],
+    });
+    std::fs::write(extension_dir.join("manifest.json"), manifest.to_string()).unwrap();
+    std::fs::write(extension_dir.join("guard.js"), script).unwrap();
+    extension_dir
+}
+
+/// Business interaction stays fully usable. `guard_marked` 反映路由作用域标记
+/// 的设计语义：托管平台（首个）origin 的页面/弹窗带 `__vestusManagedLoginGuard`
+/// （初始页由 CDP 第二层、弹窗由预装扩展落标记）；跨源 fixture 页面按设计
+/// 不落标记（模板在 origin 门之前返回），交互不受影响。
+async fn assert_business_interaction(
+    endpoint: &DevToolsEndpoint,
+    target: &str,
+    guard_marked: bool,
+) {
+    assert_eq!(
+        test_evaluate(endpoint, target, "new Promise(resolve => document.readyState === 'complete' ? resolve(true) : addEventListener('load', () => resolve(true), {once:true}))").await,
+        true,
+        "popup must finish loading within the bounded driver command"
+    );
+    assert_eq!(
+        test_evaluate(endpoint, target, "(() => {
+            input.value='2'; const event=new InputEvent('input',{bubbles:true,cancelable:true}); input.dispatchEvent(event);
+            checkbox.click(); document.querySelector('form').requestSubmit();
+            return {guard:Object.hasOwn(window,'__vestusManagedLoginGuard'),inert:document.documentElement.inert,
+                inputBlocked:event.defaultPrevented,checked:checkbox.checked,seen:fixtureSeen,binding:typeof window.__vestusReportActivity};
+        })()").await,
+        json!({"guard":guard_marked,"inert":false,"inputBlocked":false,"checked":true,
+            "seen":{"input":2,"change":1,"click":1,"submit":1},"binding":"undefined"}),
+        "managed business page must retain input, checkbox, click and submit without activity binding"
+    );
+}
+
+/// Async blank popups, opener isolation and a slow cross-origin response must
+/// preserve real window.open navigation, URL-only reporting and business input.
+#[test]
+#[ignore = "requires bundled VESTUS_CONTROL_CHROMIUM; uses isolated headless browser"]
+fn managed_async_popups_remain_interactive_against_a_real_browser() {
+    let executable = PathBuf::from(
+        std::env::var_os("VESTUS_CONTROL_CHROMIUM").expect("bundled Chromium required"),
+    );
+    assert!(executable.is_absolute() && executable.is_file());
+    crate::rt::runtime().block_on(async {
+        let mut fixture = Fixture::new().await;
+        let cross_origin = Fixture::new().await;
+        let base = fixture.url.clone();
+        let foreign = cross_origin.url.clone();
+        assert_ne!(url::Url::parse(&base).unwrap().origin(), url::Url::parse(&foreign).unwrap().origin());
+        // 托管会话涉及两个 fixture origin：扩展 matches 覆盖两者以便跨源行为
+        // 真实走到扩展；route 仍钉在托管平台 origin——模板的 origin 门让跨源
+        // 页面既无标记也无锁（断言 guard:false）。
+        let extension_dir =
+            write_fixture_login_guard_extension(&fixture.root, &[&base, &foreign]);
+        let endpoint = fixture
+            .launch_with_mode(&executable, "about:blank", true, Some(&extension_dir))
+            .await;
+        let target = test_target_for_url(&endpoint, "about:blank").await;
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target(target.clone());
+        let installed = watch.guard_installed.clone();
+        let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));
+        assert!(installed.wait_ready(crate::managed_cdp::GUARD_INSTALL_TIMEOUT).await,
+            "exact initial target must be fully ready before its first navigation");
+        test_page_command(&endpoint, &target, "Page.navigate", json!({"url":format!("{base}workbench?advid=71")})).await;
+        expected_report(&mut reports, &format!("{base}workbench"), Some("advid=71")).await;
+        // 初始 target 带标记：预装扩展与 CDP 第二层都在托管 origin 生效。
+        assert_business_interaction(&endpoint, &target, true).await;
+
+        // Observe the actual blank window before its later asynchronous navigation.
+        assert_eq!(test_evaluate(&endpoint, &target,
+            "window.fixtureAsyncPopup=window.open('', 'managed-async-blank', 'width=400,height=300'); !!window.fixtureAsyncPopup").await, true);
+        let blank = test_target_for_url(&endpoint, "about:blank").await;
+        assert_ne!(blank, target);
+        assert_eq!(test_evaluate(&endpoint, &blank,
+            "({url:location.href,inert:document.documentElement.inert})").await,
+            json!({"url":"about:blank","inert":false}));
+        no_reports(&mut reports, Duration::from_millis(100), "managed asynchronous blank window").await;
+        assert_eq!(test_evaluate(&endpoint, &target,
+            "setTimeout(() => fixtureAsyncPopup.location='/async-popup?advid=72', 25); true").await, true);
+        expected_report(&mut reports, &format!("{base}async-popup"), Some("advid=72")).await;
+        let popup = test_target_for_url(&endpoint, &format!("{base}async-popup?advid=72")).await;
+        assert_eq!(popup, blank, "async navigation must use the original blank target");
+        assert_business_interaction(&endpoint, &popup, true).await;
+
+        // 同源 noopener 弹窗（advid=73）带扩展标记：CDP 只对初始 target 装第二层，
+        // 弹窗上的标记只能来自预装扩展；跨源弹窗按路由作用域设计不带标记。
+        for (url, features, path, params, guard_marked) in [
+            (format!("{base}noopener-popup?advid=73"), "noopener", format!("{base}noopener-popup"), "advid=73", true),
+            (format!("{foreign}noreferrer-popup?advid=74"), "noreferrer", format!("{foreign}noreferrer-popup"), "advid=74", false),
+        ] {
+            let expression = format!("window.open({}, '_blank', {}) === null",
+                serde_json::to_string(&url).unwrap(), serde_json::to_string(features).unwrap());
+            assert_eq!(test_evaluate(&endpoint, &target, &expression).await, true,
+                "{features} must preserve native opener isolation");
+            eprintln!("Real {features} popup targets: {:?}", page_targets(&endpoint).await.unwrap());
+            let popup = test_target_for_url(&endpoint, &url).await;
+            expected_report(&mut reports, &path, Some(params)).await;
+            assert_eq!(test_evaluate(&endpoint, &popup, "window.opener===null").await, true);
+            assert_business_interaction(&endpoint, &popup, guard_marked).await;
+        }
+
+        // The same /login path on another loopback origin is ordinary business:
+        // route-scoped guard does not mark or lock it.
+        let foreign_login = format!("{foreign}login?advid=75");
+        assert_eq!(test_evaluate(&endpoint, &target, &format!("window.open({}, '_blank', 'noopener')===null",
+            serde_json::to_string(&foreign_login).unwrap())).await, true);
+        expected_report(&mut reports, &format!("{foreign}login"), Some("advid=75")).await;
+        let popup = test_target_for_url(&endpoint, &foreign_login).await;
+        assert_business_interaction(&endpoint, &popup, false).await;
+
+        let slow_url = format!("{foreign}slow-popup?advid=76");
+        assert_eq!(test_evaluate(&endpoint, &target, &format!("window.open({}, '_blank', 'noreferrer')===null",
+            serde_json::to_string(&slow_url).unwrap())).await, true);
+        timeout(Duration::from_secs(5), async {
+            while !cross_origin.slow_popup_started.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("slow cross-origin popup must reach the loopback server");
+        // Its HTTP response stays withheld while another popup loads and works.
+        assert_eq!(test_evaluate(&endpoint, &target,
+            "window.open('/parallel-popup?advid=77', '_blank', 'noopener')===null").await, true);
+        expected_report(&mut reports, &format!("{base}parallel-popup"), Some("advid=77")).await;
+        let parallel = test_target_for_url(&endpoint, &format!("{base}parallel-popup?advid=77")).await;
+        assert_business_interaction(&endpoint, &parallel, true).await;
+        assert_eq!(test_evaluate(&endpoint, &target, "({inert:document.documentElement.inert,value:input.value,checked:checkbox.checked})").await,
+            json!({"inert":false,"value":"2","checked":true}));
+        assert!(timeout(crate::managed_cdp::LOGIN_SETTLE + Duration::from_millis(200), signal_rx.recv()).await.is_err(),
+            "slow popup and foreign login must not expire or terminate sibling targets");
+        no_reports(&mut reports, Duration::from_millis(100), "uncommitted slow popup and business input").await;
+        cross_origin.slow_release.send(true).unwrap();
+        expected_report(&mut reports, &format!("{foreign}slow-popup"), Some("advid=76")).await;
+        let slow = test_target_for_url(&endpoint, &slow_url).await;
+        assert_business_interaction(&endpoint, &slow, false).await;
+
+        let healed = test_evaluate(&endpoint, &target, "(() => {
+            history.pushState({},'', '/login');
+            const event=new InputEvent('input',{bubbles:true,cancelable:true}); input.dispatchEvent(event);
+            const locked={inert:document.documentElement.inert,inputBlocked:event.defaultPrevented};
+            history.replaceState({},'', '/workbench');
+            return {locked,inert:document.documentElement.inert,route:location.pathname};
+        })()").await;
+        assert_eq!(healed, json!({"locked":{"inert":true,"inputBlocked":true},"inert":false,"route":"/workbench"}));
+        expected_report(&mut reports, &format!("{base}login"), None).await;
+        expected_report(&mut reports, &format!("{base}workbench"), None).await;
+        no_reports(&mut reports, Duration::from_millis(100), "popup report deduplication and login input").await;
+        close_fixture(&mut fixture, &endpoint).await;
+        let result = timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        assert!(matches!(result, Ok(()) | Err(CdpError::Transport(_))),
+            "collector stops only after the owned browser exits: {result:?}");
+        assert!(matches!(timeout(Duration::from_secs(5), signal_rx.recv()).await.unwrap(), Some(ManagedSignal::ConnectionLost)));
+        assert!(timeout(Duration::from_secs(5), signal_rx.recv()).await.unwrap().is_none());
+        eprintln!("Real managed async/blank/noopener/noreferrer/cross-origin slow popup acceptance completed");
+    });
+}
+
 /// Slow login document remains guarded beyond the old expiry window, then its
 /// original parser-blocking resource is released and heals to workbench via SPA.
 /// An independent, fully loaded login remains the positive expiry control.
@@ -785,10 +1047,14 @@ fn slow_loading_login_never_expires_until_load_completes() {
         fixture
             .slow_login
             .store(true, std::sync::atomic::Ordering::Release);
-        let endpoint = fixture.launch_with_mode(&executable, "about:blank", true).await;
+        let extension_dir = write_fixture_login_guard_extension(&fixture.root, &[&base]);
+        let endpoint = fixture
+            .launch_with_mode(&executable, "about:blank", true, Some(&extension_dir))
+            .await;
         let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
         let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
-        let watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        let mut watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target(target.clone());
         let installed = watch.guard_installed.clone();
         let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
         let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));
@@ -841,10 +1107,14 @@ fn slow_loading_login_never_expires_until_load_completes() {
         // Independent browser/monitor: a quiet, fully loaded login must still expire.
         let mut fixture = Fixture::new().await;
         let base = fixture.url.clone();
-        let endpoint = fixture.launch_with_mode(&executable, "about:blank", true).await;
+        let extension_dir = write_fixture_login_guard_extension(&fixture.root, &[&base]);
+        let endpoint = fixture
+            .launch_with_mode(&executable, "about:blank", true, Some(&extension_dir))
+            .await;
         let target = page_targets(&endpoint).await.unwrap()[0].0.clone();
         let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
-        let watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        let mut watch = crate::managed_cdp::localhost_test_watch(&base, signals);
+        watch.guard_installed = crate::managed_cdp::GuardInstalled::for_target(target.clone());
         let installed = watch.guard_installed.clone();
         let (sink, mut reports) = tokio::sync::mpsc::unbounded_channel();
         let task = tokio::spawn(collect(endpoint.clone(), sink, Some(watch)));

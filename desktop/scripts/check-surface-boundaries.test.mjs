@@ -1,163 +1,33 @@
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+// check-surface-boundaries 的隔离回归。所有 mutation 都直接基于真实生产源，
+// 避免合成 fixture 与实现漂移（2026-11-21 起废弃手工合成 collector 副本）。
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+const policyPath = "desktop/src-tauri/src/managed_cdp.rs";
+const guardPath = "desktop/src-tauri/src/managed_cdp/login_guard.js";
+const cdpPath = "desktop/src-tauri/src/cdp.rs";
+const browserPath = "desktop/src-tauri/src/browser.rs";
+const commandsPath = "desktop/src-tauri/src/commands/browser.rs";
+
+const realCache = new Map();
+function realSource(path) {
+  if (!realCache.has(path)) {
+    realCache.set(
+      path,
+      readFileSync(new URL(path.replace(/^desktop\//, "../"), import.meta.url), "utf8"),
+    );
+  }
+  return realCache.get(path);
+}
 
 const checkerSource = readFileSync(
   new URL("./check-surface-boundaries.mjs", import.meta.url),
   "utf8",
 );
-const policyPath = "desktop/src-tauri/src/managed_cdp.rs";
-const guardPath = "desktop/src-tauri/src/managed_cdp/login_guard.js";
-const cdpPath = "desktop/src-tauri/src/cdp.rs";
-const commandsPath = "desktop/src-tauri/src/commands.rs";
-
-// Small independent source fixtures: no build output, browser, credentials, or
-// production source snapshots are needed to exercise the checker.
-const managedSources = {
-  [policyPath]: `
-struct LogoutPolicy { login_route: Url }
-impl LogoutPolicy {
-    fn for_platform(target_url: &str) -> Option<Self> {
-        Some(Self {
-            login_route: Url::parse("https://agent.oceanengine.com/login").unwrap(),
-        })
-    }
-    fn login_guard_script(&self) -> String {
-        include_str!("managed_cdp/login_guard.js").replace(
-            "__VESTUS_LOGIN_ROUTE__",
-            &json!({
-                "origin": self.login_route.origin().ascii_serialization(),
-                "path": self.login_route.path(),
-            }).to_string(),
-        )
-    }
-}
-pub(crate) fn logout_guard_script(target_url: &str) -> Option<String> {
-    LogoutPolicy::for_platform(target_url).map(|policy| policy.login_guard_script())
-}
-`,
-  [guardPath]: `
-(() => {
-  const route = __VESTUS_LOGIN_ROUTE__;
-  const url = new URL(location.href);
-  if (window.top !== window || location.origin !== route.origin) return;
-  const isLogin = !url.username && !url.password && url.origin === route.origin
-    && (url.pathname === route.path || url.pathname.startsWith(\`\${route.path}/\`));
-  if (isLogin) {
-    document.documentElement.style.setProperty('opacity', '0', 'important');
-    document.documentElement.inert = true;
-  }
-  Object.defineProperty(window, '__guard', { value: true });
-})();
-`,
-  // 单连接模型：订阅地址，安装托管固定 guard 后放行。
-  [cdpPath]: `
-struct ManagedWatch { login_guard_script: String }
-pub enum ManagedSignal { Expired, ConnectionLost }
-struct Collector { managed: Option<ManagedWatch> }
-pub async fn collect(managed: Option<ManagedWatch>) {
-    let collector = Collector { managed };
-}
-impl Collector {
-    fn opening_commands(&mut self) -> Vec<String> {
-        vec![self.command(None, "Target.setAutoAttach", json!({
-            "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true,
-        }))]
-    }
-    fn install(&mut self, session_id: &str) -> Vec<String> {
-        let managed = self.managed.as_ref().map(|state| state.login_guard_script.clone());
-        let mut commands = Vec::new();
-        if let Some(source) = managed {
-            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
-            commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument",
-                json!({"source": source, "runImmediately": true})));
-        }
-        commands.push(self.command(Some(session_id), "Page.enable", json!({})));
-        if self.managed.is_some() {
-            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
-        }
-        commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
-        if self.managed.is_some() {
-            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
-            commands.push(self.command(Some(session_id), "Page.setLifecycleEventsEnabled", json!({"enabled": true})));
-            self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));
-        } else {
-            commands.push(self.resume_page(session_id));
-        }
-        commands
-    }
-    fn resume_page(&mut self, session_id: &str) -> String {
-        let command = self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({}));
-        if self.managed.is_some() {
-            self.guard_requests.insert(self.next_id, GuardRequest::Resume(session_id.to_string()));
-        }
-        command
-    }
-    fn acknowledge_guard(&mut self, id: i64, message: &Value, out: &mut Handled) {
-        let Some(request) = self.guard_requests.get(&id).cloned() else { return };
-        let session = match &request {
-            GuardRequest::Install(session) | GuardRequest::Resume(session) => Some(session.as_str()),
-            GuardRequest::AutoAttach => None,
-        };
-        if message.get("sessionId").and_then(Value::as_str) != session {
-            return;
-        }
-        let accepted = message.get("error").is_none() && message.get("result").is_some_and(Value::is_object);
-        if !accepted {
-            out.guard_failed = true;
-            return;
-        }
-        self.guard_requests.remove(&id);
-        match request {
-            GuardRequest::Install(session) => {
-                let pending = self.guard_requests.values().any(|request| {
-                    matches!(request, GuardRequest::Install(other) if other == &session)
-                });
-                if !pending && self.sessions.contains_key(&session) {
-                    out.commands.push(self.resume_page(&session));
-                }
-            }
-            GuardRequest::Resume(session) => {
-                if let Some(page) = self.sessions.get(&session) {
-                    if let Some(state) = self.managed.as_ref() {
-                        state.guard_installed.mark_for(&page.target_id);
-                    }
-                    out.guard_installed = true;
-                }
-            }
-            GuardRequest::AutoAttach => {}
-        }
-    }
-    fn handle(&mut self, text: &str) -> Handled {
-        self.acknowledge_guard(id, &message, &mut out);
-        out
-    }
-    fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {
-        vec![
-            self.command(Some(session_id), "Runtime.runIfWaitingForDebugger", json!({})),
-            self.command(None, "Target.detachFromTarget", json!({"sessionId": session_id})),
-        ]
-    }
-}
-`,
-  [commandsPath]: `
-struct ManagedWatch { login_guard_script: String }
-fn build_watch(session: &Session) -> ManagedWatch {
-    ManagedWatch {
-        login_guard_script: managed_cdp::logout_guard_script(&session.target_url).expect("policy"),
-    }
-}
-`,
-};
 
 function writeFixture(root, relativePath, contents) {
   const path = join(root, relativePath);
@@ -178,36 +48,38 @@ function runChecker(overrides = {}, { managed = false, eol = "\n" } = {}) {
         '"/api/user/auth/logout"',
       ].join("\n"),
       "desktop/src-tauri/src/lib.rs": managed ? "mod managed_cdp;" : "",
-      [cdpPath]: "",
-      [commandsPath]: "",
-      "desktop/src-tauri/src/browser.rs": [
-        "fn chromium_arguments() {",
-        '  let args = ["--remote-debugging-port=0"];',
-        "}",
-        "",
-        "#[cfg(test)]",
-        'const DOCUMENTED_FORBIDDEN: &str = "--remote-debugging-address";',
-      ].join("\n"),
-      ...Object.fromEntries([
-        "desktop/src/App.tsx",
-        "desktop/src/components/auth/LoginCard.tsx",
-        "desktop/src/components/auth/ChangePasswordCard.tsx",
-        "desktop/src/components/browser/PlatformLauncher.tsx",
-        "desktop/src/components/layout/Header.tsx",
-        "desktop/src/services/authService.ts",
-        "desktop/src/services/tauriBridge.ts",
-      ].map((path) => [path, ""])),
+      [cdpPath]: realSource(cdpPath),
+      [browserPath]: realSource(browserPath),
+      "desktop/src/App.tsx": "",
+      "desktop/src/components/auth/LoginCard.tsx": "",
+      "desktop/src/components/auth/ChangePasswordCard.tsx": "",
+      "desktop/src/components/browser/PlatformLauncher.tsx": "",
+      "desktop/src/components/layout/Header.tsx": "",
+      "desktop/src/services/authService.ts": "",
+      "desktop/src/services/tauriBridge.ts": "",
       "desktop/dist/assets/index.js": [
         "desktop_login", "desktop_restore_session", "desktop_logout",
         "desktop_product_name", "desktop_product_info", "desktop_change_password",
         "sync_desktop_config", "open_browser", "get_status",
       ].join(" "),
-      ...(managed ? managedSources : {}),
-      ...overrides,
     };
+    for (const name of readdirSync(new URL("../src-tauri/src/commands/", import.meta.url))) {
+      if (!name.endsWith(".rs") || name === "tests.rs") continue;
+      sources[`desktop/src-tauri/src/commands/${name}`] = realSource(
+        `desktop/src-tauri/src/commands/${name}`,
+      );
+    }
+    if (managed) {
+      sources[policyPath] = realSource(policyPath);
+      sources[guardPath] = realSource(guardPath);
+    }
+    for (const [path, source] of Object.entries(overrides)) {
+      if (source === null) delete sources[path];
+      else sources[path] = source;
+    }
     writeFixture(fixture, "desktop/scripts/check-surface-boundaries.mjs", checkerSource);
     for (const [path, source] of Object.entries(sources)) {
-      if (source !== null) writeFixture(fixture, path, source.replace(/\r\n?|\n/g, eol));
+      writeFixture(fixture, path, source.replace(/\r\n?|\n/g, eol));
     }
     return spawnSync(
       process.execPath,
@@ -232,8 +104,78 @@ function fails(result, expected) {
 }
 
 function change(path, from, to) {
-  assert.ok(managedSources[path].includes(from), `fixture mutation not found: ${from}`);
-  return { [path]: managedSources[path].replace(from, to) };
+  const source = realSource(path);
+  assert.equal(
+    source.split(from).length - 1,
+    1,
+    `fixture mutation must be unique in ${path}: ${from}`,
+  );
+  return { [path]: source.replace(from, to) };
+}
+
+// Scoped mutation within one function body of a real production file.
+function changeFunction(name, from, to, path = cdpPath) {
+  const source = realSource(path);
+  const start = source.indexOf(`fn ${name}(`);
+  assert.notEqual(start, -1, `fixture function not found: ${name}`);
+  const bodyStart = source.indexOf("{", start);
+  let depth = 0;
+  let end = -1;
+  let inString = false;
+  let stringChar = "";
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    const prev = source[index - 1];
+    if (inString) {
+      if (char === stringChar && prev !== "\\") inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      stringChar = char;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "/") {
+      index = source.indexOf("\n", index);
+      continue;
+    }
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = index;
+        break;
+      }
+    }
+  }
+  assert.notEqual(end, -1, `fixture function end not found: ${name}`);
+  const body = source.slice(start, end);
+  assert.equal(
+    body.split(from).length - 1,
+    1,
+    `mutation must be unique within ${name}: ${from}`,
+  );
+  return { [path]: source.slice(0, start) + body.replace(from, to) + source.slice(end) };
+}
+
+// Exercise the real collector against synthetic non-CDP surfaces so stale build
+// artifacts cannot conceal a mismatch between this checker and production.
+test("current production collector satisfies managed surface invariants", () => {
+  passes(runChecker({}, { managed: true }));
+});
+
+for (const [name, from, to] of [
+  ["missing tracked detached verifier", "CloseRequest::Detached(target));", "CloseRequest::Detached(other_target));"],
+  ["detached verifier omitted from shared absence validation", "CloseRequest::Verify(target) | CloseRequest::Detached(target) =>", "CloseRequest::Verify(target) =>"],
+  ["detached cleanup notification emitted for user close", ".filter(|closed| closed.notify)", ""],
+  ["detached initial target failure not fail closed", /if\s+closing\.initial\s*\{\s*out\.guard_failed\s*=\s*true;\s*return;\s*\}/, "if false { out.guard_failed = true; return; }"],
+]) {
+  test(`current production detach boundary rejects ${name}`, () => {
+    const source = realSource(cdpPath);
+    const count = from instanceof RegExp ? [...source.matchAll(new RegExp(from.source, "g"))].length : source.split(from).length - 1;
+    assert.equal(count, 1, `production mutation must be unique: ${from}`);
+    fails(runChecker({ [cdpPath]: source.replace(from, to) }, { managed: true }), /canonical detach 必须/);
+  });
 }
 
 test("surface checker isolates chromium_arguments in a Windows CRLF checkout", () => {
@@ -248,20 +190,20 @@ for (const eol of ["\n", "\r\n"]) {
 
 test("ACK boundary accepts rustfmt trailing commas without weakening quoted values", () => {
   passes(runChecker({
-    [cdpPath]: managedSources[cdpPath]
-      .replaceAll('GuardRequest::Install(session_id.to_string()));', 'GuardRequest::Install(session_id.to_string()),\n            );')
-      .replaceAll('GuardRequest::Resume(session_id.to_string()));', 'GuardRequest::Resume(session_id.to_string()),\n            );')
-      .replace('"source": source, "runImmediately": true}', '"source": source, "runImmediately": true,}')
-      .replace('self.acknowledge_guard(id, &message, &mut out);', 'self.acknowledge_guard(id, &message, &mut out,);'),
+    [cdpPath]: realSource(cdpPath)
+      .replace('commands.push(self.command(Some(session_id), "Page.enable", json!({})));', 'commands.push(self.command(Some(session_id), "Page.enable", json!({}),));')
+      .replace('kind(session_id.to_string()));', 'kind(session_id.to_string()),\n        );')
+      .replace('"source": state.login_guard_script.clone(), "runImmediately": true})', '"source": state.login_guard_script.clone(), "runImmediately": true,})')
+      .replace('self.acknowledge_guard(id, &message, &mut out);', 'self.acknowledge_guard(id, &message, &mut out,);')
+      .replace('self.acknowledge_close(id, &message, &mut out);', 'self.acknowledge_close(id, &message, &mut out,);'),
   }, { managed: true }));
 });
 
 test("guard accepts policy URL checks, style writes and harmless formatting changes", () => {
   passes(runChecker({
-    [policyPath]: managedSources[policyPath]
-      .replace('"origin": self.login_route.origin().ascii_serialization(),\n                "path": self.login_route.path(),',
-        '"path": self.login_route.path(), /* fixed route */\n                "origin": self.login_route.origin().ascii_serialization(),'),
-    [guardPath]: managedSources[guardPath] + "\n// Never read document.cookie or call fetch().\n",
+    [policyPath]: realSource(policyPath)
+      .replace('"origin": self.login_route.origin().ascii_serialization(),\n                "path": self.login_route.path(),', '"path": self.login_route.path(),\n                "origin": self.login_route.origin().ascii_serialization(),'),
+    [guardPath]: realSource(guardPath) + "\n// Never read document.cookie or call fetch().\n",
   }, { managed: true }));
 });
 
@@ -277,16 +219,18 @@ mod integration_tests;
 mod tests { fn input() { send("Input.dispatchKeyEvent"); } }
 `;
   passes(runChecker({
-    [policyPath]: localTest + managedSources[policyPath],
-    [cdpPath]: localTest + managedSources[cdpPath],
-    [commandsPath]: localTest + managedSources[commandsPath],
+    [policyPath]: localTest + realSource(policyPath),
+    [cdpPath]: localTest + realSource(cdpPath),
+    [commandsPath]: localTest + realSource(commandsPath),
   }, { managed: true, eol: "\r\n" }));
   fails(runChecker({
-    [cdpPath]: localTest + managedSources[cdpPath].replace(
+    [cdpPath]: localTest + realSource(cdpPath).replace(
       "fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {",
       'fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> { send("Runtime.evaluate");',
     ),
-  }, { managed: true }), /采集通道拿到了只读采集用不着的能力/);
+    [policyPath]: localTest + realSource(policyPath),
+    [commandsPath]: localTest + realSource(commandsPath),
+  }, { managed: true, eol: "\r\n" }), /只读采集用不着的能力/);
 });
 
 for (const [name, extra, expected] of [
@@ -303,7 +247,7 @@ for (const [name, extra, expected] of [
   ["frontend placeholder", "const source = __FRONTEND_SCRIPT__", /只能包含一个 origin\/path/],
 ]) {
   test(`fixed guard rejects ${name}`, () => {
-    fails(runChecker({ [guardPath]: managedSources[guardPath] + `\n${extra};\n` }, { managed: true }), expected);
+    fails(runChecker({ [guardPath]: realSource(guardPath) + `\n${extra};\n` }, { managed: true }), expected);
   });
 }
 
@@ -319,44 +263,118 @@ for (const [name, from, to, expected] of [
 }
 
 for (const [name, from, to, expected] of [
+  ["extension manifest runs isolated", '"world": "MAIN",', '"world": "ISOLATED",', /扩展目录只能由 policy 生成/],
+  ["extension generation skips fail closed", "std::io::ErrorKind::InvalidInput,", "std::io::ErrorKind::Other,", /扩展目录只能由 policy 生成/],
+  ["extension guard produced outside policy", 'std::fs::write(extension_dir.join("guard.js"), policy.login_guard_script())?;', 'std::fs::write(extension_dir.join("guard.js"), frontend_script)?;', /扩展目录只能由 policy 生成/],
+]) {
+  test(`preinstalled extension boundary rejects ${name}`, () => {
+    fails(runChecker(change(policyPath, from, to), { managed: true }), expected);
+  });
+}
+
+test("launch boundary rejects an unconditional load-extension switch", () => {
+  fails(runChecker(change(browserPath, "if let Some(extension) = login_guard_extension {", "if true {"), { managed: true }), /chromium_arguments 必须只在提供扩展目录时追加/);
+});
+
+test("command boundary rejects a downgraded extension failure", () => {
+  fails(runChecker(change(commandsPath, "BrowserError::LoginGuardExtension(_)", "BrowserError::ProfileBusy(_)"), { managed: true }), /扩展准备失败必须 fail closed/);
+});
+
+for (const [name, from, to, expected] of [
   ["dynamic install source", 'state.login_guard_script.clone()', 'frontend.script.clone()', /只能来自 policy|policy 生成的固定字段/],
-  ["missing guard install", '"source": source', '"source": arbitrary_script', /policy 生成的固定字段/],
-  ["an extra document script", 'commands.push(self.command(Some(session_id), "Page.getFrameTree"', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Page.getFrameTree"', /只允许安装托管固定 guard/],
-  ["guard after Page.enable", '"Page.enable"', '"Page.enableLater"', /Page\.enable 之前/],
-  ["no debugger wait", '"waitForDebuggerOnStart": true', '"waitForDebuggerOnStart": false', /必须暂停新 target/],
-  ["self-contained guard script", "struct ManagedWatch { login_guard_script: String }", 'struct ManagedWatch { login_guard_script: String }\nconst RAW: &str = include_str!("managed_cdp/login_guard.js");', /只能在 managed_cdp 的 policy 里生成/],
-  ["collapsed failure signals", "pub enum ManagedSignal { Expired, ConnectionLost }", "pub enum ManagedSignal { Expired }", /必须区分凭据过期与防护连接断开/],
+  ["missing guard install", '"source": state.login_guard_script.clone()', '"source": arbitrary_script', /只能来自 policy|policy 生成的固定字段/],
+  ["an extra document script", 'commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));', 'commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": extra})));\n        commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));', /只允许安装托管固定 guard/],
+  ["guard after Page.enable", '"Page.enable", json!({})));', '"Page.enableLater", json!({})));', /Page\.enable 之前/],
+  ["managed pauses new targets again", '"waitForDebuggerOnStart": wait_for_debugger', '"waitForDebuggerOnStart": true', /托管必须关闭 debugger 暂停/],
+  ["self-contained guard script", "pub(crate) struct ManagedWatch {", 'const RAW: &str = include_str!("managed_cdp/login_guard.js");\npub(crate) struct ManagedWatch {', /只能在 managed_cdp 的 policy 里生成/],
+  ["collapsed failure signals", "ConnectionLost,", "", /必须区分凭据过期与防护连接断开/],
 ]) {
   test(`managed boundary rejects ${name}`, () => {
     fails(runChecker(change(cdpPath, from, to), { managed: true }), expected);
   });
 }
 
-for (const [name, from, to, expected] of [
-  ["disabled lifecycle", '"enabled": true', '"enabled": false', /必须订阅 lifecycle/],
-  ["guard not covering existing document", '"runImmediately": true', '"runImmediately": false', /runImmediately: true/],
-  ["resume before install ACKs", 'commands.push(self.command(Some(session_id), "Page.getFrameTree"', 'commands.push(self.resume_page(session_id));\n        commands.push(self.command(Some(session_id), "Page.getFrameTree"', /不能在安装命令发送时放行/],
-  ["missing install ACK registration", 'self.guard_requests.insert(self.next_id, GuardRequest::Install(session_id.to_string()));', '/* missing registration */', /必须登记四条 ACK/],
-  ["ACK handler not dispatched", 'self.acknowledge_guard(id, &message, &mut out);', '/* missing dispatch */', /ACK handler 必须/],
-  ["untracked ACK ID", 'self.guard_requests.get(&id)', 'self.guard_requests.values().next()', /ACK handler 必须/],
-  ["wrong ACK session accepted", '!= session', '== session', /ACK handler 必须/],
-  ["protocol error accepted", 'message.get("error").is_none()', 'true', /ACK handler 必须/],
-  ["malformed ACK result accepted", 'message.get("result").is_some_and(Value::is_object)', 'message.get("result").is_some()', /ACK handler 必须/],
-  ["rejection does not stop resume", 'out.guard_failed = true;\n            return;', 'out.guard_failed = true;', /ACK handler 必须/],
-  ["resume while another install ACK pending", 'if !pending && self.sessions.contains_key(&session)', 'if self.sessions.contains_key(&session)', /全部安装请求完成后/],
-  ["other page ACK clears pending installs", 'if other == &session', 'if true', /全部安装请求完成后/],
-  ["untracked resume ACK", 'GuardRequest::Resume(session_id.to_string())', 'GuardRequest::AutoAttach', /成功的 page resume ACK/],
-  ["wrong target satisfies readiness", 'mark_for(&page.target_id)', 'mark_for(&other_target)', /成功的 page resume ACK/],
-  ["readiness published by install ACK", 'out.commands.push(self.resume_page(&session));', 'out.guard_installed = true; out.commands.push(self.resume_page(&session));', /全部安装请求完成后|成功的 page resume ACK/],
+test("boundary rejects the deadlocked pause machinery returning", () => {
+  fails(runChecker(change(cdpPath, "    Monitor(String),", "    Monitor(String),\n    Resume(String),"), { managed: true }), /暂停状态机不得回归/);
+});
+
+for (const [name, fn, from, to, expected] of [
+  ["disabled lifecycle", "install", '"enabled": true', '"enabled": false', /必须订阅 lifecycle/],
+  ["guard not covering existing document", "install", '"runImmediately": true', '"runImmediately": false', /只能来自 policy|policy 生成的固定字段/],
+  ["missing initial ACK registration", "install", 'tracked(self, GuardRequest::Install);', '/* untracked */', /五条 Install ACK/],
+  ["resume ACK excluded from initial latch", "install", 'commands.push(self.resume_page(session_id));\n            tracked(\n                self,\n                if initial {\n                    GuardRequest::Install\n                } else {\n                    GuardRequest::Monitor\n                },\n            );', 'commands.push(self.resume_page(session_id));', /五条 Install ACK/],
+  ["ACK handler not dispatched", "handle", 'self.acknowledge_guard(id, &message, &mut out);', '/* missing dispatch */', /ACK handler 必须/],
+  ["untracked ACK ID", "acknowledge_guard", 'self.guard_requests.get(&id)', 'self.guard_requests.values().next()', /ACK handler 必须/],
+  ["wrong ACK session accepted", "acknowledge_guard", "!= session", "== session", /ACK handler 必须/],
+  ["rejection does not stop local failure", "acknowledge_guard", "self.fail_page(session, reason, out);", "/* swallow */", /ACK handler 必须/],
+  ["readiness while install ACK pending", "acknowledge_guard", 'if !pending {\n                    if let Some(page) = self.sessions.get_mut(&session) {', 'if true {\n                    if let Some(page) = self.sessions.get_mut(&session) {', /初始页全部安装回执完成即置就绪闩/],
+  ["other page ACK clears pending installs", "acknowledge_guard", "if other == &session", "if true", /初始页全部安装回执完成即置就绪闩/],
+  ["latch not marked for the initial target", "acknowledge_guard", "state.guard_installed.mark_for(&page.target_id);", "state.guard_installed.mark_for(&other_target);", /初始页全部安装回执完成即置就绪闩/],
+  ["readiness not published", "acknowledge_guard", "out.guard_installed = true;", "", /初始页全部安装回执完成即置就绪闩/],
 ]) {
   test(`managed ACK boundary rejects ${name}`, () => {
-    fails(runChecker(change(cdpPath, from, to), { managed: true }), expected);
+    fails(runChecker(changeFunction(fn, from, to), { managed: true }), expected);
   });
 }
 
+for (const [name, from, to, expected] of [
+  ["protocol error accepted", 'message.get("error").is_none()', "true", /ACK handler 必须/],
+  ["malformed ACK result accepted", 'message.get("result").is_some_and(Value::is_object)', 'message.get("result").is_some()', /ACK handler 必须/],
+]) {
+  test(`managed ACK boundary rejects ${name}`, () => {
+    fails(runChecker(changeFunction("acknowledge_guard", from, to), { managed: true }), expected);
+  });
+}
+
+for (const [name, fn, from, to, expected] of [
+  ["initial latch target inferred from any page", "on_attached", "state.guard_installed.is_initial_target(target_id)", "true", /初始 target 必须由就绪闩/],
+  ["per-page deadline removed", "on_attached", "deadline: self.managed.as_ref().map(|_| {", "deadline: None, /* self.managed", /有界 deadline/],
+  ["duplicate attachment resumes unguarded target", "on_attached", "if self.managed.is_some() {", "if false {", /重复追加 attachment/],
+  ["repeated session resumes again", "on_attached", "if self.sessions.contains_key(&session_id) {\n            return;\n        }", "if self.sessions.contains_key(&session_id) {\n            out.commands.extend(self.resume_and_detach(&session_id));\n            return;\n        }", /重复追加 attachment/],
+  ["timer no longer wakes on absent ACK", "collect_events", "if let Some(deadline) = setup_deadline {\n                    tokio::time::sleep_until(deadline).await;", "if let Some(deadline) = setup_deadline {\n                    std::future::pending::<()>().await;", /有界 deadline/],
+  ["page expiry never handled", "expire_setup", "self.fail_page(&session, reason, &mut out);", "/* never expire */", /有界 deadline/],
+  ["close timeout ignored", "expire_setup", "closing.deadline <= now", "false", /有界 deadline/],
+  ["expiry reason misclassified", "expire_setup", '"guard_install_timeout"', '"monitor_install_timeout"', /有界 deadline/],
+  ["deadline cleared while monitor ACK pending", "finish_popup_setup", "if !pending {", "if true {", /有界 deadline/],
+  ["frame tree retention dropped", "finish_popup_setup", "page.deadline = None;\n                self.frame_tree_requests\n                    .retain(|_, session| session != session_id);", "page.deadline = None;", /有界 deadline/],
+  ["wrong session monitor ACK clears deadline", "finish_popup_setup", "if session == session_id", "if true", /有界 deadline/],
+  ["initial failure treated as scoped page closure", "fail_page", "if page.initial {", "if false {", /初始失败必须 fail closed/],
+  ["unrelated sessions removed on additional failure", "fail_page", "page.target_id == target", "true", /清理同 target session/],
+  ["wrong target closed", "fail_page", '"targetId": target', '"targetId": other_target', /只能关闭所属 target/],
+  ["close request untracked", "fail_page", "self.close_requests\n            .insert(self.next_id, CloseRequest::Close(target));", "/* untracked close */", /只能关闭所属 target/],
+  ["untracked close ACK accepted", "acknowledge_close", "self.close_requests.get(&id)", "self.close_requests.values().next()", /关闭验证必须核对请求 ID/],
+  ["session-level close ACK accepted", "acknowledge_close", 'if message.get("sessionId").is_some() {\n            return;\n        }', "", /关闭验证必须核对请求 ID/],
+  ["close ACK treated as proof of absence", "acknowledge_close", 'out.commands\n                    .push(self.command(None, "Target.getTargets", json!({})));', "self.closing_targets.remove(&target);", /关闭验证必须核对请求 ID/],
+  ["wrong target bound to close verification", "acknowledge_close", "CloseRequest::Verify(target));", "CloseRequest::Verify(other_target));", /关闭验证必须核对请求 ID/],
+  ["close verification allows protocol error", "acknowledge_close", 'message.get("error").is_none()', "true", /关闭验证必须核对请求 ID/],
+  ["malformed target list proves absence", "acknowledge_close", "Value::as_array", "Value::as_object", /关闭验证必须核对请求 ID/],
+  ["malformed target ID proves absence", "acknowledge_close", "!id.is_empty()", "true", /关闭验证必须核对请求 ID/],
+  ["wrong target absence proves closure", "acknowledge_close", "== Some(&target)", "== Some(&other_target)", /关闭验证必须核对请求 ID/],
+  ["still-present target reported closed", "acknowledge_close", "                    return;\n                }\n                if let Some(closed) = self", "                }\n                if let Some(closed) = self", /target 仍存在时必须退出/],
+  ["wrong closure state consumed", "acknowledge_close", "self\n                    .closing_targets\n                    .remove(&target)", "self\n                    .closing_targets\n                    .remove(&other_target)", /关闭验证必须核对请求 ID/],
+  ["close ACK handler not dispatched", "handle", "self.acknowledge_close(id, &message, &mut out);", "/* no close dispatch */", /关闭验证必须核对请求 ID/],
+  ["second long-lived guard connection", "resume_and_detach", "fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {", 'fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> { let second = connect(&endpoint);', /唯一长连接/],
+]) {
+  test(`managed liveness boundary rejects ${name}`, () => {
+    fails(runChecker(changeFunction(fn, from, to), { managed: true }), expected);
+  });
+}
+
+test("bounded scoped close polling rejects deadline renewal", () => {
+  fails(runChecker(change(cdpPath, "closing.retry_at =\n                            Some(tokio::time::Instant::now() + Duration::from_millis(100));", "closing.deadline = tokio::time::Instant::now() + crate::managed_cdp::GUARD_INSTALL_TIMEOUT; closing.retry_at = Some(tokio::time::Instant::now() + Duration::from_millis(100));"), { managed: true }), /关闭验证不得续期/);
+});
+
+test("collector rejects an extra raw debugger resume outside release helpers", () => {
+  fails(runChecker(change(cdpPath, '"Target.attachedToTarget" => self.on_attached(params, &mut out),', '"Target.attachedToTarget" => self.on_attached(params, &mut out),\n            "__vestus_probe__" => out.commands.push(self.command(Some("probe"), "Runtime.runIfWaitingForDebugger", json!({}))),'), { managed: true }), /resume 回执只参与初始就绪闩与后续页预算/);
+});
+
+test("additional page cannot bypass policy source through a helper", () => {
+  fails(runChecker(changeFunction("resume_and_detach", "fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {", 'fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> { out.commands.push(self.command(Some(session_id), "Page.addScriptToEvaluateOnNewDocument", json!({"source": frontend})));'), { managed: true }), /只允许安装托管固定 guard/);
+});
+
 test("managed boundary rejects page scripting in the policy module", () => {
   fails(
-    runChecker({ [policyPath]: managedSources[policyPath] + '\nfn bypass() { send("Runtime.evaluate"); }' }, { managed: true }),
+    runChecker({ [policyPath]: realSource(policyPath) + '\nfn bypass() { send("Runtime.evaluate"); }' }, { managed: true }),
     /不得自行发送页面命令/,
   );
 });
@@ -367,15 +385,15 @@ for (const [name, extra, expected] of [
   ["a second guard script source", '\nfn peek(other: ManagedWatch) { let stolen = other.login_guard_script; }', /只能通过 managed_cdp::logout_guard_script/],
 ]) {
   test(`command layer rejects ${name}`, () => {
-    fails(runChecker({ [commandsPath]: managedSources[commandsPath] + extra }, { managed: true }), expected);
+    fails(runChecker({ [commandsPath]: realSource(commandsPath) + extra }, { managed: true }), expected);
   });
 }
 
 for (const method of ["Runtime.evaluate", "Runtime.callFunctionOn", "Input.dispatchKeyEvent", "Network.getCookies", "Storage.getCookies", "Fetch.enable", "Page.navigate"]) {
   test(`collector cannot acquire ${method}`, () => {
     fails(runChecker({
-      [cdpPath]: managedSources[cdpPath].replace(
-        'fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {',
+      [cdpPath]: realSource(cdpPath).replace(
+        "fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {",
         `fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> { send("${method}");`,
       ),
     }, { managed: true }), /采集通道拿到了只读采集用不着的能力/);
@@ -385,15 +403,15 @@ for (const method of ["Runtime.evaluate", "Runtime.callFunctionOn", "Input.dispa
 for (const method of ["Runtime.enable", "Runtime.addBinding", "Runtime.bindingCalled"]) {
   test(`address-only collection rejects ${method}`, () => {
     fails(runChecker(change(cdpPath,
-      'self.command(Some(session_id), "Page.enable", json!({}))',
-      `self.command(Some(session_id), "Page.enable", json!({})), self.command(Some(session_id), "${method}", json!({}))`,
+      'self.command(Some(session_id), "Page.enable", json!({})));',
+      `self.command(Some(session_id), "Page.enable", json!({}))), self.command(Some(session_id), "${method}", json!({})));`,
     ), { managed: true }), /只读采集用不着的能力/);
   });
 }
 
 test("collector I/O helper cannot bypass the read-only capability boundary", () => {
-  const helper = '\nasync fn collect_events() { send("Runtime.enable"); }\n';
-  fails(runChecker({ [cdpPath]: managedSources[cdpPath] + helper }, { managed: true }),
+  fails(runChecker(change(cdpPath, "let socket = connect(&endpoint).await?;",
+    'let socket = connect(&endpoint).await?; send("Runtime.enable");'), { managed: true }),
     /只读采集用不着的能力/);
 });
 

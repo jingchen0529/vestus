@@ -142,13 +142,16 @@ pub(crate) enum ManagedSignal {
     Expired,
     /// 采集调试连接断开：本地防护故障，关闭浏览器但不动凭据。
     ConnectionLost,
+    /// An unprotected additional page was removed; other pages remain monitored.
+    PageClosed { reason: &'static str },
 }
 
-/// 托管会话在采集连接上的防护注入物：登录页交互锁脚本 + 事件监控器 + 信号出口。
+/// 托管会话在采集连接上的采集注入物：第二层固定登录脚本（初始页）+ 事件监控器 + 信号出口。
 ///
-/// 采集连接是托管浏览器唯一的 CDP 客户端（v0.2.10 起验证的单连接模型）：暂停新
-/// target、安装固定防护脚本后放行，事件流同时喂给活动采集与登录/登出检测。
-/// 独立的第二条防护连接会让 `window.open` 弹窗停在 about:blank 永不导航，已废弃。
+/// 登录页交互锁的主防线是随包 MV3 扩展（document_start 注入，托管启动时由
+/// `managed_cdp::write_login_guard_extension` 写入 profile 并以 `--load-extension`
+/// 加载）。采集连接不再暂停任何 target：暂停会把 noopener 弹窗的防护回执拖成
+/// 回执循环（实测 Chrome/157）。事件流同时喂给活动采集与登录/登出检测。
 pub(crate) struct ManagedWatch {
     pub(crate) login_guard_script: String,
     pub(crate) monitor: crate::managed_cdp::ManagedSessionMonitor,
@@ -209,13 +212,32 @@ async fn collect_events(
         ..Collector::default()
     };
     for command in collector.opening_commands() {
-        writer
-            .send(Message::Text(command.into()))
-            .await
-            .map_err(|error| CdpError::Transport(error.to_string()))?;
+        timeout(
+            crate::managed_cdp::GUARD_INSTALL_TIMEOUT,
+            writer.send(Message::Text(command.into())),
+        )
+        .await
+        .map_err(|_| CdpError::Transport("collector write timed out".into()))?
+        .map_err(|error| CdpError::Transport(error.to_string()))?;
     }
 
     loop {
+        let expired = collector.expire_setup();
+        if expired.guard_failed {
+            return Err(CdpError::Command(
+                "managed page initialization timed out".into(),
+            ));
+        }
+        for command in expired.commands {
+            timeout(
+                crate::managed_cdp::GUARD_INSTALL_TIMEOUT,
+                writer.send(Message::Text(command.into())),
+            )
+            .await
+            .map_err(|_| CdpError::Transport("collector write timed out".into()))?
+            .map_err(|error| CdpError::Transport(error.to_string()))?;
+        }
+        let setup_deadline = collector.setup_deadline();
         let deadline = collector
             .managed
             .as_ref()
@@ -225,6 +247,13 @@ async fn collect_events(
             // collector resumes after a delayed scheduler wakeup.
             biased;
             frame = reader.next() => frame,
+            _ = async {
+                if let Some(deadline) = setup_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => continue,
             _ = async {
                 if let Some(deadline) = deadline {
                     tokio::time::sleep_until(deadline).await;
@@ -266,10 +295,13 @@ async fn collect_events(
             }
         }
         for command in &handled.commands {
-            writer
-                .send(Message::Text(command.clone().into()))
-                .await
-                .map_err(|error| CdpError::Transport(error.to_string()))?;
+            timeout(
+                crate::managed_cdp::GUARD_INSTALL_TIMEOUT,
+                writer.send(Message::Text(command.clone().into())),
+            )
+            .await
+            .map_err(|_| CdpError::Transport("collector write timed out".into()))?
+            .map_err(|error| CdpError::Transport(error.to_string()))?;
         }
     }
     Ok(())
@@ -557,18 +589,39 @@ struct Collector {
     /// Exactly one initial frame-tree request per installed target.
     frame_tree_requests: HashMap<i64, String>,
     guard_requests: HashMap<i64, GuardRequest>,
+    closing_targets: HashMap<String, ClosingTarget>,
+    close_requests: HashMap<i64, CloseRequest>,
+}
+
+struct ClosingTarget {
+    reason: &'static str,
+    deadline: tokio::time::Instant,
+    retry_at: Option<tokio::time::Instant>,
+    initial: bool,
+    notify: bool,
+}
+
+#[derive(Clone)]
+enum CloseRequest {
+    Close(String),
+    Verify(String),
+    Detached(String),
 }
 
 #[derive(Clone)]
 enum GuardRequest {
+    /// 初始托管页的完整安装回执（扩展防护之外的第二层 + 就绪闩）。
     Install(String),
-    Resume(String),
+    /// 后续页面的采集订阅回执（enable / tree / lifecycle）。
+    Monitor(String),
     AutoAttach,
 }
 
 #[derive(Default)]
 struct PageSession {
     target_id: String,
+    initial: bool,
+    deadline: Option<tokio::time::Instant>,
     main_frame_id: Option<String>,
     navigation_seen: bool,
     /// Only suppress the initial event for the document already seeded by its tree.
@@ -588,6 +641,8 @@ impl Default for Collector {
             sessions: HashMap::new(),
             frame_tree_requests: HashMap::new(),
             guard_requests: HashMap::new(),
+            closing_targets: HashMap::new(),
+            close_requests: HashMap::new(),
         }
     }
 }
@@ -598,14 +653,16 @@ impl Collector {
     /// `setAutoAttach` 覆盖之后新建的标签页和弹窗；`getTargets` 是为了补上连接建立
     /// 之前就存在的那一个初始标签页——它不会再触发 `attachedToTarget`。
     fn opening_commands(&mut self) -> Vec<String> {
+        // 托管防护由随包扩展在 document_start 注入。暂停新 target 会和扩展路径
+        // 形成回执循环（实测 noopener 弹窗的防护安装回执要等 resume 才返回），
+        // 所以托管不再暂停；普通采集保留暂停+立即放行的原有模型。
+        let wait_for_debugger = self.managed.is_none();
         let auto_attach = self.command(
             None,
             "Target.setAutoAttach",
             json!({
                 "autoAttach": true,
-                // 所有新 target（含弹窗）都停在第一行脚本之前，安装订阅与固定
-                // 防护脚本后再放行——v0.2.10 起验证的单连接暂停+放行模型。
-                "waitForDebuggerOnStart": true,
+                "waitForDebuggerOnStart": wait_for_debugger,
                 // flatten 把子 session 复用同一条 WebSocket，靠 sessionId 区分。
                 "flatten": true,
             }),
@@ -628,44 +685,79 @@ impl Collector {
         message.to_string()
     }
 
-    /// 托管页面必须收到所有安装回执后才放行；普通页面保留原有放行顺序。
+    /// 初始托管页在扩展防护之外再装一层固定 guard 并等全部回执就绪；后续页只装
+    /// 采集订阅。都不暂停：页面立即运行，登录锁定由扩展的 document_start 保证。
     fn install(&mut self, session_id: &str) -> Vec<String> {
-        let managed = self
-            .managed
-            .as_ref()
-            .map(|state| state.login_guard_script.clone());
+        let managed = self.managed.is_some();
+        let initial = self
+            .sessions
+            .get(session_id)
+            .is_some_and(|page| page.initial);
+        let tracked = |collector: &mut Self, kind: fn(String) -> GuardRequest| {
+            collector
+                .guard_requests
+                .insert(collector.next_id, kind(session_id.to_string()));
+        };
         let mut commands = Vec::new();
-        if let Some(source) = managed {
-            // Install the route-scoped guard before enabling Page. A popup opened
-            // with window.open("") can receive a location assignment while it is
-            // paused. Registering the guard first keeps that bootstrap document
-            // protected when the target is resumed.
-            commands.push(self.command(
-                Some(session_id),
-                "Page.addScriptToEvaluateOnNewDocument",
-                json!({"source": source, "runImmediately": true}),
-            ));
-            self.guard_requests
-                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        if let Some(state) = self.managed.as_ref() {
+            if initial {
+                commands.push(self.command(
+                    Some(session_id),
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({"source": state.login_guard_script.clone(), "runImmediately": true}),
+                ));
+                tracked(self, GuardRequest::Install);
+            }
         }
         commands.push(self.command(Some(session_id), "Page.enable", json!({})));
-        if self.managed.is_some() {
-            self.guard_requests
-                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        if managed {
+            tracked(
+                self,
+                if initial {
+                    GuardRequest::Install
+                } else {
+                    GuardRequest::Monitor
+                },
+            );
         }
         commands.push(self.command(Some(session_id), "Page.getFrameTree", json!({})));
         self.frame_tree_requests
             .insert(self.next_id, session_id.to_string());
-        if self.managed.is_some() {
-            self.guard_requests
-                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+        if managed {
+            tracked(
+                self,
+                if initial {
+                    GuardRequest::Install
+                } else {
+                    GuardRequest::Monitor
+                },
+            );
             commands.push(self.command(
                 Some(session_id),
                 "Page.setLifecycleEventsEnabled",
                 json!({"enabled": true}),
             ));
-            self.guard_requests
-                .insert(self.next_id, GuardRequest::Install(session_id.to_string()));
+            tracked(
+                self,
+                if initial {
+                    GuardRequest::Install
+                } else {
+                    GuardRequest::Monitor
+                },
+            );
+            // Chromium 在 flatten autoAttach 下会把新建 target 挂起，直到收到
+            // runIfWaitingForDebugger（与 waitFor 取值无关，实测 157）。扩展模式下
+            // resume 是解除挂起的必需命令，绝不能等任何回执才发；它的回执只参与
+            // 初始就绪闩/后续页预算，不构成防护门禁——登录锁定由随包扩展保证。
+            commands.push(self.resume_page(session_id));
+            tracked(
+                self,
+                if initial {
+                    GuardRequest::Install
+                } else {
+                    GuardRequest::Monitor
+                },
+            );
         } else {
             commands.push(self.resume_page(session_id));
         }
@@ -673,16 +765,13 @@ impl Collector {
     }
 
     fn resume_page(&mut self, session_id: &str) -> String {
-        let command = self.command(
+        // 普通 target 被 waitForDebuggerOnStart 暂停需要放行；托管的 target 在
+        // flatten autoAttach 下同样被挂起，必须收到它才会开始运行。
+        self.command(
             Some(session_id),
             "Runtime.runIfWaitingForDebugger",
             json!({}),
-        );
-        if self.managed.is_some() {
-            self.guard_requests
-                .insert(self.next_id, GuardRequest::Resume(session_id.to_string()));
-        }
-        command
+        )
     }
 
     fn acknowledge_guard(&mut self, id: i64, message: &Value, out: &mut Handled) {
@@ -690,7 +779,7 @@ impl Collector {
             return;
         };
         let session = match &request {
-            GuardRequest::Install(session) | GuardRequest::Resume(session) => {
+            GuardRequest::Install(session) | GuardRequest::Monitor(session) => {
                 Some(session.as_str())
             }
             GuardRequest::AutoAttach => None,
@@ -706,38 +795,278 @@ impl Collector {
                     .and_then(Value::as_str)
                     .is_some_and(|id| !id.is_empty()));
         if !accepted {
-            out.guard_failed = true;
+            let reason = match request {
+                GuardRequest::Install(_) => "guard_install_failed",
+                GuardRequest::Monitor(_) => "monitor_install_failed",
+                GuardRequest::AutoAttach => {
+                    out.guard_failed = true;
+                    return;
+                }
+            };
+            if let Some(session) = session {
+                self.fail_page(session, reason, out);
+            }
             return;
         }
         self.guard_requests.remove(&id);
         match request {
             GuardRequest::Install(session) => {
+                // 扩展模式下没有暂停，也就没有 resume：全部安装回执完成即就绪。
                 let pending = self.guard_requests.values().any(
                     |request| matches!(request, GuardRequest::Install(other) if other == &session),
                 );
-                if !pending && self.sessions.contains_key(&session) {
-                    out.commands.push(self.resume_page(&session));
+                if !pending {
+                    if let Some(page) = self.sessions.get_mut(&session) {
+                        page.deadline = None;
+                        if let Some(state) = self.managed.as_ref() {
+                            state.guard_installed.mark_for(&page.target_id);
+                        }
+                        out.guard_installed = true;
+                    }
                 }
             }
-            GuardRequest::Resume(session) => {
-                if let Some(page) = self.sessions.get(&session) {
-                    if let Some(state) = self.managed.as_ref() {
-                        state.guard_installed.mark_for(&page.target_id);
-                    }
-                    out.guard_installed = true;
-                }
+            GuardRequest::Monitor(session) => {
+                self.finish_popup_setup(&session);
             }
             GuardRequest::AutoAttach => {}
         }
     }
 
+    fn forget_session(&mut self, session_id: &str) {
+        self.sessions.remove(session_id);
+        self.frame_tree_requests
+            .retain(|_, session| session != session_id);
+        self.guard_requests.retain(|_, request| {
+            !matches!(request, GuardRequest::Install(session) | GuardRequest::Monitor(session)
+                if session == session_id)
+        });
+        if let Some(state) = self.managed.as_mut() {
+            state.monitor.observe(
+                &json!({"method":"Target.detachedFromTarget","params":{"sessionId":session_id}}),
+            );
+        }
+    }
+
+    fn fail_page(&mut self, session_id: &str, reason: &'static str, out: &mut Handled) {
+        let Some(page) = self.sessions.get(session_id) else {
+            return;
+        };
+        if page.initial {
+            out.guard_failed = true;
+            return;
+        }
+        let target = page.target_id.clone();
+        if target.is_empty() {
+            out.guard_failed = true;
+            return;
+        }
+        let sessions: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, page)| page.target_id == target)
+            .map(|(session, _)| session.clone())
+            .collect();
+        for session in sessions {
+            self.forget_session(&session);
+        }
+        self.closing_targets.insert(
+            target.clone(),
+            ClosingTarget {
+                reason,
+                deadline: tokio::time::Instant::now() + crate::managed_cdp::GUARD_INSTALL_TIMEOUT,
+                retry_at: None,
+                initial: false,
+                notify: true,
+            },
+        );
+        out.commands
+            .push(self.command(None, "Target.closeTarget", json!({"targetId": target})));
+        self.close_requests
+            .insert(self.next_id, CloseRequest::Close(target));
+    }
+
+    fn on_detached(&mut self, session_id: &str, out: &mut Handled) {
+        let target = self
+            .sessions
+            .get(session_id)
+            .map(|page| (page.target_id.clone(), page.initial));
+        self.forget_session(session_id);
+        if self.managed.is_none() {
+            return;
+        }
+        let Some((target, initial)) = target else {
+            return;
+        };
+        if target.is_empty() {
+            out.guard_failed = true;
+            return;
+        }
+        self.closing_targets.insert(
+            target.clone(),
+            ClosingTarget {
+                reason: "monitor_install_failed",
+                deadline: tokio::time::Instant::now() + crate::managed_cdp::GUARD_INSTALL_TIMEOUT,
+                retry_at: None,
+                initial,
+                notify: false,
+            },
+        );
+        out.commands
+            .push(self.command(None, "Target.getTargets", json!({})));
+        self.close_requests
+            .insert(self.next_id, CloseRequest::Detached(target));
+    }
+
+    fn acknowledge_close(&mut self, id: i64, message: &Value, out: &mut Handled) {
+        let Some(request) = self.close_requests.get(&id).cloned() else {
+            return;
+        };
+        if message.get("sessionId").is_some() {
+            return;
+        }
+        let detached = matches!(&request, CloseRequest::Detached(_));
+        self.close_requests.remove(&id);
+        match request {
+            CloseRequest::Close(target) => {
+                // A rejected close may mean the user already closed the tab.
+                // Verify absence rather than treating a session detach as destruction.
+                out.commands
+                    .push(self.command(None, "Target.getTargets", json!({})));
+                self.close_requests
+                    .insert(self.next_id, CloseRequest::Verify(target));
+            }
+            CloseRequest::Verify(target) | CloseRequest::Detached(target) => {
+                let Some(targets) = message
+                    .pointer("/result/targetInfos")
+                    .and_then(Value::as_array)
+                    .filter(|targets| {
+                        message.get("error").is_none()
+                            && targets.iter().all(|info| {
+                                info.get("targetId")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|id| !id.is_empty())
+                            })
+                    })
+                else {
+                    out.guard_failed = true;
+                    return;
+                };
+                if targets
+                    .iter()
+                    .any(|info| info.get("targetId").and_then(Value::as_str) == Some(&target))
+                {
+                    if detached {
+                        let Some(closing) = self.closing_targets.get_mut(&target) else {
+                            return;
+                        };
+                        if closing.initial {
+                            out.guard_failed = true;
+                            return;
+                        }
+                        closing.notify = true;
+                        out.commands.push(self.command(
+                            None,
+                            "Target.closeTarget",
+                            json!({"targetId":target}),
+                        ));
+                        self.close_requests
+                            .insert(self.next_id, CloseRequest::Close(target));
+                    } else if let Some(closing) = self.closing_targets.get_mut(&target) {
+                        closing.retry_at =
+                            Some(tokio::time::Instant::now() + Duration::from_millis(100));
+                    }
+                    return;
+                }
+                if let Some(closed) = self
+                    .closing_targets
+                    .remove(&target)
+                    .filter(|closed| closed.notify)
+                {
+                    if let Some(state) = self.managed.as_ref() {
+                        let _ = state.signals.send(ManagedSignal::PageClosed {
+                            reason: closed.reason,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn setup_deadline(&self) -> Option<tokio::time::Instant> {
+        self.sessions
+            .values()
+            .filter_map(|page| page.deadline)
+            .chain(self.closing_targets.values().flat_map(|closing| {
+                [Some(closing.deadline), closing.retry_at]
+                    .into_iter()
+                    .flatten()
+            }))
+            .min()
+    }
+
+    fn expire_setup(&mut self) -> Handled {
+        let now = tokio::time::Instant::now();
+        let mut out = Handled::default();
+        if self
+            .closing_targets
+            .values()
+            .any(|closing| closing.deadline <= now)
+        {
+            out.guard_failed = true;
+            return out;
+        }
+        let expired: Vec<(String, &'static str)> = self
+            .sessions
+            .iter()
+            .filter(|(_, page)| page.deadline.is_some_and(|deadline| deadline <= now))
+            .map(|(session, page)| {
+                let reason = if page.initial {
+                    "guard_install_timeout"
+                } else {
+                    "monitor_install_timeout"
+                };
+                (session.clone(), reason)
+            })
+            .collect();
+        for (session, reason) in expired {
+            self.fail_page(&session, reason, &mut out);
+        }
+        let retry: Vec<String> = self
+            .closing_targets
+            .iter()
+            .filter(|(_, closing)| closing.retry_at.is_some_and(|deadline| deadline <= now))
+            .map(|(target, _)| target.clone())
+            .collect();
+        for target in retry {
+            self.closing_targets.get_mut(&target).unwrap().retry_at = None;
+            out.commands
+                .push(self.command(None, "Target.getTargets", json!({})));
+            self.close_requests
+                .insert(self.next_id, CloseRequest::Verify(target));
+        }
+        out
+    }
+
+    fn finish_popup_setup(&mut self, session_id: &str) {
+        let pending = self.guard_requests.values().any(
+            |request| matches!(request, GuardRequest::Monitor(session) if session == session_id),
+        );
+        if !pending {
+            if let Some(page) = self.sessions.get_mut(session_id) {
+                page.deadline = None;
+                self.frame_tree_requests
+                    .retain(|_, session| session != session_id);
+            }
+        }
+    }
+
     /// 放行一个我们不采集的 target，然后断开它。
     ///
-    /// browser 级 autoAttach 送上来的不只有页面：Service Worker、Shared Worker
-    /// 以及各种 `other` target 都会附上来，而 `waitForDebuggerOnStart` 把它们**全
-    /// 部**停在第一行脚本之前。Chromium 不会因为我们不理它就自动放行，光 detach
-    /// 也不行——被暂停的 target 不会随 session 断开而恢复。所以每一个附上来的
-    /// target 都得显式放行，而且必须先放行再断开。
+    /// 普通（非托管）采集的 browser 级 autoAttach 会把 Service Worker、Shared
+    /// Worker 和各种 `other` target 全部停在第一行脚本之前
+    /// （`waitForDebuggerOnStart`）。Chromium 不会因为我们不理它就自动放行，光
+    /// detach 也不行——被暂停的 target 不会随 session 断开而恢复。所以普通模式下
+    /// 每一个附上来的 target 都得先放行再断开。
     ///
     /// 漏掉这一步的代价不是「少采一点数据」：
     ///
@@ -745,6 +1074,10 @@ impl Collector {
     ///   空白帧上直到 SW 启动超时（表现为内容区灰屏、刷新才恢复）；
     /// * 关闭浏览器时 Chromium 会等这些暂停的进程恢复，于是关不掉，只能被
     ///   [`crate::browser`] 强杀，profile 也就删不干净。
+    ///
+    /// 托管模式同样需要 resume：flatten autoAttach 会把新建 target 挂起（与
+    /// waitFor 取值无关，实测 Chrome/157），install 批次里的 resume 就是解除挂起
+    /// 的必需命令；对 worker 这类不暂停 target 它是无害的空操作。
     fn resume_and_detach(&mut self, session_id: &str) -> Vec<String> {
         vec![
             self.command(
@@ -768,6 +1101,10 @@ impl Collector {
         };
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             if let Some(id) = message.get("id").and_then(Value::as_i64) {
+                self.acknowledge_close(id, &message, &mut out);
+                if out.guard_failed {
+                    return out;
+                }
                 self.acknowledge_guard(id, &message, &mut out);
                 if out.guard_failed {
                     return out;
@@ -797,12 +1134,7 @@ impl Collector {
             "Target.attachedToTarget" => self.on_attached(params, &mut out),
             "Target.detachedFromTarget" => {
                 if let Some(gone) = params.get("sessionId").and_then(Value::as_str) {
-                    self.sessions.remove(gone);
-                    self.frame_tree_requests
-                        .retain(|_, session| session != gone);
-                    self.guard_requests.retain(|_, request| {
-                        !matches!(request, GuardRequest::Install(session) | GuardRequest::Resume(session) if session == gone)
-                    });
+                    self.on_detached(gone, &mut out);
                 }
             }
             // 整文档跳转。只认主框架：iframe 的导航不是「用户访问了一个页面」。
@@ -822,7 +1154,7 @@ impl Collector {
                                 .and_then(Value::as_str)
                                 .is_some_and(|url| url.starts_with("chrome-error://")))
                     {
-                        out.guard_failed = true;
+                        self.fail_page(session_id.unwrap(), "monitor_install_failed", &mut out);
                         return out;
                     }
                     self.main_frame_navigation(session_id.unwrap(), frame, &mut out);
@@ -1019,16 +1351,39 @@ impl Collector {
             return;
         }
         let target_id = target.get("targetId").and_then(Value::as_str).unwrap_or("");
-        // 这个页面已经有一条装好的 session 了，这是第二条通往同一个 target 的路。
-        // 放行并断开它：留着会让这个页面的每个事件都被算两遍。
+        if self.closing_targets.contains_key(target_id) {
+            out.commands.push(self.command(
+                None,
+                "Target.detachFromTarget",
+                json!({"sessionId":session_id}),
+            ));
+            return;
+        }
+        // 同 target 的第二条 session 会把每个事件算两遍。托管模式下不暂停，
+        // 第二条 session 直接断开即可；普通模式保持先放行再断开。
         if self.is_installed_target(target_id) {
-            out.commands.extend(self.resume_and_detach(&session_id));
+            if self.managed.is_some() {
+                out.commands.push(self.command(
+                    None,
+                    "Target.detachFromTarget",
+                    json!({"sessionId":session_id}),
+                ));
+            } else {
+                out.commands.extend(self.resume_and_detach(&session_id));
+            }
             return;
         }
         self.sessions.insert(
             session_id.clone(),
             PageSession {
                 target_id: target_id.to_string(),
+                initial: self
+                    .managed
+                    .as_ref()
+                    .is_some_and(|state| state.guard_installed.is_initial_target(target_id)),
+                deadline: self.managed.as_ref().map(|_| {
+                    tokio::time::Instant::now() + crate::managed_cdp::GUARD_INSTALL_TIMEOUT
+                }),
                 ..PageSession::default()
             },
         );
@@ -1192,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_collector_installs_only_guard_then_resumes() {
+    fn managed_collector_installs_subscriptions_and_resumes_within_the_install_batch() {
         let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut collector = Collector {
             managed: Some(ManagedCollectorState {
@@ -1202,13 +1557,17 @@ mod tests {
                     "https://agent.oceanengine.com/",
                 )
                 .unwrap(),
-                guard_installed: crate::managed_cdp::GuardInstalled::default(),
+                guard_installed: crate::managed_cdp::GuardInstalled::for_target("T1".into()),
             }),
             ..Collector::default()
         };
         let opening = collector.opening_commands();
         let auto: Value = serde_json::from_str(&opening[0]).unwrap();
-        assert_eq!(auto["params"]["waitForDebuggerOnStart"], true);
+        assert_eq!(
+            auto["params"]["waitForDebuggerOnStart"], false,
+            "托管仍不设置 waitFor 标记；但 flatten autoAttach 会挂起新 target，\
+             所以 resume 无条件随安装批次发出，绝不等回执"
+        );
 
         let handled = collector.handle(&attached(
             "S1",
@@ -1221,9 +1580,15 @@ mod tests {
             .map(|command| method_of(command))
             .collect();
         assert_eq!(
-            &methods[..2],
-            ["Page.addScriptToEvaluateOnNewDocument", "Page.enable",],
-            "托管页面先安装只作用于登录路由的 guard，再启用 Page",
+            methods,
+            vec![
+                "Page.addScriptToEvaluateOnNewDocument",
+                "Page.enable",
+                "Page.getFrameTree",
+                "Page.setLifecycleEventsEnabled",
+                "Runtime.runIfWaitingForDebugger",
+            ],
+            "初始托管页安装第二层 guard、采集订阅，并在同一批内无条件放行",
         );
         let scripts: Vec<String> = handled
             .commands
@@ -1237,11 +1602,15 @@ mod tests {
             })
             .collect();
         assert_eq!(scripts, vec!["(() => {})();"], "only fixed login guard");
-        assert!(handled
-            .commands
-            .iter()
-            .all(|command| method_of(command) != "Runtime.runIfWaitingForDebugger"));
-        let mut resumed = Vec::new();
+        assert_eq!(
+            handled
+                .commands
+                .iter()
+                .filter(|command| method_of(command) == "Runtime.runIfWaitingForDebugger")
+                .count(),
+            1,
+            "exactly one resume, sent unconditionally inside the install batch"
+        );
         for command in &handled.commands {
             let command: Value = serde_json::from_str(command).unwrap();
             let result = if command["method"] == "Page.getFrameTree" {
@@ -1249,24 +1618,68 @@ mod tests {
             } else {
                 json!({})
             };
-            resumed.extend(
-                collector
-                    .handle(
-                        &json!({"id":command["id"],"sessionId":"S1","result":result}).to_string(),
-                    )
-                    .commands,
+            let ack = collector
+                .handle(&json!({"id":command["id"],"sessionId":"S1","result":result}).to_string());
+            assert!(
+                ack.commands.is_empty(),
+                "install ACKs (including the resume ACK) emit no further commands"
             );
+            assert!(ack.reports.is_empty());
         }
-        assert_eq!(resumed.len(), 1);
-        assert_eq!(method_of(&resumed[0]), "Runtime.runIfWaitingForDebugger");
+        assert!(
+            collector
+                .managed
+                .as_ref()
+                .unwrap()
+                .guard_installed
+                .is_ready(),
+            "all five install ACKs, including the resume ACK, complete the latch"
+        );
         assert!(signal_rx.try_recv().is_err());
 
-        // 弹窗同样暂停 + 固定防护 + 放行（独立 targetId，不是已有页面的重复会话）。
+        // 后续弹窗装采集订阅并在同一批内放行：无固定防护脚本（独立 targetId，
+        // 不是已有页面的重复会话）。
         let popup = collector.handle(&json!({"method": "Target.attachedToTarget", "params": {
             "sessionId": "S2",
             "targetInfo": {"targetId": "T2", "type": "page", "url": "about:blank", "attached": true},
         }}).to_string());
-        assert_eq!(popup.commands.len(), 4);
+        let methods: Vec<String> = popup.commands.iter().map(|c| method_of(c)).collect();
+        assert_eq!(
+            methods,
+            vec![
+                "Page.enable",
+                "Page.getFrameTree",
+                "Page.setLifecycleEventsEnabled",
+                "Runtime.runIfWaitingForDebugger",
+            ],
+            "additional pages install monitors plus the unconditional batch resume",
+        );
+        assert!(popup
+            .commands
+            .iter()
+            .all(|command| method_of(command) != "Page.addScriptToEvaluateOnNewDocument"));
+        for command in &popup.commands {
+            let command: Value = serde_json::from_str(command).unwrap();
+            let result = if command["method"] == "Page.getFrameTree" {
+                json!({"frameTree":{"frame":{"id":"main","loaderId":"L0","url":"about:blank"}}})
+            } else {
+                json!({})
+            };
+            let ack = collector
+                .handle(&json!({"id":command["id"],"sessionId":"S2","result":result}).to_string());
+            assert!(ack.commands.is_empty());
+        }
+        assert!(signal_rx.try_recv().is_err());
+
+        // 同 target 的第二条 session：浏览器级直接断开，绝不放行，避免双份计数。
+        let duplicate = collector.handle(&attached("S9", "page", "https://x.test/other"));
+        let methods: Vec<String> = duplicate.commands.iter().map(|c| method_of(c)).collect();
+        assert_eq!(methods, vec!["Target.detachFromTarget"]);
+        let detach: Value = serde_json::from_str(&duplicate.commands[0]).unwrap();
+        assert!(detach.get("sessionId").is_none());
+        assert_eq!(detach["params"]["sessionId"], "S9");
+        assert!(duplicate.reports.is_empty());
+        assert_eq!(collector.sessions.len(), 2);
 
         // 非 page target：先放行再断开。
         let worker = collector.handle(&attached("S3", "service_worker", "https://x.test/sw.js"));

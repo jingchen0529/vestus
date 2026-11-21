@@ -161,6 +161,9 @@ pub(crate) async fn wait_managed_signal(
             _ = &mut *exited => return None,
             signal = signals.recv() => signal,
         };
+        if matches!(signal, Some(crate::cdp::ManagedSignal::PageClosed { .. })) {
+            return signal;
+        }
         if !matches!(signal, Some(crate::cdp::ManagedSignal::Expired)) {
             return Some(crate::cdp::ManagedSignal::ConnectionLost);
         }
@@ -191,6 +194,28 @@ pub(crate) async fn run_managed_watch<R: Runtime>(
         else {
             return;
         };
+        if let crate::cdp::ManagedSignal::PageClosed { reason } = detected {
+            if context
+                .auth
+                .current_identity()
+                .is_ok_and(|(user_id, _, generation)| {
+                    user_id == context.user_id && generation == context.auth_generation
+                })
+            {
+                let _ = context.app.emit(
+                    "managed-page-guard-failed",
+                    serde_json::json!({
+                        "platformId": context.platform_id,
+                        "managedAccountId": context.identity.managed_account_id,
+                        "credentialVersion": context.identity.credential_version,
+                        "browserId": context.browser_id,
+                        "reason": reason,
+                        "pageClosed": true,
+                    }),
+                );
+            }
+            continue;
+        }
         if matches!(detected, crate::cdp::ManagedSignal::ConnectionLost) {
             // Chromium 可能在进程退出回调之前先断开调试连接。这段宽限只为
             // 生命周期收尾，绝不是给仍在运行的未防护进程续命；还活着就强关。

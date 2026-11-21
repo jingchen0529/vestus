@@ -3,6 +3,187 @@ use super::*;
 use crate::browser::BrowserError;
 use crate::profile;
 
+#[tokio::test]
+async fn managed_page_closed_keeps_healthy_watch_without_reporting_expiry() {
+    use std::time::Duration;
+
+    use serde_json::json;
+    use tauri::{
+        test::{mock_builder, mock_context, noop_assets},
+        Listener,
+    };
+
+    let api = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let auth =
+        crate::auth::tests::authenticated_state(&format!("http://{}", api.local_addr().unwrap()));
+    let (user_id, _, auth_generation) = auth.current_identity().unwrap();
+    let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    app.listen("managed-page-guard-failed", move |event| {
+        events
+            .send(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap())
+            .unwrap();
+    });
+    let browsers = crate::browser::BrowserSessionManager::default();
+    browsers.insert_test_session(23, None);
+    let status = crate::managed_cdp::LoginGuardStatusView::default();
+    let context = ManagedLogoutContext {
+        browsers: browsers.clone(),
+        auth,
+        app: app.handle().clone(),
+        browser_id: 23,
+        platform_id: 7,
+        user_id,
+        auth_generation,
+        device_id: None,
+        identity: crate::managed_cdp::ManagedSessionIdentity {
+            session_id: "11".into(),
+            managed_account_id: 9,
+            credential_version: 3,
+        },
+        status: status.clone(),
+    };
+    let (signals, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (exit, exited) = tokio::sync::oneshot::channel();
+    let watch = tokio::spawn(run_managed_watch(context, signal_rx, exited));
+    for reason in [
+        "guard_install_failed",
+        "guard_install_timeout",
+        "monitor_install_failed",
+        "monitor_install_timeout",
+        "page_resume_failed",
+        "page_resume_timeout",
+    ] {
+        signals
+            .send(crate::cdp::ManagedSignal::PageClosed { reason })
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), received.recv())
+                .await
+                .unwrap(),
+            Some(json!({
+                "platformId": 7,
+                "managedAccountId": 9,
+                "credentialVersion": 3,
+                "browserId": 23,
+                "reason": reason,
+                "pageClosed": true,
+            }))
+        );
+        assert!(
+            !watch.is_finished(),
+            "a page closure must not stop the browser watch"
+        );
+        assert_eq!(
+            status.current(),
+            crate::managed_cdp::LoginGuardStatus::NotExpired
+        );
+        assert!(
+            browsers.has_sessions_pending_cleanup(),
+            "the browser must not be retired"
+        );
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), api.accept())
+            .await
+            .is_err(),
+        "a page closure must not report expiry or fetch config"
+    );
+    exit.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), watch)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn managed_page_closed_ignores_stale_user_or_auth_generation_without_stopping_watch() {
+    use std::time::Duration;
+
+    use tauri::{
+        test::{mock_builder, mock_context, noop_assets},
+        Listener,
+    };
+
+    for (stale_user, stale_generation) in [(true, false), (false, true)] {
+        let api = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let auth = crate::auth::tests::authenticated_state(&format!(
+            "http://{}",
+            api.local_addr().unwrap()
+        ));
+        let original_identity = auth.current_identity().unwrap();
+        let (user_id, _, auth_generation) = original_identity.clone();
+        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        app.listen("managed-page-guard-failed", move |event| {
+            events.send(event.payload().to_owned()).unwrap();
+        });
+        let browsers = crate::browser::BrowserSessionManager::default();
+        browsers.insert_test_session(23, None);
+        let status = crate::managed_cdp::LoginGuardStatusView::default();
+        let context = ManagedLogoutContext {
+            browsers: browsers.clone(),
+            auth: auth.clone(),
+            app: app.handle().clone(),
+            browser_id: 23,
+            platform_id: 7,
+            user_id: if stale_user { user_id + 1 } else { user_id },
+            auth_generation: if stale_generation {
+                auth_generation + 1
+            } else {
+                auth_generation
+            },
+            device_id: None,
+            identity: crate::managed_cdp::ManagedSessionIdentity {
+                session_id: "11".into(),
+                managed_account_id: 9,
+                credential_version: 3,
+            },
+            status: status.clone(),
+        };
+        let (signals, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (exit, exited) = tokio::sync::oneshot::channel();
+        let watch = tokio::spawn(run_managed_watch(context, signal_rx, exited));
+        signals
+            .send(crate::cdp::ManagedSignal::PageClosed {
+                reason: "guard_install_failed",
+            })
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(40), received.recv())
+                .await
+                .is_err(),
+            "a stale user or authentication generation must not receive the page-failure toast"
+        );
+        assert!(
+            !watch.is_finished(),
+            "stale page notifications are still nonterminal"
+        );
+        assert_eq!(
+            auth.current_identity().unwrap(),
+            original_identity,
+            "the auth gate must be read-only"
+        );
+        assert_eq!(
+            status.current(),
+            crate::managed_cdp::LoginGuardStatus::NotExpired
+        );
+        assert!(browsers.has_sessions_pending_cleanup());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(40), api.accept())
+                .await
+                .is_err(),
+            "a stale page closure must not report expiry or fetch config"
+        );
+        exit.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), watch)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
 #[test]
 fn profile_check_failure_is_distinct_from_a_busy_environment() {
     let unknown = browser_command_error(BrowserError::from(profile::ProfileCheckError::Unknown));
@@ -201,4 +382,18 @@ fn rejects_duplicate_platform_ids_and_unsafe_urls() {
             .code,
         "invalid_desktop_config"
     );
+}
+
+/// 托管启动独有的扩展准备失败必须翻成专属错误码，前端据此提示重新打开平台；
+/// 其余浏览器启动失败保持通用错误码不变。
+#[test]
+fn managed_launch_maps_extension_preparation_failure_to_guard_unavailable() {
+    let error =
+        managed_launch_command_error(BrowserError::LoginGuardExtension("fixture blocked".into()));
+    assert_eq!(error.code, "managed_guard_unavailable");
+    assert_eq!(error.message, "托管登录防护扩展准备失败，请重试");
+
+    let unrelated = managed_launch_command_error(BrowserError::ProfileBusy);
+    assert_eq!(unrelated.code, "profile_busy");
+    assert_eq!(unrelated.message, BrowserError::ProfileBusy.to_string());
 }

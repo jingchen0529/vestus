@@ -7,6 +7,7 @@
 //! on every managed page through a separate, fail-closed connection.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -873,8 +874,8 @@ impl LoginGuardStatusView {
 
 /// 采集连接装好托管 guard、可以安全导航的就绪闩。
 ///
-/// 只有采集连接写完 `Runtime.runIfWaitingForDebugger`（guard 安装之后最后一条命令）
-/// 才置位；命令层先等它再 `Page.navigate`，消除首文档防护缺口。
+/// 只有初始 target 的安装回执及 `Runtime.runIfWaitingForDebugger` 回执都成功
+/// 才置位；命令层先等它再 `Page.navigate`，其他弹窗不能代替初始页面就绪。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GuardInstalled {
     flag: Arc<std::sync::atomic::AtomicBool>,
@@ -887,6 +888,13 @@ impl GuardInstalled {
             target: Some(target),
             ..Self::default()
         }
+    }
+
+    /// The bootstrap target keeps the full installation barrier before navigation.
+    pub(crate) fn is_initial_target(&self, target: &str) -> bool {
+        self.target
+            .as_deref()
+            .is_none_or(|expected| expected == target)
     }
 
     pub(crate) fn mark_for(&self, target: &str) {
@@ -1237,6 +1245,45 @@ impl ManagedSessionMonitor {
 /// 平台入口的登录页交互锁脚本；仅供托管采集注入使用。
 pub(crate) fn logout_guard_script(target_url: &str) -> Option<String> {
     LogoutPolicy::for_platform(target_url).map(|policy| policy.login_guard_script())
+}
+
+/// 在托管 profile 目录里生成预装的 MV3 固定登录防护扩展，返回扩展目录。
+///
+/// 托管模式不再由 CDP 逐页注入 guard，而是在每次托管启动时把这份 unpacked
+/// 扩展随 `--load-extension` 交给 Chromium：content script 以 `document_start`
+/// 运行在 MAIN 世界，能在 noopener 弹窗的首个文档上抢在页面脚本之前落锁。
+/// guard.js 与 CDP 注入共用同一份模板和平台策略（[`LogoutPolicy::login_guard_script`]）；
+/// route 配置在生成期写死——MAIN 世界没有 `chrome.runtime` 可读配置，与现有
+/// policy 生成字段是同一信任模型。目录整体位于托管 profile 内：随每次启动的
+/// 托管清理一起消失，绝不落进普通持久环境。重复调用幂等（目录已存在则覆盖）。
+pub(crate) fn write_login_guard_extension(
+    profile_dir: &Path,
+    target_url: &str,
+) -> std::io::Result<PathBuf> {
+    let policy = LogoutPolicy::for_platform(target_url).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "managed login guard requires a supported platform",
+        )
+    })?;
+    let extension_dir = profile_dir.join("vestus-login-guard-extension");
+    std::fs::create_dir_all(&extension_dir)?;
+    let origin = policy.login_route.origin().ascii_serialization();
+    let manifest = json!({
+        "manifest_version": 3,
+        "name": "Vestus 登录防护",
+        "version": "1.0.0",
+        "content_scripts": [{
+            "js": ["guard.js"],
+            "matches": [format!("{origin}/*")],
+            "run_at": "document_start",
+            "all_frames": false,
+            "world": "MAIN",
+        }],
+    });
+    std::fs::write(extension_dir.join("manifest.json"), manifest.to_string())?;
+    std::fs::write(extension_dir.join("guard.js"), policy.login_guard_script())?;
+    Ok(extension_dir)
 }
 
 type ManagedSocket = WebSocketStream<TcpStream>;
