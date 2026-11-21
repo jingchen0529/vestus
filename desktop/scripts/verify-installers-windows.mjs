@@ -122,7 +122,10 @@ ${waitScript(ctx.assets[0], "('/S /D=' + $install)")}
 $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo(${literal(executable)})
 @{installed=@(Get-Installed); fileVersion=$version.FileVersion; productVersion=$version.ProductVersion; productName=$version.ProductName; uninstallerSha256=(Get-FileHash -LiteralPath ${literal(uninstaller)} -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Depth 6 -Compress`);
     const item = info.installed?.length === 1 ? info.installed[0] : null;
-    if (!item || item.displayName !== ctx.metadata.productName || item.displayVersion !== ctx.metadata.version || (item.installLocation && resolve(item.installLocation) !== install) || item.uninstallString !== `"${uninstaller}"` || info.uninstallerSha256 !== uninstallerHash) {
+    // NSIS writes InstallLocation as '"$INSTDIR"'. Remove only a balanced
+    // enclosing pair before resolving the path; this value is never executed.
+    const installLocation = typeof item?.installLocation === "string" ? item.installLocation.replace(/^"([^"]*)"$/, "$1") : item?.installLocation;
+    if (!item || item.displayName !== ctx.metadata.productName || item.displayVersion !== ctx.metadata.version || (item.installLocation && resolve(installLocation) !== install) || item.uninstallString !== `"${uninstaller}"` || info.uninstallerSha256 !== uninstallerHash) {
       // 字段级诊断：真实 NSIS 注册表与预期的差异在下一轮修复前必须可见。
       throw new Error(
         `Owned uninstall registry metadata/path/hash mismatch; refusing unknown uninstall command. installedEntries ${info.installed?.length ?? 0}, displayName ${JSON.stringify(item?.displayName ?? null)}, displayVersion ${JSON.stringify(item?.displayVersion ?? null)}, installLocation ${JSON.stringify(item?.installLocation ?? null)}, uninstallString ${JSON.stringify(item?.uninstallString ?? null)}, registryUninstallerSha256 ${JSON.stringify(info.uninstallerSha256 ?? null)}, computedUninstallerSha256 ${uninstallerHash}`,

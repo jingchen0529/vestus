@@ -262,9 +262,10 @@ fn failed_exit_cleanup_retains_lease_and_refuses_reopen_until_retry_completes() 
     exit_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("successful retry must deliver on_exit");
+    // Receiving the message can race with the callback dropping its sender.
     assert!(matches!(
-        exit_rx.try_recv(),
-        Err(mpsc::TryRecvError::Disconnected)
+        exit_rx.recv_timeout(Duration::from_secs(5)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
     ));
     wait_until(|| f.manager.active_count() == 0);
     assert!(!managed.exists());
@@ -277,6 +278,9 @@ fn unknown_cleanup_does_not_notify_exit_before_successful_retry() {
     let executable = f.script("exec sleep 30");
     let dir = f.managed();
     let (exit_tx, exit_rx) = mpsc::channel();
+    // Keep the sender alive after delivery so callback-return scheduling cannot
+    // make the exactly-once notification assertion pass only by chance.
+    let (exit_return_tx, exit_return_rx) = mpsc::channel();
     f.manager
         .launch_process(
             1,
@@ -289,6 +293,8 @@ fn unknown_cleanup_does_not_notify_exit_before_successful_retry() {
             |_| {},
             move || {
                 let _ = exit_tx.send(());
+                let _ = exit_return_rx.recv();
+                drop(exit_tx);
             },
         )
         .unwrap();
@@ -309,9 +315,11 @@ fn unknown_cleanup_does_not_notify_exit_before_successful_retry() {
     exit_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("retry did not notify completion");
+    assert!(matches!(exit_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    exit_return_tx.send(()).unwrap();
     assert!(matches!(
-        exit_rx.try_recv(),
-        Err(mpsc::TryRecvError::Disconnected)
+        exit_rx.recv_timeout(Duration::from_secs(5)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
     ));
     assert_eq!(f.manager.active_count(), 0);
     assert!(!dir.exists());

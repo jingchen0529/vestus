@@ -203,7 +203,8 @@ function windowsFixture() {
       cpSync(chromium, join(f.install, "chromium"), { recursive: true });
       return { code: 0, stdout: JSON.stringify({ exited: true, exitCode: 0 }) };
     }
-    if (text.includes("# installer:inspect")) return { code: 0, stdout: JSON.stringify({ installed: [{ displayName: "Fixture Product", displayVersion: "9.8.7", uninstallString: `"${join(f.install, "uninstall.exe")}"`, installLocation: f.install }], fileVersion: "9.8.7.0", productVersion: "9.8.7", productName: "Fixture Product", uninstallerSha256: createHash("sha256").update(pe(0x14c)).digest("hex") }) };
+    // Tauri's NSIS template quotes InstallLocation as well as UninstallString.
+    if (text.includes("# installer:inspect")) return { code: 0, stdout: JSON.stringify({ installed: [{ displayName: "Fixture Product", displayVersion: "9.8.7", uninstallString: `"${join(f.install, "uninstall.exe")}"`, installLocation: `"${f.install}"` }], fileVersion: "9.8.7.0", productVersion: "9.8.7", productName: "Fixture Product", uninstallerSha256: createHash("sha256").update(pe(0x14c)).digest("hex") }) };
     if (text.includes("# installer:acl")) return { code: 0, stdout: JSON.stringify({ checked: 4, violations: [] }) };
     if (text.includes("# installer:uninstall")) { rmSync(f.install, { recursive: true }); return { code: 0, stdout: JSON.stringify({ exited: true, exitCode: 0, directoryAbsent: true, installed: [], shortcuts: [] }) }; }
     assert.fail(`unexpected PowerShell script ${text}`);
@@ -225,6 +226,52 @@ test("Windows installs only in owned path with spaces, verifies PE/version/ACL a
     assert.equal(result.sideEffects.installMode, "currentUser");
     assert.ok(f.commands.every((command) => !/Invoke-Expression|Stop-Process|Remove-ItemProperty|setx|RunAs|no-sandbox/.test(command.text)));
   } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("Windows accepts an unquoted owned InstallLocation", async () => {
+  const f = windowsFixture(), run = f.options.run;
+  try {
+    f.options.run = async (...args) => {
+      const result = await run(...args);
+      const text = Buffer.from(args[1].at(-1), "base64").toString("utf16le");
+      if (text.includes("# installer:inspect")) {
+        const info = JSON.parse(result.stdout);
+        info.installed[0].installLocation = f.install;
+        result.stdout = JSON.stringify(info);
+      }
+      return result;
+    };
+    const result = await verifyInstallers("9.8.7", "windows-x86_64", f.assets, f.reports, f.options);
+    assert.equal(result.status, "passed", result.errors.join(" "));
+    assert.ok(result.cleanup.some((entry) => entry.method === "verified-own-NSIS-uninstall"));
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("Windows refuses mismatched registry fields without executing an unverified uninstaller", async () => {
+  for (const failure of ["other-location", "unbalanced-location", "location-arguments", "uninstall-arguments", "version", "hash"]) {
+    const f = windowsFixture(), run = f.options.run;
+    try {
+      f.options.run = async (...args) => {
+        const result = await run(...args);
+        const text = Buffer.from(args[1].at(-1), "base64").toString("utf16le");
+        if (text.includes("# installer:inspect")) {
+          const info = JSON.parse(result.stdout), item = info.installed[0];
+          if (failure === "other-location") item.installLocation = `"${join(f.root, "another-install")}"`;
+          if (failure === "unbalanced-location") item.installLocation = `"${f.install}`;
+          if (failure === "location-arguments") item.installLocation = `"${f.install}" /S`;
+          if (failure === "uninstall-arguments") item.uninstallString += " /S";
+          if (failure === "version") item.displayVersion = "0.0.1";
+          if (failure === "hash") info.uninstallerSha256 = "0".repeat(64);
+          result.stdout = JSON.stringify(info);
+        }
+        return result;
+      };
+      const result = await verifyInstallers("9.8.7", "windows-x86_64", f.assets, f.reports, f.options);
+      assert.equal(result.status, "failed", failure);
+      assert.match(result.errors.join(" "), /Owned uninstall registry metadata\/path\/hash mismatch/, failure);
+      assert.equal(f.commands.some((command) => command.text.includes("# installer:uninstall")), false, failure);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }
 });
 
 test("AppImage execution uses a fresh owned executable copy, never the collected asset", async () => {
