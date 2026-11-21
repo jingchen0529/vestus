@@ -93,7 +93,8 @@ ${waitScript(ctx.assets[0], "('/S /D=' + $install)")}
     validateTree(install);
     const executable = regularFile(join(install, `${ctx.metadata.binary}.exe`));
     assertArchitecture(executable, ctx.target);
-    if (sha256(executable) !== sha256(currentBinary(ctx))) throw new Error("Installed main executable hash differs from current build");
+    const installedHash = sha256(executable), currentHash = sha256(currentBinary(ctx));
+    if (installedHash !== currentHash) throw new Error(`Installed main executable hash differs from current build: installed ${installedHash} (${statSync(executable).size} bytes), current ${currentHash} (${statSync(currentBinary(ctx)).size} bytes)`);
     validUninstaller(uninstaller);
     uninstallerHash = sha256(uninstaller);
     const info = await powershell(ctx, commands, "inspect", `${registry}
