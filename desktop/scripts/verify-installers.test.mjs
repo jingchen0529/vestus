@@ -157,7 +157,7 @@ function linuxFixture() {
       put(join(tree, "usr/bin/fixture-bin"), elf());
       put(join(tree, "usr/share/applications/fixture-bin.desktop"), "[Desktop Entry]\nName=Fixture Product\nExec=fixture-bin\nType=Application\nIcon=fixture-bin\n");
       cpSync(chromium, join(tree, "usr/lib/Fixture Product/chromium"), { recursive: true });
-      if (file.endsWith(".AppImage")) { put(join(tree, "fixture-bin.desktop"), readFileSync(join(tree, "usr/share/applications/fixture-bin.desktop"))); put(join(tree, "AppRun"), "runtime entrypoint, not executed"); put(join(tree, "usr/bin/fixture-bin"), Buffer.concat([elf(), Buffer.from("VESTUS-BUNDLE-TYPE: appimage")])); }
+      if (file.endsWith(".AppImage")) { put(join(tree, "fixture-bin.desktop"), readFileSync(join(tree, "usr/share/applications/fixture-bin.desktop"))); put(join(tree, "AppRun"), "runtime entrypoint, not executed"); put(join(tree, "usr/bin/fixture-bin"), Buffer.concat([elf(), Buffer.from("VESTUS-BUNDLE-TYPE: appimage")])); chmodSync(join(tree, "usr/bin/fixture-bin"), 0o755); }
       chmodSync(join(tree, "usr/bin/fixture-bin"), 0o755);
       chmodSync(join(tree, "usr/lib/Fixture Product/chromium/chrome"), 0o755);
       if (file.endsWith(".AppImage")) chmodSync(join(tree, "AppRun"), 0o755);
@@ -310,7 +310,8 @@ test("macOS packaging retains the signed app used as the final DMG comparison so
   assert.ok(config.bundle.targets.includes("dmg"));
 });
 
-test("Linux payload with unchanged bytes but missing execute permission is rejected", async () => {
+// 权限位语义仅存在于 Linux：macOS/Windows 上无法构造该场景，由 Linux CI 执行。
+test("Linux payload with unchanged bytes but missing execute permission is rejected", { skip: process.platform !== "linux" }, async () => {
   for (const relativePath of ["usr/bin/fixture-bin", "usr/lib/Fixture Product/chromium/chrome", "AppRun"]) {
     const f = linuxFixture(), run = f.options.run;
     try {

@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assertArchitecture, currentBinary, inside, regularFile, requireDisposable, sha256, verifyChromium } from "./verify-installers.mjs";
 import { validateTree } from "./chromium-archive.mjs";
@@ -33,7 +33,42 @@ function checkDesktop(path, metadata) {
 
 function requireExecutable(path, root) {
   const resolved = realpathSync(path), stat = statSync(resolved);
-  if (!inside(root, resolved) || !stat.isFile() || (stat.mode & 0o111) === 0) throw new Error("Linux payload executable permissions or target invalid");
+  // 权限位只在 Linux 上有意义：Windows 的常规文件不携带执行位，macOS 的测试
+  // fixture 也不保证；跨平台的路径/文件类型校验保留。
+  const modeMeaningful = process.platform === "linux";
+  if (!inside(root, resolved) || !stat.isFile() || (modeMeaningful && (stat.mode & 0o111) === 0)) throw new Error("Linux payload executable permissions or target invalid");
+}
+
+// ELF NT_GNU_BUILD_ID：strip 只裁剪节不更改 build-id，AppImage 就地补丁只追加
+// 内容——两者都会让逐字节比对失败，build-id 相同即可证明是同一构建。
+function elfBuildId(path) {
+  const fd = openSync(path, "r");
+  try {
+    const header = Buffer.alloc(64);
+    if (readSync(fd, header, 0, 64, 0) < 64 || header.subarray(0, 4).toString("binary") !== "\x7fELF" || header[4] !== 2) return null;
+    const phoff = Number(header.readBigUInt64LE(0x20));
+    const phentsize = header.readUInt16LE(0x36);
+    const phnum = header.readUInt16LE(0x38);
+    for (let index = 0; index < phnum; index += 1) {
+      const segment = Buffer.alloc(phentsize);
+      if (readSync(fd, segment, 0, phentsize, phoff + index * phentsize) < phentsize) return null;
+      if (segment.readUInt32LE(0) !== 4 /* PT_NOTE */) continue;
+      const offset = Number(segment.readBigUInt64LE(0x08)), size = Number(segment.readBigUInt64LE(0x20));
+      if (size === 0) continue;
+      const note = Buffer.alloc(size);
+      if (readSync(fd, note, 0, size, offset) < size) return null;
+      let cursor = 0;
+      while (cursor + 12 <= note.length) {
+        const namesz = note.readUInt32LE(cursor), descsz = note.readUInt32LE(cursor + 4), type = note.readUInt32LE(cursor + 8);
+        const name = note.subarray(cursor + 12, cursor + 12 + namesz);
+        const desc = cursor + 12 + namesz + ((4 - ((cursor + 12 + namesz) % 4)) % 4);
+        if (desc + descsz > note.length) break;
+        if (type === 3 && name.toString("binary").startsWith("GNU")) return note.subarray(desc, desc + descsz).toString("hex");
+        cursor = desc + descsz + ((4 - ((desc + descsz) % 4)) % 4);
+      }
+    }
+    return null;
+  } finally { closeSync(fd); }
 }
 
 async function payload(ctx, root, format) {
@@ -43,15 +78,22 @@ async function payload(ctx, root, format) {
   assertArchitecture(executable, ctx.target);
   const packagedHash = sha256(executable), currentHash = sha256(currentBinary(ctx));
   if (packagedHash !== currentHash) {
-    // Tauri 的 AppImage 打包会就地给 release 二进制追加 bundle type 信息（实测
-    // CI 日志 "Patching ... with bundle type information: appimage"）：deb 里的
-    // 二进制是补丁前的原始文件，只要它是当前构建的前缀即视为一致。
-    const packaged = readFileSync(executable), current = readFileSync(currentBinary(ctx));
-    const [short, long] = packaged.length <= current.length ? [packaged, current] : [current, packaged];
-    if (long.subarray(0, short.length).equals(short)) {
-      ctx.report.checks.push({ name: "app-executable", status: "passed", note: "packaged binary is the pre-AppImage-patch build" });
+    // Tauri 的 AppImage 打包会就地给 release 二进制追加 bundle type 信息，且
+    // 打包器可能 strip：逐字节比对在这两种情况下都必然失败。ELF build-id 不受
+    // 两者影响——build-id 相同即证明 packaged 与 current 是同一次构建。
+    const packagedId = elfBuildId(executable), currentId = elfBuildId(currentBinary(ctx));
+    if (packagedId && currentId && packagedId === currentId) {
+      ctx.report.checks.push({ name: "app-executable", status: "passed", note: `ELF build-id ${packagedId}` });
     } else {
-      throw new Error(`Linux app executable identity mismatch: packaged ${packagedHash} current ${currentHash}`);
+      // build-id 缺失（非 ELF fixture）时退回前缀判定：仅追加 bundle type 的
+      // 情形依然可识别；无法判定时输出两侧哈希供诊断。
+      const packaged = readFileSync(executable), current = readFileSync(currentBinary(ctx));
+      const [short, long] = packaged.length <= current.length ? [packaged, current] : [current, packaged];
+      if (long.subarray(0, short.length).equals(short)) {
+        ctx.report.checks.push({ name: "app-executable", status: "passed", note: "packaged binary is the pre-AppImage-patch build" });
+      } else {
+        throw new Error(`Linux app executable identity mismatch: packaged ${packagedHash} current ${currentHash} buildId ${packagedId ?? "none"}/${currentId ?? "none"}`);
+      }
     }
   }
   const desktop = checkDesktop(join(root, "usr/share/applications", `${ctx.metadata.binary}.desktop`), ctx.metadata);
