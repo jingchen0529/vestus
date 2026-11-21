@@ -122,7 +122,12 @@ ${waitScript(ctx.assets[0], "('/S /D=' + $install)")}
 $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo(${literal(executable)})
 @{installed=@(Get-Installed); fileVersion=$version.FileVersion; productVersion=$version.ProductVersion; productName=$version.ProductName; uninstallerSha256=(Get-FileHash -LiteralPath ${literal(uninstaller)} -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Depth 6 -Compress`);
     const item = info.installed?.length === 1 ? info.installed[0] : null;
-    if (!item || item.displayName !== ctx.metadata.productName || item.displayVersion !== ctx.metadata.version || (item.installLocation && resolve(item.installLocation) !== install) || item.uninstallString !== `"${uninstaller}"` || info.uninstallerSha256 !== uninstallerHash) throw new Error("Owned uninstall registry metadata/path/hash mismatch; refusing unknown uninstall command");
+    if (!item || item.displayName !== ctx.metadata.productName || item.displayVersion !== ctx.metadata.version || (item.installLocation && resolve(item.installLocation) !== install) || item.uninstallString !== `"${uninstaller}"` || info.uninstallerSha256 !== uninstallerHash) {
+      // 字段级诊断：真实 NSIS 注册表与预期的差异在下一轮修复前必须可见。
+      throw new Error(
+        `Owned uninstall registry metadata/path/hash mismatch; refusing unknown uninstall command. installedEntries ${info.installed?.length ?? 0}, displayName ${JSON.stringify(item?.displayName ?? null)}, displayVersion ${JSON.stringify(item?.displayVersion ?? null)}, installLocation ${JSON.stringify(item?.installLocation ?? null)}, uninstallString ${JSON.stringify(item?.uninstallString ?? null)}, registryUninstallerSha256 ${JSON.stringify(info.uninstallerSha256 ?? null)}, computedUninstallerSha256 ${uninstallerHash}`,
+      );
+    }
     verified = true;
     if (![ctx.metadata.version, `${ctx.metadata.version}.0`].includes(info.fileVersion) || ![ctx.metadata.version, `${ctx.metadata.version}.0`].includes(info.productVersion) || info.productName !== ctx.metadata.productName) throw new Error("Installed PE product/version mismatch");
     ctx.report.checks.push({ name: "app-metadata", status: "passed", fileVersion: info.fileVersion, productVersion: info.productVersion, executableSha256: sha256(executable) });
