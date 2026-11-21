@@ -2420,8 +2420,18 @@ mod tests {
         .unwrap();
 
         let manager = BrowserSessionManager::default();
+        // 占用扫描依赖系统进程表，高负载 runner 上可能瞬时返回 unknown；
+        // 占用者会存活 30 秒，这里做有界重试等扫描追上，而不是放宽拒绝语义。
+        let mut endpoint = None;
+        for _ in 0..25 {
+            if let Some(found) = manager.external_session_endpoint(&profile) {
+                endpoint = Some(found);
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
         assert_eq!(
-            manager.external_session_endpoint(&profile),
+            endpoint,
             Some(DevToolsEndpoint {
                 port: 51234,
                 browser_path: "/devtools/browser/external".into(),

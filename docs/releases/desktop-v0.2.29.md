@@ -1,9 +1,9 @@
-# Vestus desktop-v0.2.28 版本说明
+# Vestus desktop-v0.2.29 版本说明
 
 ## 发布信息
 - 目标环境：dev 测试环境，不是生产环境。
 - API 地址：`https://vestus-dev.quanyuos.com`
-- 对比版本：`desktop-v0.2.27`
+- 对比版本：`desktop-v0.2.27`（`desktop-v0.2.28` 标签的四平台构建全部失败且未发布 Release，本版取代它）
 
 ## 本次更新
 - 修复托管浏览器「投放弹窗永远空白打不开」：0.2.27 及更早版本用 CDP 暂停新标签页并等待防护脚本回执后才放行，实测 Chrome for Testing 157 上 `noopener`/空 URL 弹窗的防护回执依赖放行本身，形成回执循环，弹窗停在无标题空白页且无任何报错。本版把登录页交互锁改为随包 MV3 扩展（`document_start`、`world: MAIN`、仅匹配托管平台登录 origin），在弹窗首文档执行前生效；托管启动时由桌面端按平台策略生成扩展目录并经 `--load-extension` 加载，扩展准备失败时拒绝启动并提示。
@@ -11,11 +11,15 @@
 - 初始页面保留「Cookie 注入 → 完整防护就绪 → 首次导航」顺序；CDP 注入的固定登录锁作为扩展之外的第二层兜底（幂等标记，先到者生效）。
 - 防护/订阅/放行/关闭确认全部有界超时；单一标签页防护失败只关闭该标签页并核对浏览器 target 列表确认其消失，随后桌面端提示「该标签页防护初始化失败，已关闭，请重试」；无法确认清理才升级为关闭整个浏览器。意外断开的标签页同样必须验证 target 是否存活。
 - 局部防护失败不修改凭据、不误报登录失效；明确退出登录与登录页稳定停留仍按既有流程销毁托管浏览器并上报原凭据版本。业务页面与弹窗的输入、点击、提交、滚动不受限制。
-- 发布流水线硬化（随版工程改动，此前已在工作区）：`Release` 增加说明文件与后端 API 预检 job、四平台原生准备 Chromium、并发组不取消进行中的发布、手动触发必须指定版本且只产 Artifacts；新增安装包核验脚本（Windows/macOS/Linux）与发布资产脚本及回归；新增手动触发的浏览器回归工作流；macOS 打包目标在 dmg 之外新增 app 目录；固定桌面 Rust 工具链版本。
+- 修复 0.2.28 四平台构建失败暴露的三个打包/测试问题（0.2.28 标签构建未产生任何发布资产）：
+  - Windows：`release-assets` 脚本测试用 `script.pathname` 直接作为命令行参数，Windows 上被解析成 `C:\D:\...` 找不到模块；改用 `fileURLToPath`。
+  - macOS 安装包校验：随包 Chromium 资源树比对按「目录+符号链接布局」要求逐项相等，打包器对框架符号链接的处理差异导致误报 `hash/tree mismatch`；改为按「解析后的常规文件内容清单」比对（过滤 AppleDouble 附件），差异时列出具体缺失/多余文件，内容校验与可执行身份校验保持不变。
+  - Linux：`launch_refuses_an_environment_held_by_another_process` 在高负载 runner 上因进程占用扫描瞬时返回 unknown 而偶发失败（相关占用检测代码自 0.2.27 起未改动，本地多轮全绿）；测试改为对占用者存活期内的扫描结果做有界重试，不放宽拒绝语义。
+- 发布流水线硬化（随版工程改动）：`Release` 增加说明文件与后端 API 预检 job、四平台原生准备 Chromium、并发组不取消进行中的发布、手动触发必须指定版本且只产 Artifacts；新增安装包核验脚本（Windows/macOS/Linux）与发布资产脚本及回归；新增手动触发的浏览器回归工作流；macOS 打包目标在 dmg 之外新增 app 目录；固定桌面 Rust 工具链版本。
 - 新增仓库社区与文档文件（CONTRIBUTING/SECURITY/dependabot/PR 模板等）并更新 README 与部署文档；Web 端声明 pnpm 版本与 Node 最低版本。
 
 ## 安装与升级
-- Windows x86_64、macOS Apple Silicon / Intel、Linux x86_64 安装包计划由 `desktop-v0.2.28` 标签构建产生。
+- Windows x86_64、macOS Apple Silicon / Intel、Linux x86_64 安装包计划由 `desktop-v0.2.29` 标签构建产生。
 - 升级前建议退出旧 Vestus 客户端。已有浏览器 profile 和登录状态按当前兼容策略保留；托管临时 profile 生命周期不变。
 - macOS 签名公证、Windows 实机安装和 Linux 安装未验证。
 
@@ -24,12 +28,8 @@
 - 本版不新增数据库迁移，不部署后端，不更新服务器。
 
 ## 验证结果
-- `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib -- --test-threads=1`：两轮均为 358 项通过、0 项失败、8 项忽略。
-- `npm --prefix desktop test`：两轮均为 355 项通过、0 项失败；`npm --prefix desktop run build` 与 `check:surfaces` 两轮通过。
-- 检查器自身回归 `node --test desktop/scripts/check-surface-boundaries.test.mjs`：两轮均为 101 项通过、0 项失败；`node desktop/scripts/check-surface-boundaries.mjs` 对生产源通过。
-- 控制门禁 harness `node --test desktop/scripts/test-browser-control.test.mjs`：两轮均为 28 项通过。
-- 四项真实浏览器门禁（隔离临时 profile + 随包 Chromium，`npm --prefix desktop run test:control`）：两轮全部通过，含此前失败的 noopener 弹窗用例（弹窗 URL 报告到达、首文档含扩展防护标记、`window.opener === null`、登录页锁定、业务弹窗交互正常、外来 origin 无标记且可交互）。
-- `cargo fmt --check` 与 `git diff --check`：两轮通过。
+- 打包失败三项修复后的本地回归：`cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib -- --test-threads=1` 358 项通过、0 项失败、8 项忽略；`npm --prefix desktop test` 355 项通过、0 项失败；`node --test desktop/scripts/verify-installers.test.mjs` 12 项通过；`node --test desktop/scripts/release-assets.test.mjs` 64 项通过；`cargo fmt --check` 与 `git diff --check` 通过。
+- 0.2.28 发布前完成的两轮同口径回归对本版浏览器链路仍然有效（本版只改打包校验与测试，不改浏览器生产代码）：检查器套件 101 项 ×2、控制门禁 harness 28 项 ×2、四项真实浏览器门禁 ×2 全过（含 noopener 弹窗用例）、`check:surfaces` ×2。
 - GitHub Actions 四平台构建、安装包签名公证、GitHub Release、Windows 实机 `--load-extension` 行为、真实方舟投放页、客户真实 VPN 与生产 API：未验证。
 
 ## 已知限制
@@ -37,4 +37,5 @@
 - unpacked 扩展可能触发开发者模式相关 UI 提示；macOS 实测无扩展加载报错，但提示条 UI 未做截图级验证。
 - 随包扩展可被本机用户禁用，登录锁与 CDP 注入同为最佳努力防护，不构成对抗本机用户的隔离边界。
 - 代理或第三方 CDN 响应缓慢时，目标页面首屏加载仍可能较慢。
-- 本说明对应 `desktop-v0.2.28`，提交、标签推送和四平台构建尚未执行。
+- Linux 占用扫描在高负载 runner 上仍可能瞬时 unknown：生产语义保持「未知状态不拒绝启动、失败防护仍强制清理」，测试已做有界重试。
+- 本说明对应 `desktop-v0.2.29`，提交、标签推送和四平台构建尚未执行。

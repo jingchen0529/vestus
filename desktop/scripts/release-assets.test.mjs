@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const version = "1.23.456";
@@ -36,7 +37,7 @@ function fixtureFile(path, content = "abc") {
 }
 
 function runCli(args) {
-  const result = spawnSync(process.execPath, [script.pathname, ...args], {
+  const result = spawnSync(process.execPath, [fileURLToPath(script), ...args], {
     cwd: tmpdir(),
     encoding: "utf8",
     timeout: 10_000,

@@ -2,7 +2,7 @@
 // node desktop/scripts/verify-installers.mjs <version> <label> <assetsDir> <reportDir>
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
@@ -125,26 +125,46 @@ export function regularFile(path) {
   return path;
 }
 
-function treeIdentity(root) {
+// 打包器可能保留符号链接、也可能解引用成真实文件，目录结构因此可能不同；
+// 校验按「解析后的常规文件内容清单」对齐：过滤 AppleDouble 附件，悬空链接单独记录。
+// 目录本身不参与比对——安全属性是 Chromium 运行时的文件内容与可执行身份，不是布局。
+function fileManifest(root) {
   validateTree(root);
-  const entries = {};
+  const files = {};
   const walk = (directory) => {
     for (const name of readdirSync(directory).sort()) {
-      const path = join(directory, name), stat = lstatSync(path), key = relative(root, path).split(sep).join("/");
-      if (name === ".gitkeep") continue;
-      if (stat.isDirectory()) { entries[key] = "directory"; walk(path); }
-      else if (stat.isSymbolicLink()) entries[key] = `link:${readlinkSync(path)}`;
-      else entries[key] = sha256(path);
+      if (name === ".gitkeep" || name.startsWith("._")) continue;
+      const path = join(directory, name);
+      const stat = lstatSync(path);
+      if (stat.isDirectory()) { walk(path); continue; }
+      let key = relative(root, path).split(sep).join("/");
+      if (stat.isSymbolicLink()) {
+        try {
+          const target = statSync(path);
+          if (target.isDirectory()) continue;
+          key = relative(root, realpathSync(path)).split(sep).join("/");
+        } catch {
+          files[`dangling:${key}`] = `link:${readlinkSync(path)}`;
+          continue;
+        }
+      }
+      files[key] = sha256(path);
     }
   };
   walk(root);
-  return entries;
+  return files;
 }
 
 export async function verifyChromium(ctx, installed) {
   const source = join(ctx.root, "desktop/src-tauri/resources/chromium");
-  const sourceTree = treeIdentity(source), installedTree = treeIdentity(installed);
-  if (JSON.stringify(sourceTree) !== JSON.stringify(installedTree)) throw new Error("Chromium runtime resource hash/tree mismatch");
+  const sourceFiles = fileManifest(source), installedFiles = fileManifest(installed);
+  const missing = Object.keys(sourceFiles).filter((key) => installedFiles[key] !== sourceFiles[key]);
+  const extra = Object.keys(installedFiles).filter((key) => !(key in sourceFiles));
+  if (missing.length || extra.length) {
+    throw new Error(
+      `Chromium runtime resource mismatch; missing/changed(${missing.length}): ${missing.slice(0, 8).join(", ") || "none"}; extra(${extra.length}): ${extra.slice(0, 8).join(", ") || "none"}`,
+    );
+  }
   const identity = JSON.parse(readFileSync(regularFile(join(source, "chromium-identity.json")), "utf8"));
   const expectedPlatform = ({ "win32-x64": "win64", "linux-x64": "linux64", "darwin-arm64": "mac-arm64", "darwin-x64": "mac-x64" })[`${ctx.target.platform}-${ctx.target.arch}`];
   if (identity.platform !== expectedPlatform || !/^\d+\.\d+\.\d+\.\d+$/.test(identity.version) || !/^[a-f0-9]{64}$/.test(identity.executableSha256)) throw new Error("Invalid source Chromium identity");
@@ -160,7 +180,7 @@ export async function verifyChromium(ctx, installed) {
   } else executable = join(installed, ctx.target.platform === "win32" ? "chrome.exe" : "chrome");
   regularFile(executable); assertArchitecture(executable, ctx.target);
   if (sha256(executable) !== identity.executableSha256) throw new Error("Source/bundled Chromium executable identity mismatch");
-  ctx.report.checks.push({ name: "chromium-runtime", status: "passed", identity, files: Object.keys(installedTree).length });
+  ctx.report.checks.push({ name: "chromium-runtime", status: "passed", identity, files: Object.keys(installedFiles).length });
   return executable;
 }
 
