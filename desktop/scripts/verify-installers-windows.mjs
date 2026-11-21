@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, lstatSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { assertArchitecture, currentBinary, regularFile, requireDisposable, sha256, verifyChromium } from "./verify-installers.mjs";
 import { validateTree } from "./chromium-archive.mjs";

@@ -16,7 +16,10 @@ function fields(source) {
 }
 
 function checkDesktop(path, metadata) {
-  const text = readFileSync(regularFile(path), "utf8");
+  // AppImage 根目录的 .desktop 可能是指向 usr/share/applications 的符号链接。
+  const resolved = realpathSync(path), stat = statSync(resolved);
+  if (!stat.isFile()) throw new Error(`Expected regular desktop entry file: ${path}`);
+  const text = readFileSync(resolved, "utf8");
   const section = /^\[Desktop Entry\]\s*\n([\s\S]*?)(?=^\[|$(?![\s\S]))/m.exec(text)?.[1];
   const values = {};
   for (const line of section?.split("\n") ?? []) {
