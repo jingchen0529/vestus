@@ -1,6 +1,6 @@
 import { chmodSync, closeSync, copyFileSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { assertArchitecture, currentBinary, inside, regularFile, requireDisposable, sha256, verifyChromium } from "./verify-installers.mjs";
+import { assertArchitecture, currentBinary, elfBuildId, inside, regularFile, requireDisposable, sha256, verifyChromium } from "./verify-installers.mjs";
 import { validateTree } from "./chromium-archive.mjs";
 
 function fields(source) {
@@ -42,37 +42,6 @@ function requireExecutable(path, root) {
   if (!inside(root, resolved) || !stat.isFile() || (modeMeaningful && (stat.mode & 0o111) === 0)) throw new Error("Linux payload executable permissions or target invalid");
 }
 
-// ELF NT_GNU_BUILD_ID：strip 只裁剪节不更改 build-id，AppImage 就地补丁只追加
-// 内容——两者都会让逐字节比对失败，build-id 相同即可证明是同一构建。
-function elfBuildId(path) {
-  const fd = openSync(path, "r");
-  try {
-    const header = Buffer.alloc(64);
-    if (readSync(fd, header, 0, 64, 0) < 64 || header.subarray(0, 4).toString("binary") !== "\x7fELF" || header[4] !== 2) return null;
-    const phoff = Number(header.readBigUInt64LE(0x20));
-    const phentsize = header.readUInt16LE(0x36);
-    const phnum = header.readUInt16LE(0x38);
-    for (let index = 0; index < phnum; index += 1) {
-      const segment = Buffer.alloc(phentsize);
-      if (readSync(fd, segment, 0, phentsize, phoff + index * phentsize) < phentsize) return null;
-      if (segment.readUInt32LE(0) !== 4 /* PT_NOTE */) continue;
-      const offset = Number(segment.readBigUInt64LE(0x08)), size = Number(segment.readBigUInt64LE(0x20));
-      if (size === 0) continue;
-      const note = Buffer.alloc(size);
-      if (readSync(fd, note, 0, size, offset) < size) return null;
-      let cursor = 0;
-      while (cursor + 12 <= note.length) {
-        const namesz = note.readUInt32LE(cursor), descsz = note.readUInt32LE(cursor + 4), type = note.readUInt32LE(cursor + 8);
-        const name = note.subarray(cursor + 12, cursor + 12 + namesz);
-        const desc = cursor + 12 + namesz + ((4 - ((cursor + 12 + namesz) % 4)) % 4);
-        if (desc + descsz > note.length) break;
-        if (type === 3 && name.toString("binary").startsWith("GNU")) return note.subarray(desc, desc + descsz).toString("hex");
-        cursor = desc + descsz + ((4 - ((desc + descsz) % 4)) % 4);
-      }
-    }
-    return null;
-  } finally { closeSync(fd); }
-}
 
 async function payload(ctx, root, format) {
   validateTree(root);

@@ -21,6 +21,53 @@ const targets = {
 };
 
 export const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+
+// ELF NT_GNU_BUILD_ID：打包器对 ELF 的 strip 与就地补丁都不改变 build-id，
+// 以它作为「同一构建」的内容凭证（sha256 在这两种情况下必然不同）。
+export function elfBuildId(path) {
+  const fd = openSync(path, "r");
+  try {
+    const header = Buffer.alloc(64);
+    if (readSync(fd, header, 0, 64, 0) < 64 || header.subarray(0, 4).toString("binary") !== "\x7fELF" || header[4] !== 2) return null;
+    const phoff = Number(header.readBigUInt64LE(0x20));
+    const phentsize = header.readUInt16LE(0x36);
+    const phnum = header.readUInt16LE(0x38);
+    for (let index = 0; index < phnum; index += 1) {
+      const segment = Buffer.alloc(phentsize);
+      if (readSync(fd, segment, 0, phentsize, phoff + index * phentsize) < phentsize) return null;
+      if (segment.readUInt32LE(0) !== 4 /* PT_NOTE */) continue;
+      const offset = Number(segment.readBigUInt64LE(0x08)), size = Number(segment.readBigUInt64LE(0x20));
+      if (size === 0) continue;
+      const note = Buffer.alloc(size);
+      if (readSync(fd, note, 0, size, offset) < size) return null;
+      let cursor = 0;
+      while (cursor + 12 <= note.length) {
+        const namesz = note.readUInt32LE(cursor), descsz = note.readUInt32LE(cursor + 4), type = note.readUInt32LE(cursor + 8);
+        const name = note.subarray(cursor + 12, cursor + 12 + namesz);
+        const desc = cursor + 12 + namesz + ((4 - ((cursor + 12 + namesz) % 4)) % 4);
+        if (desc + descsz > note.length) break;
+        if (type === 3 && name.toString("binary").startsWith("GNU")) return note.subarray(desc, desc + descsz).toString("hex");
+        cursor = desc + descsz + ((4 - ((desc + descsz) % 4)) % 4);
+      }
+    }
+    return null;
+  } finally { closeSync(fd); }
+}
+
+// 内容身份：ELF 用 build-id（对 strip/补丁鲁棒），其余用 sha256。
+function contentIdentity(path) {
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const magic = Buffer.alloc(4);
+      if (readSync(fd, magic, 0, 4, 0) === 4 && magic.toString("binary") === "\x7fELF") {
+        const id = elfBuildId(path);
+        if (id) return `elf:${id}`;
+      }
+    } finally { closeSync(fd); }
+  } catch { /* 读取失败时退回 sha256，由哈希差异暴露问题 */ }
+  return sha256(path);
+}
 export const inside = (root, path) => {
   const rel = relative(resolve(root), resolve(path));
   return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
@@ -148,7 +195,7 @@ function fileManifest(root) {
           continue;
         }
       }
-      files[key] = sha256(path);
+      files[key] = contentIdentity(path);
     }
   };
   walk(root);

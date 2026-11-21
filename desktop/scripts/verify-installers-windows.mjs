@@ -94,7 +94,22 @@ ${waitScript(ctx.assets[0], "('/S /D=' + $install)")}
     const executable = regularFile(join(install, `${ctx.metadata.binary}.exe`));
     assertArchitecture(executable, ctx.target);
     const installedHash = sha256(executable), currentHash = sha256(currentBinary(ctx));
-    if (installedHash !== currentHash) throw new Error(`Installed main executable hash differs from current build: installed ${installedHash} (${statSync(executable).size} bytes), current ${currentHash} (${statSync(currentBinary(ctx)).size} bytes)`);
+    if (installedHash !== currentHash) {
+      // 同尺寸不同内容的 PE：定位首个差异偏移与差异量，识别改写区域（签名表/
+      // 时间戳/追加节等）。计数用二分遍历，避免大文件 O(n) 也够用。
+      const packaged = readFileSync(executable), current = readFileSync(currentBinary(ctx));
+      let firstDiff = -1, diffCount = 0;
+      const length = Math.min(packaged.length, current.length);
+      for (let index = 0; index < length; index += 1) {
+        if (packaged[index] !== current[index]) {
+          diffCount += 1;
+          if (firstDiff < 0) firstDiff = index;
+        }
+      }
+      throw new Error(
+        `Installed main executable hash differs from current build: installed ${installedHash} (${packaged.length} bytes), current ${currentHash} (${current.length} bytes), firstDiffOffset ${firstDiff} (0x${(firstDiff >>> 0).toString(16)}), diffBytes ${diffCount}${packaged.length !== current.length ? `, sizeDelta ${current.length - packaged.length}` : ""}`,
+      );
+    }
     validUninstaller(uninstaller);
     uninstallerHash = sha256(uninstaller);
     const info = await powershell(ctx, commands, "inspect", `${registry}
