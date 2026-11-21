@@ -229,8 +229,16 @@ export async function verifyChromium(ctx, installed) {
     executable = join(installed, apps[0], "Contents/MacOS", plist.CFBundleExecutable);
   } else executable = join(installed, ctx.target.platform === "win32" ? "chrome.exe" : "chrome");
   regularFile(executable); assertArchitecture(executable, ctx.target);
-  if (sha256(executable) !== identity.executableSha256) throw new Error("Source/bundled Chromium executable identity mismatch");
-  ctx.report.checks.push({ name: "chromium-runtime", status: "passed", identity, files: Object.keys(installedFiles).length });
+  let executableNote;
+  if (sha256(executable) !== identity.executableSha256) {
+    // identity 里的 sha256 是 prepare 时的未 strip 哈希；打包器对 ELF 的 strip
+    // 不改变 build-id——与源树 chrome 的 build-id 一致即同一构建。
+    if (ctx.target.platform === "win32" || elfBuildId(executable) !== elfBuildId(join(source, "chrome"))) {
+      throw new Error("Source/bundled Chromium executable identity mismatch");
+    }
+    executableNote = `ELF build-id ${elfBuildId(executable)} (bundled binary is stripped)`;
+  }
+  ctx.report.checks.push({ name: "chromium-runtime", status: "passed", identity, files: Object.keys(installedFiles).length, ...(executableNote ? { note: executableNote } : {}) });
   return executable;
 }
 
