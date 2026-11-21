@@ -7,7 +7,7 @@ Tauri 桌面客户端由 GitHub Release 单独分发。
 
 ## 1. 准备环境
 
-安装 Git、Python 3.10+（含 `venv`）、Node.js 20/22、Nginx 和 MySQL 8，并确认：
+安装 Git、Python 3.10+（含 `venv`）、Node.js 22.13+（CI 使用 22.22.2）、Nginx 和 MySQL 8，并确认：
 
 ```bash
 python3 --version
@@ -30,7 +30,7 @@ sudo install -d -o root -g vestus -m 0750 /etc/vestus
 `vestus`；数据库口令与密钥始终放在 0750 的 `/etc/vestus`，不要写入源码目录。
 
 首次部署时，将仓库检出到 `/opt/vestus/current`。下面的命令统一使用 `-H`，确保 Git、
-npm 和缓存都读取 `/opt/vestus` 下的服务账号环境。私有仓库应给 `vestus` 配置只读
+npm/pnpm 和缓存都读取 `/opt/vestus` 下的服务账号环境。私有仓库应给 `vestus` 配置只读
 Deploy Key；更安全的方式是由 CI/独立部署账号同步代码，让运行账号不持有仓库凭据：
 
 ```bash
@@ -72,13 +72,26 @@ sudo mysql vestus < deploy/migrations/2026-08-27-settings-and-uploads.sql
 
 ## 3. 安装依赖并构建管理端
 
+Web 只维护 `pnpm-lock.yaml`，不能使用需要 npm 锁文件的 `npm ci`。先根据已检出的
+`web/package.json` 安装精确 pnpm 版本（当前 11.1.0），与 CI 保持一致：
+
+```bash
+cd /opt/vestus/current
+pnpm_version=$(node -p 'require("./web/package.json").packageManager')
+sudo npm install --global "$pnpm_version"
+sudo -H -u vestus pnpm --version
+```
+
+随后以服务账号冻结安装，不在生产环境重新解析或升级依赖。任一步失败都停止部署，
+不要继续启动服务；升级 pnpm 时先在 CI 验证锁文件兼容性。
+
 ```bash
 cd /opt/vestus/current
 sudo -H -u vestus python3 -m venv .venv
 sudo -H -u vestus .venv/bin/python -m pip install --upgrade pip
 sudo -H -u vestus .venv/bin/python -m pip install -r requirements.txt
-sudo -H -u vestus npm --prefix web ci
-sudo -H -u vestus npm --prefix web run build
+sudo -H -u vestus pnpm --dir web install --frozen-lockfile
+sudo -H -u vestus pnpm --dir web build
 ```
 
 必须先生成 `web/dist` 再启动或重启 Uvicorn；后端会在进程启动时注册该目录下的
@@ -227,9 +240,10 @@ exit
 sudo systemctl stop vestus
 cd /opt/vestus/current
 sudo -H -u vestus git pull --ff-only origin master
+# 若 packageManager 的精确版本有变化，先按第 3 节同步 pnpm。
 sudo -H -u vestus .venv/bin/python -m pip install -r requirements.txt
-sudo -H -u vestus npm --prefix web ci
-sudo -H -u vestus npm --prefix web run build
+sudo -H -u vestus pnpm --dir web install --frozen-lockfile
+sudo -H -u vestus pnpm --dir web build
 sudo systemctl start vestus
 curl -fsS http://127.0.0.1:8000/healthz \
   | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'

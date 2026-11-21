@@ -167,6 +167,23 @@ test("release metadata must declare the environment and one credential-free API 
   assert.doesNotThrow(() => validateReleaseNotes(version, validNotes.replace(apiLine, "- API 地址：http://127.0.0.1:8000")));
 });
 
+test("release metadata rejects raw API control characters before trimming or URL normalization", () => {
+  const apiLine = "- API 地址：`https://vestus-dev.quanyuos.com`";
+  for (const control of ["\r", "\t", "\0", "\u000b", "\u001b", "\u007f", "\u0085", "\u200b", "\u2028", "\u2029", "\uFEFF"]) {
+    for (const address of [`${control}https://private-api.example.test`, `https://private-api.example.test${control}`, `https://private-${control}api.example.test`]) {
+      assert.throws(() => validateReleaseNotes(version, validNotes.replace(apiLine, `- API 地址：\`${address}\``)), (error) => {
+        assert.match(error.message, /API 地址.*控制字符/);
+        assert.doesNotMatch(error.message, /private-api|private-/);
+        return true;
+      });
+    }
+  }
+  for (const address of ["https://private-api.example.test\nINJECTED=1", "https://private-api.example.test\r\nINJECTED=1"]) {
+    assert.throws(() => validateReleaseNotes(version, validNotes.replace(apiLine, `- API 地址：\`${address}\``)), /API 地址/);
+  }
+  assert.doesNotThrow(() => validateReleaseNotes(version, validNotes.replace(apiLine, "- API 地址：http://127.0.0.1:8000")));
+});
+
 test("a tag push takes its version from the tag, not from a dispatch input", () => {
   assert.equal(releaseVersionForEvent({ eventName: "push", ref: `refs/tags/desktop-v${version}`, inputVersion: "9.9.9" }), version);
   assert.throws(() => releaseVersionForEvent({ eventName: "push", ref: "refs/heads/main" }), /只接受 desktop-v 标签推送/);
@@ -229,7 +246,7 @@ test("Release preflight blocks all matrix builds until version notes are checked
   assert.match(build, /^    needs: preflight$/m);
   assert.match(build, /RELEASE_VERSION: \$\{\{ needs\.preflight\.outputs\.version \}\}/);
   assert.match(build, /node scripts\/stamp-version\.mjs "\$RELEASE_VERSION"/);
-  assert.match(build, /version="\$RELEASE_VERSION"/);
+  assert.match(build, /node desktop\/scripts\/release-assets\.mjs collect "\$RELEASE_VERSION"/);
   assert.ok(build.indexOf("actions/setup-node@") < build.indexOf("node scripts/stamp-version.mjs"));
   for (const target of ["windows-x86_64", "macos-aarch64", "macos-x86_64", "linux-x86_64"]) {
     assert.ok(build.includes(`label: ${target}`), `matrix target missing: ${target}`);

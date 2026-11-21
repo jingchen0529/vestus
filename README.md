@@ -4,7 +4,9 @@
 Chromium 环境里操作巨量引擎等广告平台。
 
 [架构与流程图集](docs/architecture.md) · [接口与环境变量](docs/backend.md) ·
-[Linux 部署](docs/deploy-linux.md) · [桌面用户手册](docs/desktop-user-guide.md)
+[Linux 部署](docs/deploy-linux.md) · [桌面用户手册](docs/desktop-user-guide.md) ·
+[贡献指南](.github/CONTRIBUTING.md) · [安全报告](.github/SECURITY.md) ·
+[PR 模板](.github/pull_request_template.md) · [GitHub Actions 与发布配置](.github/README.md)
 
 ## 目录
 
@@ -126,8 +128,10 @@ flowchart TB
 
 ## 快速开始
 
-前置：Python 3.11+、Node.js 20+、Rust 1.77+（仅桌面端）、MySQL 8（本地可用
-`docker-compose.mysql.yml`）。
+前置：Python 3.11+、Node.js 22.22.2（当前 CI/发布基线；Web `engines` 最低要求为 >=22.13）、
+管理端 pnpm 11.1.0、桌面端 npm、Rust 1.97.1（仅桌面端，由
+[desktop/src-tauri/rust-toolchain.toml](desktop/src-tauri/rust-toolchain.toml) 固定，在该目录运行 Rust 命令）、
+MySQL 8（本地可用 `docker-compose.mysql.yml`）。
 
 ### 1. 后端
 
@@ -143,8 +147,8 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 ```bash
 cd web
-npm install
-npm run dev          # 开发服务器；生产构建见「构建与发布」
+pnpm install --frozen-lockfile
+pnpm dev             # 开发服务器；生产构建见「构建与发布」
 ```
 
 访问 `http://127.0.0.1:5174`。后端构建好 `web/dist` 后也可直接访问 `http://127.0.0.1:8000/admin`。

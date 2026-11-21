@@ -63,6 +63,15 @@ function releaseField(information, name) {
 export function validateReleaseNotes(version, source) {
   releaseNotesPath(version);
   if (typeof source !== "string") throw new Error("版本说明必须是 Markdown 文本");
+  // 正常 Markdown CRLF 不属于 API 值；除此之外先检查原始字段，不能让
+  // 后续换行规范化、trim 或 URL 解析悄悄吞掉控制字符。
+  const rawSource = source.replace(/<!--[\s\S]*?-->/g, "");
+  for (const match of rawSource.matchAll(/^[ \t]*-[ \t]+API 地址[：:]([^\n]*)(?:\n|$)/gm)) {
+    const value = match[0].endsWith("\r\n") ? match[1].slice(0, -1) : match[1];
+    if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)) {
+      throw new Error("发布信息的 API 地址不得含原始控制字符");
+    }
+  }
   const text = source.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?-->/g, "");
   if (!text.trim()) throw new Error("版本说明不能为空");
   if (text.includes("<!--")) throw new Error("版本说明含未闭合的 HTML 注释");

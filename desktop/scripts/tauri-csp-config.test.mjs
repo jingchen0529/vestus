@@ -8,6 +8,7 @@ import {
   buildTauriConfigForApi,
   devChromiumOverride,
 } from "./tauri-with-api.mjs";
+import { resolveReleaseApi } from "./prepare-release-api.mjs";
 
 function directives(csp) {
   return new Map(
@@ -125,7 +126,7 @@ test("release workflow cannot bypass the API-pinned Tauri wrapper", () => {
 
   assert.match(
     workflow,
-    /npm run desktop:build -- --target "?\$\{\{ matrix\.rust_target \}\}"?/
+    /npm run desktop:build -- --target "\$RUST_TARGET"/
   );
   assert.match(
     workflow,
@@ -133,10 +134,18 @@ test("release workflow cannot bypass the API-pinned Tauri wrapper", () => {
     "前端验证命令必须短路，任一命令失败都要让矩阵任务失败"
   );
   assert.doesNotMatch(workflow, /npx tauri build/);
+  assert.match(workflow, /RUST_TARGET: \$\{\{ matrix\.rust_target \}\}/);
   assert.match(
     workflow,
-    /http:\/\/\*\)[\s\S]{0,500}if \[ "\$release" = true \]; then[\s\S]{0,500}exit 1[\s\S]{0,500}VESTUS_ALLOW_INSECURE_API=1/,
-    "只有非标签的手工 HTTP 构建可以显式开启不安全 API"
+    /node desktop\/scripts\/prepare-release-api\.mjs --github-actions/,
+    "构建必须通过 API 前置校验，不能直接写环境绕过 HTTPS 限制"
+  );
+  const manual = { eventName: "workflow_dispatch", ref: "refs/heads/master", inputApi: "http://api.example.test" };
+  assert.equal(resolveReleaseApi(manual).allowInsecureApi, true);
+  assert.throws(
+    () => resolveReleaseApi({ ...manual, eventName: "push", ref: "refs/tags/desktop-v0.2.13" }),
+    /必须使用 HTTPS/,
+    "只有手工 HTTP 构建可以显式开启不安全 API"
   );
 });
 

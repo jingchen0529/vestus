@@ -46,8 +46,25 @@ VESTUS_PERSISTENCE_PREVIOUS_CHROMIUM='/absolute/path/to/previous/chrome' \
 
 当前版本默认取随包 Chromium，也可以用 `VESTUS_PERSISTENCE_CHROMIUM` 指定。测试按“旧版写入并正常关闭 → 新版读取 → 旧版回滚读取”运行，共用同一临时 profile，避免按可执行文件隔离掩盖兼容性问题。实际浏览器版本也必须不同；缺少旧版本时测试失败，不能视作升级验收通过。仅对所测版本对有效，不能推断任意降级都兼容。
 
+两份目录应来自自己确认的官方来源，保留各自完整安装布局；命令只接收可执行文件的绝对路径，不自动下载
+前版。`prepare-chromium.mjs` 使用仓库固定版本，不是任意版本选择器，传一个旧版参数不能获得前版。
+Windows 外部测试目录需自行确认受控资源路径的 sandbox RX 权限，不使用 `--no-sandbox` 或全盘 ACL 修改
+来让测试假通过。Linux 双版本命令同样可用 `xvfb-run -a` 包装。
+
+```bash
+VESTUS_PERSISTENCE_CHROMIUM='/absolute/current/chrome' \
+VESTUS_PERSISTENCE_PREVIOUS_CHROMIUM='/absolute/previous/chrome' \
+  npm run test:persistence -- --upgrade
+```
+
+请在结果中记录两版实际版本、OS/架构、命令和观察；未执行的平台与版本组合写“未验证”。测试页面为
+loopback，但 Chromium 可能有后台网络行为，不能据此宣称系统层面的零外网隔离。
+
 ## 结果与发布门禁
 
 结果保存在 `desktop/test-results/browser-persistence/`：`persistence.log` 包含版本与逐场景观察，`persistence.json` 包含运行平台和成功状态；版本往返测试对应 `upgrade.log/json`。结果目录不提交 Git。
 
-Release workflow 在四个目标平台打包前运行主矩阵，并上传结果。升级/回滚需要显式提供前一版浏览器，目前不作为默认发布门禁。新增 CI 步骤并不代表已在对应远程 runner 验证通过，应以每次 Actions 结果为准。
+Release workflow 在四个目标平台打包前运行主矩阵，并上传结果；Windows 当前为非阻断步骤，应查看实际结果，不能以工作流成功
+代替 Windows persistence 已通过。升级/回滚需要显式提供前一版浏览器，目前不作为默认发布门禁。
+新增的手动 `Browser regression` workflow 可独立选择平台跑 control/persistence 与合成素材 smoke，不打包或发布，
+也不自动下载前版进行升级验收。新增 CI 步骤不代表已在对应远程 runner 验证通过，应以每次 Actions 结果为准。

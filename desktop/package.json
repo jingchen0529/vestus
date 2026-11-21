@@ -14,7 +14,8 @@
     "check:surfaces": "node scripts/check-surface-boundaries.mjs",
     "test:persistence": "node scripts/test-browser-persistence.mjs",
     "test:control": "node scripts/test-browser-control.mjs",
-    "test:material": "node scripts/test-browser-material.mjs"
+    "test:material": "node scripts/test-browser-material.mjs",
+    "test:material-smoke": "node scripts/test-browser-material-smoke.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.2",
