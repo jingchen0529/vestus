@@ -18,7 +18,8 @@ function realSource(path) {
   if (!realCache.has(path)) {
     realCache.set(
       path,
-      readFileSync(new URL(path.replace(/^desktop\//, "../"), import.meta.url), "utf8"),
+      // Windows 检出是 CRLF：mutation 锚点一律按 LF 匹配，与 rustProduction 的归一化一致。
+      readFileSync(new URL(path.replace(/^desktop\//, "../"), import.meta.url), "utf8").replace(/\r\n?/g, "\n"),
     );
   }
   return realCache.get(path);

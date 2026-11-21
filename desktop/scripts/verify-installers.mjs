@@ -158,8 +158,11 @@ function fileManifest(root) {
 export async function verifyChromium(ctx, installed) {
   const source = join(ctx.root, "desktop/src-tauri/resources/chromium");
   const sourceFiles = fileManifest(source), installedFiles = fileManifest(installed);
+  // 打包器可能把源树符号链接落成真实文件：同一内容出现在不同相对路径。
+  // 缺失/变更按「同键同哈希」判定；多余项若其内容哈希存在于源清单则视为布局差异放行。
+  const sourceHashes = new Set(Object.values(sourceFiles));
   const missing = Object.keys(sourceFiles).filter((key) => installedFiles[key] !== sourceFiles[key]);
-  const extra = Object.keys(installedFiles).filter((key) => !(key in sourceFiles));
+  const extra = Object.keys(installedFiles).filter((key) => !(key in sourceFiles) && !sourceHashes.has(installedFiles[key]));
   if (missing.length || extra.length) {
     throw new Error(
       `Chromium runtime resource mismatch; missing/changed(${missing.length}): ${missing.slice(0, 8).join(", ") || "none"}; extra(${extra.length}): ${extra.slice(0, 8).join(", ") || "none"}`,

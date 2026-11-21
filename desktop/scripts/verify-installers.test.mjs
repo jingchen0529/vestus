@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +44,18 @@ function mach(cpu = 0x0100000c) { const bytes = Buffer.alloc(64); bytes.writeUIn
 function sumAssets(f, label, extensions) {
   writeFileSync(join(f.assets, `SHA256SUMS-${label}.txt`), extensions.map((ext) => { const name = `Vestus-9.8.7-${label}.${ext}`; return `${createHash("sha256").update(readFileSync(join(f.assets, name))).digest("hex")}  ${name}\n`; }).join(""));
 }
-function macFixture() {
+// 确定性模拟打包器的符号链接解引用：链接路径落成内容相同的真实文件。
+function copyTreeDereferenced(from, to) {
+  mkdirSync(to, { recursive: true });
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    const src = join(from, entry.name), dst = join(to, entry.name);
+    if (entry.isDirectory()) copyTreeDereferenced(src, dst);
+    else if (entry.isSymbolicLink()) writeFileSync(dst, readFileSync(realpathSync(src)));
+    else writeFileSync(dst, readFileSync(src));
+  }
+}
+
+function macFixture({ dereferenceChromium = false } = {}) {
   const f = releaseFixture("macos-aarch64");
   rmSync(join(f.assets, "Vestus-9.8.7-macos-aarch64.exe"));
   put(join(f.assets, "Vestus-9.8.7-macos-aarch64.dmg"), "disk fixture");
@@ -65,7 +76,8 @@ function macFixture() {
       const { cpSync } = await import("node:fs");
       const mount = args[args.indexOf("-mountpoint") + 1];
       cpSync(source, join(mount, "Fixture Product.app"), { recursive: true });
-      cpSync(chromium, join(mount, "Fixture Product.app/Contents/Resources/chromium"), { recursive: true });
+      if (dereferenceChromium) copyTreeDereferenced(chromium, join(mount, "Fixture Product.app/Contents/Resources/chromium"));
+      else cpSync(chromium, join(mount, "Fixture Product.app/Contents/Resources/chromium"), { recursive: true });
       f.mount = mount;
       return { code: 0, stdout: JSON.stringify({ "system-entities": [{ "dev-entry": "/dev/disk99", "mount-point": mount }] }) };
     }
@@ -89,6 +101,35 @@ test("macOS readonly verification checks dynamic bundle metadata, hashes and own
     assert.ok(attach.args.includes("-plist"));
     assert.deepEqual(f.commands.find((command) => command.args[0] === "detach").args, ["detach", "/dev/disk99"]);
     assert.equal(result.cleanup.every((entry) => entry.status === "passed"), true);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("macOS verification tolerates framework symlinks dereferenced by the bundler", async () => {
+  const f = macFixture({ dereferenceChromium: true });
+  put(join(f.chromium, "Browser Fixture.app/Contents/Frameworks/Fix.framework/Versions/A/Fix"), mach());
+  symlinkSync("Versions/A/Fix", join(f.chromium, "Browser Fixture.app/Contents/Frameworks/Fix.framework/Fix"));
+  try {
+    const result = await verifyInstallers("9.8.7", "macos-aarch64", f.assets, f.reports, f.options);
+    assert.equal(result.status, "passed", result.errors.join(" "));
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("macOS verification still rejects dereferenced framework content that changed", async () => {
+  const f = macFixture({ dereferenceChromium: true });
+  put(join(f.chromium, "Browser Fixture.app/Contents/Frameworks/Fix.framework/Versions/A/Fix"), mach());
+  symlinkSync("Versions/A/Fix", join(f.chromium, "Browser Fixture.app/Contents/Frameworks/Fix.framework/Fix"));
+  const base = f.options.run;
+  f.options.run = async (file, args, options) => {
+    const result = await base(file, args, options);
+    if (file === "/usr/bin/hdiutil" && args[0] === "attach") {
+      writeFileSync(join(f.mount, "Fixture Product.app/Contents/Resources/chromium/Browser Fixture.app/Contents/Frameworks/Fix.framework/Fix"), "tampered payload");
+    }
+    return result;
+  };
+  try {
+    const result = await verifyInstallers("9.8.7", "macos-aarch64", f.assets, f.reports, f.options);
+    assert.equal(result.status, "failed");
+    assert.match(result.errors.join(" "), /Chromium runtime resource mismatch/);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
@@ -116,7 +157,7 @@ function linuxFixture() {
       put(join(tree, "usr/bin/fixture-bin"), elf());
       put(join(tree, "usr/share/applications/fixture-bin.desktop"), "[Desktop Entry]\nName=Fixture Product\nExec=fixture-bin\nType=Application\nIcon=fixture-bin\n");
       cpSync(chromium, join(tree, "usr/lib/Fixture Product/chromium"), { recursive: true });
-      if (file.endsWith(".AppImage")) { put(join(tree, "fixture-bin.desktop"), readFileSync(join(tree, "usr/share/applications/fixture-bin.desktop"))); put(join(tree, "AppRun"), "runtime entrypoint, not executed"); }
+      if (file.endsWith(".AppImage")) { put(join(tree, "fixture-bin.desktop"), readFileSync(join(tree, "usr/share/applications/fixture-bin.desktop"))); put(join(tree, "AppRun"), "runtime entrypoint, not executed"); put(join(tree, "usr/bin/fixture-bin"), Buffer.concat([elf(), Buffer.from("VESTUS-BUNDLE-TYPE: appimage")])); }
       chmodSync(join(tree, "usr/bin/fixture-bin"), 0o755);
       chmodSync(join(tree, "usr/lib/Fixture Product/chromium/chrome"), 0o755);
       if (file.endsWith(".AppImage")) chmodSync(join(tree, "AppRun"), 0o755);
