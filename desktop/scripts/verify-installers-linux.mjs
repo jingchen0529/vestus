@@ -96,7 +96,11 @@ async function payload(ctx, root, format) {
       }
     }
   }
-  const desktop = checkDesktop(join(root, "usr/share/applications", `${ctx.metadata.binary}.desktop`), ctx.metadata);
+  // tauri 的 deb 用产品名而非二进制名命名 desktop 文件：按目录实际内容查找。
+  const applications = join(root, "usr/share/applications");
+  const desktopNames = readdirSync(applications).filter((name) => name.endsWith(".desktop"));
+  if (desktopNames.length !== 1) throw new Error(`Expected exactly one desktop entry, found: ${desktopNames.join(", ") || "none"}`);
+  const desktop = checkDesktop(join(applications, desktopNames[0]), ctx.metadata);
   if (format === "AppImage") {
     const desktops = readdirSync(root).filter((name) => name.endsWith(".desktop"));
     if (desktops.length !== 1) throw new Error("AppImage root must contain exactly one desktop entry");
